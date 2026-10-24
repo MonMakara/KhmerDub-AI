@@ -134,8 +134,11 @@ export interface TimingConflict {
   end_time: number;
   original_duration: number;
   khmer_duration: number;
+  required_tempo: number;
+  max_tempo_factor: number;
   tempo_factor: number;
   overflow_seconds: number;
+  suggested_action: string;
   message: string;
 }
 

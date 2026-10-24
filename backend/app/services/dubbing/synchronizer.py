@@ -21,9 +21,25 @@ class TimingConflict:
     end_time: float
     original_duration: float
     khmer_duration: float
+    required_tempo: float
+    max_tempo_factor: float
     tempo_factor: float
     overflow_seconds: float
+    suggested_action: str
     message: str
+
+
+class TimingConflictError(Exception):
+    """Raised when one or more speech segments cannot fit within the available time window."""
+
+    def __init__(self, conflicts: List[TimingConflict], message: Optional[str] = None):
+        self.conflicts = conflicts
+        count = len(conflicts)
+        msg = message or (
+            f"Cannot export dubbed video: {count} speech segment(s) exceed available timing window. "
+            f"Maximum tempo adjustment of 1.25x is insufficient to prevent speech truncation."
+        )
+        super().__init__(msg)
 
 
 @dataclass
@@ -119,6 +135,7 @@ class AudioSynchronizationService:
         segment_items: List[Tuple[TranscriptSegment, TranslationSegment, GeneratedAudio]],
         target_duration: float,
         output_timeline_path: Path,
+        strict_validation: bool = True,
     ) -> SynchronizationResult:
         """Align speech segments onto a unified timeline WAV matching target video duration."""
         if not segment_items:
@@ -137,6 +154,8 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
+            # 1. First pass: analyze timing windows and detect any unresolved conflicts
+            analyzed_segments: List[dict] = []
             for idx, (t_seg, trans_seg, audio_rec) in enumerate(sorted_items):
                 start_time = max(0.0, float(t_seg.start_time))
                 end_time = max(start_time, float(t_seg.end_time))
@@ -145,10 +164,14 @@ class AudioSynchronizationService:
                 # Determine next boundary
                 if idx < total_segments - 1:
                     next_start = float(sorted_items[idx + 1][0].start_time)
+                    if next_start > start_time:
+                        avail_window = min(next_start - start_time, target_duration - start_time)
+                    else:
+                        avail_window = max(0.1, min(orig_dur, target_duration - start_time))
                 else:
-                    next_start = max(target_duration, end_time)
+                    avail_window = max(0.1, target_duration - start_time)
 
-                avail_window = max(orig_dur, next_start - start_time)
+                avail_window = max(0.1, avail_window)
 
                 # Resolve source audio file
                 audio_path = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
@@ -163,45 +186,86 @@ class AudioSynchronizationService:
 
                 # Timing strategy
                 tempo = 1.0
+                required_tempo = 1.0
+
                 if raw_dur <= orig_dur:
-                    # Fits naturally in original speech interval
                     tempo = 1.0
+                    required_tempo = 1.0
                 elif raw_dur <= avail_window:
-                    # Slightly longer than original English sentence, but fits before next speaker
-                    # If it uses almost the entire pause, apply modest speedup to preserve breathing space
                     pause_left = avail_window - raw_dur
                     if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
                         target_dur = max(orig_dur, avail_window - 0.2)
-                        tempo = min(self.max_tempo_factor, round(raw_dur / target_dur, 2))
+                        tempo = min(self.max_tempo_factor, max(1.0, round(raw_dur / target_dur, 2)))
                     else:
                         tempo = 1.0
+                    required_tempo = 1.0
                 else:
-                    # raw_dur > avail_window: Exceeds available interval before next segment starts
-                    needed_tempo = raw_dur / max(0.1, avail_window - 0.1)
-                    tempo = min(self.max_tempo_factor, round(needed_tempo, 2))
-                    adjusted_est = raw_dur / tempo
+                    # raw_dur > avail_window: exceeds available interval
+                    effective_window = max(0.1, avail_window - 0.05)
+                    required_tempo = round(raw_dur / effective_window, 2)
 
-                    if adjusted_est > avail_window:
+                    if required_tempo <= self.max_tempo_factor:
+                        tempo = required_tempo
+                    else:
+                        tempo = self.max_tempo_factor
+                        adjusted_est = raw_dur / tempo
                         overflow = round(adjusted_est - avail_window, 2)
-                        conflicts.append(
-                            TimingConflict(
-                                segment_order=t_seg.segment_order,
-                                transcript_segment_id=t_seg.id,
-                                start_time=round(start_time, 2),
-                                end_time=round(end_time, 2),
-                                original_duration=round(orig_dur, 2),
-                                khmer_duration=round(raw_dur, 2),
-                                tempo_factor=tempo,
-                                overflow_seconds=overflow,
-                                message=(
-                                    f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
-                                    f"({avail_window:.1f}s) by {overflow:.1f}s even at {tempo}x speed. "
-                                    f"Consider shortening translation."
-                                ),
+                        if overflow > 0.05:
+                            est_words = max(1, math.ceil(overflow / 0.35))
+                            action = (
+                                f"Shorten the Khmer translation for Segment #{t_seg.segment_order} by approximately "
+                                f"{est_words} word(s) (~{overflow:.1f}s), regenerate audio, and retry export."
                             )
-                        )
+                            conflicts.append(
+                                TimingConflict(
+                                    segment_order=t_seg.segment_order,
+                                    transcript_segment_id=t_seg.id,
+                                    start_time=round(start_time, 2),
+                                    end_time=round(end_time, 2),
+                                    original_duration=round(orig_dur, 2),
+                                    khmer_duration=round(raw_dur, 2),
+                                    required_tempo=required_tempo,
+                                    max_tempo_factor=self.max_tempo_factor,
+                                    tempo_factor=tempo,
+                                    overflow_seconds=overflow,
+                                    suggested_action=action,
+                                    message=(
+                                        f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
+                                        f"({avail_window:.1f}s) by {overflow:.1f}s even at {tempo}x speed. "
+                                        f"{action}"
+                                    ),
+                                )
+                            )
 
-                # Generate standardized audio piece
+                analyzed_segments.append({
+                    "idx": idx,
+                    "t_seg": t_seg,
+                    "trans_seg": trans_seg,
+                    "audio_rec": audio_rec,
+                    "audio_path": audio_path,
+                    "start_time": start_time,
+                    "raw_dur": raw_dur,
+                    "tempo": tempo,
+                })
+
+            # In strict validation mode, halt immediately if there are conflicts to avoid
+            # generating an invalid or truncated export.
+            if strict_validation and conflicts:
+                logger.warning(
+                    "Strict duration validation blocked export: %d timing conflict(s) detected.",
+                    len(conflicts),
+                )
+                raise TimingConflictError(conflicts=conflicts)
+
+            # 2. Second pass: render pieces and construct timeline
+            for item in analyzed_segments:
+                idx = item["idx"]
+                t_seg = item["t_seg"]
+                audio_path = item["audio_path"]
+                start_time = item["start_time"]
+                raw_dur = item["raw_dur"]
+                tempo = item["tempo"]
+
                 piece_path = work_dir / f"piece_{idx}_order_{t_seg.segment_order}.wav"
                 if abs(tempo - 1.0) > 0.02:
                     self.adjust_tempo(audio_path, piece_path, tempo)
@@ -219,8 +283,15 @@ class AudioSynchronizationService:
                     self.generate_silence(gap_dur, gap_path)
                     timeline_pieces.append(gap_path)
                     current_time = start_time
+                elif start_time < current_time:
+                    logger.warning(
+                        "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
+                        t_seg.segment_order,
+                        start_time,
+                        current_time,
+                    )
 
-                # Append speech segment
+                # Append speech segment (never truncated)
                 timeline_pieces.append(piece_path)
                 current_time += piece_dur
 

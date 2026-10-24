@@ -960,39 +960,61 @@ def get_export_status(
     # Calculate any timing conflicts from current segments
     timing_conflicts: List[TimingConflictResponse] = []
     if project.translation_segments:
-        for idx, trans_seg in enumerate(project.translation_segments):
+        target_dur = float(video.duration_seconds or 0.0) if video else 0.0
+        sorted_trans = sorted(project.translation_segments, key=lambda s: s.segment_order)
+        for idx, trans_seg in enumerate(sorted_trans):
             t_seg = trans_seg.transcript_segment
             audio_rec = trans_seg.generated_audio
             if t_seg and audio_rec and audio_rec.duration_seconds:
-                orig_dur = max(0.1, t_seg.end_time - t_seg.start_time)
-                if idx < len(project.translation_segments) - 1:
-                    next_t = project.translation_segments[idx + 1].transcript_segment
-                    next_start = next_t.start_time if next_t else t_seg.end_time
-                else:
-                    next_start = video.duration_seconds if video and video.duration_seconds else t_seg.end_time
+                start_time = max(0.0, float(t_seg.start_time))
+                end_time = max(start_time, float(t_seg.end_time))
+                orig_dur = max(0.1, end_time - start_time)
 
-                avail_window = max(orig_dur, next_start - t_seg.start_time)
+                if idx < len(sorted_trans) - 1:
+                    next_t = sorted_trans[idx + 1].transcript_segment
+                    next_start = float(next_t.start_time) if next_t else end_time
+                    if next_start > start_time:
+                        avail_window = min(next_start - start_time, target_dur - start_time) if target_dur > 0 else (next_start - start_time)
+                    else:
+                        avail_window = orig_dur
+                else:
+                    avail_window = (target_dur - start_time) if target_dur > 0 else orig_dur
+
+                avail_window = max(0.1, avail_window)
                 raw_dur = float(audio_rec.duration_seconds)
+
                 if raw_dur > avail_window:
-                    adjusted_est = raw_dur / 1.25
-                    if adjusted_est > avail_window:
+                    effective_window = max(0.1, avail_window - 0.05)
+                    required_tempo = round(raw_dur / effective_window, 2)
+                    if required_tempo > 1.25:
+                        adjusted_est = raw_dur / 1.25
                         overflow = round(adjusted_est - avail_window, 2)
-                        timing_conflicts.append(
-                            TimingConflictResponse(
-                                segment_order=t_seg.segment_order,
-                                transcript_segment_id=t_seg.id,
-                                start_time=round(t_seg.start_time, 2),
-                                end_time=round(t_seg.end_time, 2),
-                                original_duration=round(orig_dur, 2),
-                                khmer_duration=round(raw_dur, 2),
-                                tempo_factor=1.25,
-                                overflow_seconds=overflow,
-                                message=(
-                                    f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
-                                    f"({avail_window:.1f}s) by {overflow:.1f}s even at 1.25x speed."
-                                ),
+                        if overflow > 0.05:
+                            est_words = max(1, math.ceil(overflow / 0.35))
+                            action = (
+                                f"Shorten the Khmer translation for Segment #{t_seg.segment_order} by approximately "
+                                f"{est_words} word(s) (~{overflow:.1f}s excess), regenerate audio, and retry export."
                             )
-                        )
+                            timing_conflicts.append(
+                                TimingConflictResponse(
+                                    segment_order=t_seg.segment_order,
+                                    transcript_segment_id=t_seg.id,
+                                    start_time=round(start_time, 2),
+                                    end_time=round(end_time, 2),
+                                    original_duration=round(orig_dur, 2),
+                                    khmer_duration=round(raw_dur, 2),
+                                    required_tempo=required_tempo,
+                                    max_tempo_factor=1.25,
+                                    tempo_factor=1.25,
+                                    overflow_seconds=overflow,
+                                    suggested_action=action,
+                                    message=(
+                                        f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
+                                        f"({avail_window:.1f}s) by {overflow:.1f}s even at 1.25x speed. "
+                                        f"{action}"
+                                    ),
+                                )
+                            )
 
     job_resp = ProcessingJobResponse.model_validate(dub_job) if dub_job else None
 

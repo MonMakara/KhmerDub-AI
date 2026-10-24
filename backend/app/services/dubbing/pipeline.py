@@ -17,6 +17,7 @@ from app.services.dubbing.synchronizer import (
     AudioSynchronizationService,
     SynchronizationResult,
     TimingConflict,
+    TimingConflictError,
 )
 from app.services.dubbing.exporter import VideoExportService, ExportResult
 from app.services.video.exceptions import VideoProcessingError
@@ -47,6 +48,7 @@ class DubbingPipeline:
         project_id: str,
         db: Session,
         on_progress: Optional[Callable[[int, str], None]] = None,
+        strict_validation: bool = True,
     ) -> DubbingPipelineResult:
         """Execute end-to-end synchronization and export for a project."""
         def report(pct: int, msg: str):
@@ -125,6 +127,7 @@ class DubbingPipeline:
             segment_items=segment_items,
             target_duration=video_dur,
             output_timeline_path=timeline_path,
+            strict_validation=strict_validation,
         )
 
         report(75, "Remuxing video with synchronized Khmer audio timeline...")
@@ -133,6 +136,7 @@ class DubbingPipeline:
             video_path=video_path,
             audio_timeline_path=sync_result.timeline_path,
             output_video_path=output_video_path,
+            expected_duration=video_dur,
         )
 
         report(95, "Verifying exported video integrity...")

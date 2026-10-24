@@ -2,6 +2,43 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.6.1] - Phase 6.1 Complete (2026-10-24)
+
+### Added
+- **Strict Duration Validation & Timing Conflict Guard**:
+  - Implemented `TimingConflictError` in `backend/app/services/dubbing/synchronizer.py` raised whenever speech cannot safely fit within the video duration at maximum tempo adjustment (1.25x).
+  - Prevents corrupted, overlong, or silently truncated video exports.
+  - Added strict duration verification in `VideoExportService.verify_exported_video` asserting that video stream, audio stream, and container duration match the expected target duration within a small codec tolerance (±0.15s).
+- **Enhanced Timing Conflict Schema & Reporting**:
+  - Extended `TimingConflict` and `TimingConflictResponse` with:
+    - `required_tempo`: Calculated exact speedup factor needed to fit the segment.
+    - `max_tempo_factor`: Maximum allowable speedup limit (1.25x).
+    - `suggested_action`: Actionable user recommendation specifying the estimated words/syllables to trim in translation (e.g. "Shorten the Khmer translation for Segment #1 by approximately 3 word(s) (~0.9s excess), regenerate audio, and retry export.").
+- **Worker & API Enhancements**:
+  - `process_dubbing` worker intercepts `TimingConflictError`, transitions job to `FAILED` with detailed conflict summaries, and leaves project in `VOICE_GENERATED` state so users can easily edit translations.
+  - `GET /api/projects/{project_id}/export/status` computes detailed conflict diagnostics before export is triggered.
+- **Frontend Step 5 UI Enhancements (`ProjectWorkspace.tsx`)**:
+  - Enhanced Timing Conflicts Panel with "Export Guard Active" badge.
+  - Displays per-segment conflict breakdown with original timestamps, original duration, Khmer audio duration, required speedup, and highlighted `suggested_action`.
+- **Testing**:
+  - 11 new automated test cases in `backend/tests/test_dubbing.py`:
+    - `test_audio_longer_than_available_time`
+    - `test_audio_shorter_than_available_time`
+    - `test_exact_duration_audio`
+    - `test_last_segment_exceeding_video_duration`
+    - `test_multiple_consecutive_segments`
+    - `test_overlapping_segments`
+    - `test_silence_padding`
+    - `test_safe_tempo_adjustment`
+    - `test_unresolved_timing_conflicts_details`
+    - `test_correct_output_stream_durations`
+    - `test_prevention_of_silent_truncation`
+  - Total backend tests increased to 71 passing with 0 failures.
+  - Verified real video test cases with FFprobe:
+    - Case A (speech shorter than interval): exported successfully with matching 4.000s streams.
+    - Case B (speech fits after safe tempo $\le 1.25x$): exported successfully with 4.000s video and 3.998s audio (within 2ms codec tolerance).
+    - Case C (speech cannot fit even at 1.25x): export blocked cleanly with `TimingConflictError`, 0 files corrupted.
+
 ## [0.6.0] - Phase 6 Complete (2026-10-24)
 
 ### Added

@@ -1723,28 +1723,52 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
             {/* Timing Conflicts Panel */}
             {exportStatus?.timing_conflicts && exportStatus.timing_conflicts.length > 0 && (
-              <div className="p-4 rounded-xl bg-amber-50/60 border border-amber-200 space-y-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>
-                    Audio Timing Mismatch: {exportStatus.timing_conflicts.length} segment(s) exceeded the natural video interval (speed adjusted up to 1.25x).
+              <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Timing Conflict Alert: {exportStatus.timing_conflicts.length} segment(s) exceed available timing window
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-semibold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
+                    Export Guard Active
                   </span>
                 </div>
-                <div className="text-xs text-amber-800 space-y-1 pl-6">
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  To prevent speech from being abruptly cut off or extending past the video duration, Khmer speech must fit within the available time slot (maximum safe speedup is {exportStatus.timing_conflicts[0].max_tempo_factor}x). Please shorten the highlighted translation(s) and regenerate their audio.
+                </p>
+                <div className="space-y-2 pt-1">
                   {exportStatus.timing_conflicts.map((c, i) => (
-                    <div key={i} className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">Segment #{c.segment_order}:</span>
-                      <span>
-                        Orig {c.original_duration}s vs Khmer {c.khmer_duration}s (+{c.overflow_seconds}s overflow).
-                      </span>
-                      <span className="text-[11px] text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
-                        Tempo: {c.tempo_factor}x
-                      </span>
+                    <div key={i} className="p-3 rounded-lg bg-white/80 border border-amber-200/80 text-xs text-slate-800 space-y-1.5 shadow-2xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold text-amber-900">
+                          Segment #{c.segment_order} ({c.start_time}s – {c.end_time}s)
+                        </span>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                            Orig: {c.original_duration}s
+                          </span>
+                          <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                            Khmer: {c.khmer_duration}s
+                          </span>
+                          <span className="text-rose-700 bg-rose-50 px-2 py-0.5 rounded font-semibold border border-rose-200">
+                            Overflow: +{c.overflow_seconds}s
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                        <span>Speed needed: <strong className="text-amber-900">{c.required_tempo}x</strong></span>
+                        <span>•</span>
+                        <span>Max allowed: <strong className="text-slate-800">{c.max_tempo_factor}x</strong></span>
+                      </div>
+
+                      <div className="text-[11px] text-amber-900 bg-amber-100/60 p-2 rounded border border-amber-200/50">
+                        <strong>Suggested action:</strong> {c.suggested_action}
+                      </div>
                     </div>
                   ))}
-                  <p className="text-[11px] text-amber-700 pt-1">
-                    Tip: If speech sounds slightly rapid, you can shorten the Khmer sentence in Step 3 and re-export.
-                  </p>
                 </div>
               </div>
             )}

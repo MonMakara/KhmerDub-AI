@@ -35,8 +35,15 @@ class VideoExportService:
         self.ffprobe_bin = ffprobe_bin
         self.video_processor = video_processor or FFmpegVideoProcessor()
 
-    def verify_exported_video(self, video_path: Path) -> ExportResult:
-        """Inspect and verify that exported MP4 contains valid video and audio streams."""
+    def verify_exported_video(
+        self,
+        video_path: Path,
+        expected_duration: Optional[float] = None,
+        tolerance_seconds: float = 0.15,
+    ) -> ExportResult:
+        """Inspect and verify that exported MP4 contains valid video and audio streams,
+        and optionally verify duration against expected duration within tolerance.
+        """
         if not video_path.exists() or video_path.stat().st_size == 0:
             raise VideoProcessingError(f"Exported video missing or empty at {video_path}")
 
@@ -71,11 +78,35 @@ class VideoExportService:
         except (ValueError, TypeError):
             duration = 0.0
 
+        try:
+            video_dur = float(video_stream.get("duration", 0.0))
+        except (ValueError, TypeError):
+            video_dur = 0.0
+
+        try:
+            audio_dur = float(audio_stream.get("duration", 0.0))
+        except (ValueError, TypeError):
+            audio_dur = 0.0
+
         if duration <= 0.0:
-            try:
-                duration = float(video_stream.get("duration", 0.0))
-            except (ValueError, TypeError):
-                duration = 0.0
+            duration = video_dur if video_dur > 0.0 else audio_dur
+
+        # Strict duration validation against expected target video duration
+        if expected_duration is not None and expected_duration > 0.0:
+            diff_audio = abs(audio_dur - expected_duration) if audio_dur > 0.0 else 0.0
+            diff_video = abs(video_dur - expected_duration) if video_dur > 0.0 else 0.0
+
+            if diff_audio > tolerance_seconds:
+                raise VideoProcessingError(
+                    f"Exported audio duration mismatch: audio stream is {audio_dur:.3f}s, expected {expected_duration:.3f}s "
+                    f"(difference: {diff_audio:.3f}s exceeds {tolerance_seconds:.2f}s tolerance)."
+                )
+
+            if diff_video > tolerance_seconds:
+                raise VideoProcessingError(
+                    f"Exported video duration mismatch: video stream is {video_dur:.3f}s, expected {expected_duration:.3f}s "
+                    f"(difference: {diff_video:.3f}s exceeds {tolerance_seconds:.2f}s tolerance)."
+                )
 
         file_size = video_path.stat().st_size
 
@@ -92,6 +123,8 @@ class VideoExportService:
         video_path: Path,
         audio_timeline_path: Path,
         output_video_path: Path,
+        expected_duration: Optional[float] = None,
+        tolerance_seconds: float = 0.15,
     ) -> ExportResult:
         """Remux original video and new Khmer audio timeline into MP4 with atomic publishing."""
         if not video_path.exists():
@@ -147,7 +180,11 @@ class VideoExportService:
 
         # Verify exported video before publishing
         try:
-            result = self.verify_exported_video(temp_output_path)
+            result = self.verify_exported_video(
+                temp_output_path,
+                expected_duration=expected_duration,
+                tolerance_seconds=tolerance_seconds,
+            )
             # Atomically publish to final destination
             shutil.move(str(temp_output_path), str(output_video_path))
             result.video_path = output_video_path

@@ -11,6 +11,7 @@ from app.models.project import (
     JobStatus,
 )
 from app.services.dubbing.pipeline import DubbingPipeline
+from app.services.dubbing.synchronizer import TimingConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,27 @@ def process_dubbing(project_id: str, job_id: str, db: Optional[Session] = None) 
         project.status = ProjectStatus.COMPLETED
         db.commit()
         logger.info("Successfully completed dubbed video export for project %s", project_id)
+
+    except TimingConflictError as e:
+        logger.warning(
+            "Dubbing export blocked for project %s: %d timing conflict(s) detected",
+            project_id,
+            len(e.conflicts),
+        )
+        if db:
+            db.rollback()
+            job = db.query(ProcessingJob).filter(ProcessingJob.id == job_id).first()
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if job:
+                job.status = JobStatus.FAILED
+                top_conflict = e.conflicts[0]
+                job.error_message = (
+                    f"Export prevented: {len(e.conflicts)} speech segment(s) exceed available timing window. "
+                    f"{top_conflict.suggested_action}"
+                )
+            if project:
+                project.status = ProjectStatus.VOICE_GENERATED
+            db.commit()
 
     except Exception as e:
         logger.exception("Dubbing worker failed for project %s: %s", project_id, e)

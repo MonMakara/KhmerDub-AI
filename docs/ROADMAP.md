@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 6 Complete — Audio Synchronization & Khmer Dubbed Video Export Integrated & Verified
+- **Current Phase**: Phase 6.1 Complete — Synchronization Reliability & Duration Validation Verified
 - **Overall Status**: In Progress
 
 ---
@@ -82,6 +82,17 @@
 - [x] API endpoints: `POST /export`, `GET /export/status`, `GET /export/video` (HTTP 206 Partial Content), `GET /export/download`.
 - [x] Frontend Step 5 workspace: readiness checklist, timing conflicts panel, real-time export progress, video player preview, and download button.
 - [x] 60 automated backend tests passing in Docker with verified end-to-end dubbing pipeline.
+
+### [x] Phase 6.1: Synchronization Reliability & Strict Duration Validation
+- [x] Root cause investigation of duration mismatch (differentiating actual speech overflow from codec/container tolerance).
+- [x] Strict duration validation in `AudioSynchronizationService` preventing exports that would cut off Khmer speech.
+- [x] Introduction of `TimingConflictError` halting pipeline before corrupted or overlong video export.
+- [x] Enhanced `TimingConflict` reporting: `required_tempo`, `max_tempo_factor`, `overflow_seconds`, and `suggested_action`.
+- [x] FFprobe-based stream and container duration verification in `VideoExportService` (`expected_duration` ± tolerance).
+- [x] UI update in `ProjectWorkspace.tsx`: active export guard badge, detailed conflict breakdown, and actionable trimming recommendations.
+- [x] 11 new automated test cases covering longer audio, shorter audio, exact duration, tail overflow, consecutive segments, overlapping segments, silence padding, safe tempo, conflict details, duration verification, and non-truncation.
+- [x] Verified real video testing across Case A (shorter speech), Case B (safe tempo fit), and Case C (conflict blocked).
+- [x] 71 automated backend tests and frontend typecheck/build passing in Docker.
 
 ### [ ] Phase 7: Polish, Robustness & Comprehensive Testing
 - [ ] End-to-end integration testing.
