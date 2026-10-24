@@ -29,7 +29,7 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Initialize database tables and handle light schema updates."""
+    """Initialize database tables."""
     # Ensure data directories exist
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -37,21 +37,3 @@ def init_db() -> None:
     settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
     Base.metadata.create_all(bind=engine)
-
-    # Automatically add new columns if SQLite database already exists
-    if settings.DATABASE_URL.startswith("sqlite"):
-        with engine.connect() as conn:
-            from sqlalchemy import text
-            cursor = conn.execute(text("PRAGMA table_info(videos)"))
-            existing_cols = {row[1] for row in cursor.fetchall()}
-            if "videos" in Base.metadata.tables and existing_cols:
-                new_columns = [
-                    ("width", "INTEGER"),
-                    ("height", "INTEGER"),
-                    ("video_codec", "VARCHAR(50)"),
-                    ("audio_codec", "VARCHAR(50)"),
-                ]
-                for col_name, col_type in new_columns:
-                    if col_name not in existing_cols:
-                        conn.execute(text(f"ALTER TABLE videos ADD COLUMN {col_name} {col_type}"))
-                conn.commit()

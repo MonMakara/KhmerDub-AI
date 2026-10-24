@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 3 Complete — English Automatic Speech Recognition Verified
+- **Current Phase**: Phase 4 Complete — English-to-Khmer Translation Verified
 - **Overall Status**: In Progress
 
 ---
@@ -35,11 +35,17 @@
 - [x] Frontend English Transcription workspace with segment list and inline editor.
 - [x] 24 unit, integration, and real inference tests passing in Docker.
 
-### [ ] Phase 4: English-to-Khmer Translation
-- [ ] Open-source translation model integration (NLLB-200).
-- [ ] Timestamp-preserving segment translation.
-- [ ] Khmer transcript editor in UI with per-segment regeneration.
-- [ ] Khmer Unicode font rendering verification.
+### [x] Phase 4: English-to-Khmer Translation (Meta NLLB-200)
+- [x] Open-source translation model integration (`facebook/nllb-200-distilled-600M`).
+- [x] Timestamp and segment-preserving translation (`eng_Latn` → `khm_Khmr`).
+- [x] Lazy model loading and persistent Docker volume caching (`_cache_lock`).
+- [x] Thread-safe batch inference on CPU with RSS memory monitoring via `psutil`.
+- [x] Alembic migration for `is_manually_edited` and `is_outdated` tracking flags.
+- [x] Automatic outdated marking when English transcript is updated.
+- [x] Preservation of user manual corrections during full project retranslation.
+- [x] API endpoints: `POST /translate`, `GET /translations`, `PATCH /translations/{id}`, `POST /translations/{id}/retranslate`.
+- [x] Frontend comparative UI (English vs. Khmer side-by-side) with inline editing and per-segment retranslate.
+- [x] 31 unit, integration, and workflow tests passing in Docker.
 
 ### [ ] Phase 5: Google Khmer TTS
 - [ ] Verification of Google gTTS Khmer (`km`) support with sample audio generation.

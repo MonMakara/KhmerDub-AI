@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Text,
+    Boolean,
     Enum as SQLEnum,
 )
 from sqlalchemy.orm import relationship
@@ -128,10 +129,13 @@ class TranslationSegment(Base):
     transcript_segment_id = Column(String(36), ForeignKey("transcript_segments.id"), nullable=True)
     segment_order = Column(Integer, nullable=False)
     khmer_text = Column(Text, nullable=False)
+    is_manually_edited = Column(Boolean, default=False, nullable=False)
+    is_outdated = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="translation_segments")
+    transcript_segment = relationship("TranscriptSegment", backref="translation_segments")
     generated_audio = relationship("GeneratedAudio", back_populates="translation_segment", uselist=False)
 
 

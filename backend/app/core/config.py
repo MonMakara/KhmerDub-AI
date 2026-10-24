@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     WHISPER_LANGUAGE: str = "en"
     WHISPER_VAD_FILTER: bool = True
 
+    # Translation (NLLB-200)
+    TRANSLATION_PROVIDER: str = "nllb"
+    TRANSLATION_MODEL: str = "facebook/nllb-200-distilled-600M"
+    TRANSLATION_SOURCE_LANG: str = "eng_Latn"
+    TRANSLATION_TARGET_LANG: str = "khm_Khmr"
+    TRANSLATION_DEVICE: str = "cpu"
+    TRANSLATION_BATCH_SIZE: int = 1
+    TRANSLATION_MAX_INPUT_TOKENS: int = 512
+
     # Limits
     MAX_UPLOAD_SIZE_MB: int = 500
 

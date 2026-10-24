@@ -76,10 +76,50 @@ curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/transcribe"
 # 2. View generated transcript segments
 curl -s "http://localhost:8000/api/projects/$PROJ_ID/transcript" | jq .
 
-# 3. Edit a transcript segment
+# 3. Edit a transcript segment (automatically flags linked translation as outdated)
 curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/transcript/$SEGMENT_ID" \
   -H "Content-Type: application/json" \
   -d '{"text": "Corrected transcript text"}'
+```
+
+### Testing Translation via cURL (Phase 4)
+```bash
+# 1. Trigger English-to-Khmer translation
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translate"
+
+# 2. View generated translation segments (with English text and timestamps)
+curl -s "http://localhost:8000/api/projects/$PROJ_ID/translations" | jq .
+
+# 3. Manually edit a Khmer translation segment
+curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"khmer_text": "អត្ថបទបកប្រែកែសម្រួល"}'
+
+# 4. Retranslate an individual segment from English
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/retranslate"
+```
+
+### Translation Model Configuration (NLLB-200)
+The following variables in `.env` control English-to-Khmer translation:
+- `TRANSLATION_PROVIDER`: Translation service provider (`nllb`). Defaults to `nllb`.
+- `TRANSLATION_MODEL`: Hugging Face repository or checkpoint (`facebook/nllb-200-distilled-600M`).
+- `TRANSLATION_SOURCE_LANG`: Source language FLORES-200 code (`eng_Latn`).
+- `TRANSLATION_TARGET_LANG`: Target language FLORES-200 code (`khm_Khmr`).
+- `TRANSLATION_DEVICE`: Execution device (`cpu` or `cuda`). Defaults to `cpu`.
+- `TRANSLATION_BATCH_SIZE`: Inference batch size (default `1` for minimal RAM footprint on CPU).
+- `TRANSLATION_MAX_INPUT_TOKENS`: Maximum sequence token length (default `512`).
+
+> [!NOTE]
+> **Model License**: Meta's `facebook/nllb-200-distilled-600M` model is released under the **CC BY-NC 4.0** license (Creative Commons Attribution-NonCommercial 4.0 International) for research and non-commercial usage.
+
+### Database Migrations (Alembic)
+KhmerDub AI uses Alembic for database schema versioning:
+```bash
+# Apply pending migrations
+docker compose exec backend alembic upgrade head
+
+# Create a new migration revision
+docker compose exec backend alembic revision --autogenerate -m "describe_changes"
 ```
 
 ### Whisper Model Configuration

@@ -19,7 +19,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.database.session import get_db
-from app.models.project import Project, Video, TranscriptSegment, ProcessingJob, ProjectStatus, JobStatus
+from app.models.project import (
+    Project,
+    Video,
+    TranscriptSegment,
+    TranslationSegment,
+    ProcessingJob,
+    ProjectStatus,
+    JobStatus,
+)
 from app.schemas.project import (
     ProjectCreate,
     ProjectResponse,
@@ -28,6 +36,9 @@ from app.schemas.project import (
     TranscriptSegmentResponse,
     TranscriptSegmentUpdate,
     TranscriptResponse,
+    TranslationSegmentResponse,
+    TranslationSegmentUpdate,
+    TranslationListResponse,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
@@ -35,8 +46,10 @@ from app.services.video.exceptions import (
     InvalidVideoFormatError,
     VideoProcessingError,
 )
+from app.services.translation.nllb import NLLBTranslationProvider
 from app.workers.audio_extraction import process_audio_extraction
 from app.workers.transcription import process_transcription
+from app.workers.translation import process_translation
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +408,215 @@ def update_transcript_segment(
     if not clean_text:
         raise HTTPException(status_code=400, detail="Segment text cannot be empty")
 
+    old_text = segment.text
     segment.text = clean_text
+
+    # If transcript text changed, mark corresponding translation as outdated
+    if old_text != clean_text:
+        linked_trans = (
+            db.query(TranslationSegment)
+            .filter(
+                TranslationSegment.project_id == project_id,
+                TranslationSegment.transcript_segment_id == segment_id,
+            )
+            .first()
+        )
+        if linked_trans:
+            linked_trans.is_outdated = True
+
     db.commit()
     db.refresh(segment)
     return segment
+
+
+def _enrich_translation_segment(
+    trans_seg: TranslationSegment,
+) -> TranslationSegmentResponse:
+    """Enrich TranslationSegment with timing and English transcript text."""
+    english_text = trans_seg.transcript_segment.text if trans_seg.transcript_segment else None
+    start_time = trans_seg.transcript_segment.start_time if trans_seg.transcript_segment else None
+    end_time = trans_seg.transcript_segment.end_time if trans_seg.transcript_segment else None
+
+    return TranslationSegmentResponse(
+        id=trans_seg.id,
+        project_id=trans_seg.project_id,
+        transcript_segment_id=trans_seg.transcript_segment_id,
+        segment_order=trans_seg.segment_order,
+        khmer_text=trans_seg.khmer_text,
+        english_text=english_text,
+        start_time=start_time,
+        end_time=end_time,
+        is_manually_edited=trans_seg.is_manually_edited,
+        is_outdated=trans_seg.is_outdated,
+        created_at=trans_seg.created_at,
+        updated_at=trans_seg.updated_at,
+    )
+
+
+@router.post("/{project_id}/translate", response_model=ProcessingJobResponse)
+def start_translation(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ProcessingJobResponse:
+    """Start asynchronous English-to-Khmer translation using NLLB-200."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Verify transcript segments exist
+    transcript_count = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .count()
+    )
+    if transcript_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No transcript segments found. Please transcribe audio before translating.",
+        )
+
+    # Prevent duplicate concurrent translation jobs
+    active_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.job_type == "translate",
+            ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+        )
+        .first()
+    )
+    if active_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A translation job is already in progress for this project.",
+        )
+
+    job = ProcessingJob(
+        project_id=project_id,
+        job_type="translate",
+        status=JobStatus.PENDING,
+        progress_percentage=0,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(process_translation, project_id, job.id)
+    return job
+
+
+@router.get("/{project_id}/translations", response_model=TranslationListResponse)
+def get_translations(
+    project_id: str, db: Session = Depends(get_db)
+) -> TranslationListResponse:
+    """Retrieve all translated segments for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segments = (
+        db.query(TranslationSegment)
+        .filter(TranslationSegment.project_id == project_id)
+        .order_by(TranslationSegment.segment_order.asc())
+        .all()
+    )
+
+    enriched = [_enrich_translation_segment(seg) for seg in segments]
+
+    return TranslationListResponse(
+        project_id=project_id,
+        status=project.status,
+        segments=enriched,
+    )
+
+
+@router.patch(
+    "/{project_id}/translations/{segment_id}",
+    response_model=TranslationSegmentResponse,
+)
+def update_translation_segment(
+    project_id: str,
+    segment_id: str,
+    payload: TranslationSegmentUpdate,
+    db: Session = Depends(get_db),
+) -> TranslationSegmentResponse:
+    """Manually update Khmer translation text for a single segment."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.id == segment_id,
+            TranslationSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Translation segment not found")
+
+    clean_text = payload.khmer_text.strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Translation text cannot be empty")
+
+    segment.khmer_text = clean_text
+    segment.is_manually_edited = True
+    segment.is_outdated = False
+    db.commit()
+    db.refresh(segment)
+
+    return _enrich_translation_segment(segment)
+
+
+@router.post(
+    "/{project_id}/translations/{segment_id}/retranslate",
+    response_model=TranslationSegmentResponse,
+)
+def retranslate_segment(
+    project_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+) -> TranslationSegmentResponse:
+    """Retranslate a single segment from its corresponding English transcript."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.id == segment_id,
+            TranslationSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Translation segment not found")
+
+    if not segment.transcript_segment or not segment.transcript_segment.text:
+        raise HTTPException(
+            status_code=400,
+            detail="Corresponding English transcript text is missing",
+        )
+
+    provider = NLLBTranslationProvider()
+    translated_texts = provider.translate(
+        texts=[segment.transcript_segment.text],
+        source_lang=project.original_language or "eng_Latn",
+        target_lang=project.target_language or "khm_Khmr",
+    )
+
+    if not translated_texts or not translated_texts[0]:
+        raise HTTPException(
+            status_code=500, detail="Failed to generate translation for this segment"
+        )
+
+    segment.khmer_text = translated_texts[0]
+    segment.is_manually_edited = False
+    segment.is_outdated = False
+    db.commit()
+    db.refresh(segment)
+
+    return _enrich_translation_segment(segment)

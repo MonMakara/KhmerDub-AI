@@ -2,6 +2,37 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.4.0] - Phase 4 Complete (2026-10-24)
+
+### Added
+- **NLLB-200 Translation Provider (`NLLBTranslationProvider`)**:
+  - Implemented concrete translation provider using Meta's `facebook/nllb-200-distilled-600M` model.
+  - FLORES-200 language code support (`eng_Latn` → `khm_Khmr`) with input code normalization (`en` → `eng_Latn`, `km` → `khm_Khmr`).
+  - Thread-safe lazy model loading with in-memory caching (`_cache_lock`) and persistent Docker volume caching (`/root/.cache`).
+  - Generation using beam search (`num_beams=4`), `forced_bos_token_id=256092`, and configurable max sequence length.
+  - Process RSS memory monitoring utility (`get_current_process_ram_mb`) using `psutil`.
+- **Alembic Database Migration**:
+  - Configured Alembic migration environment (`backend/alembic/`) targeting SQLite database.
+  - Migration `16a1a4d3bf49` added `is_manually_edited` and `is_outdated` flags to `translation_segments`.
+- **Translation API Endpoints**:
+  - `POST /api/projects/{project_id}/translate`: Asynchronous background translation job with duplicate prevention (`HTTP 409 Conflict`).
+  - `GET /api/projects/{project_id}/translations`: Retrieves ordered translated segments enriched with linked transcript English text and timestamps.
+  - `PATCH /api/projects/{project_id}/translations/{segment_id}`: Inline manual editing of Khmer translation text (`is_manually_edited=True`, `is_outdated=False`).
+  - `POST /api/projects/{project_id}/translations/{segment_id}/retranslate`: Single-segment retranslation from its corresponding English transcript text.
+  - `PATCH /api/projects/{project_id}/transcript/{segment_id}`: Automatically flags corresponding translation segment as `is_outdated=True` when transcript text is changed.
+- **Background Worker (`process_translation`)**:
+  - Translates unedited English transcript segments while strictly preserving user manual corrections (`is_manually_edited=True`).
+  - Transitions `ProcessingJob` through `pending` → `running` (15%, 30%, 50%, 85%) → `completed` (100%).
+- **Frontend Khmer Translation Workspace (`ProjectWorkspace.tsx`)**:
+  - "Khmer Translation" section with NLLB model badge and "Translate to Khmer" / "Retranslate All" action buttons.
+  - Real-time polling for background translation job progression.
+  - Dual-column comparative segment view (Original English on the left, Khmer Translation on the right).
+  - Visual status badges for `[English Changed (Outdated)]` and `[Manually Edited]`.
+  - Inline editing with Save / Cancel controls and single-segment retranslate button.
+- **Testing**:
+  - 31 backend unit, integration, and workflow tests passing in Docker.
+  - Verified manual edit preservation, outdated propagation, and single-segment retranslation.
+
 ## [0.3.0] - Phase 3 Complete (2026-10-24)
 
 ### Added

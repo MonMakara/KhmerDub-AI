@@ -53,16 +53,24 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `POST /api/projects/{id}/extract-audio`: Manual trigger or retry for background audio extraction.
   - `POST /api/projects/{id}/transcribe`: Asynchronous speech-to-text inference with faster-whisper.
   - `GET /api/projects/{id}/transcript`: Retrieve ordered timestamped transcript segments.
-  - `PATCH /api/projects/{id}/transcript/{segment_id}`: Inline editing of transcript segment text.
+  - `PATCH /api/projects/{id}/transcript/{segment_id}`: Inline editing of transcript segment text (automatically marks corresponding translation as outdated).
+  - `POST /api/projects/{id}/translate`: Asynchronous English-to-Khmer translation inference with NLLB-200.
+  - `GET /api/projects/{id}/translations`: Retrieve ordered translated segments with original English text and timestamps.
+  - `PATCH /api/projects/{id}/translations/{segment_id}`: Inline manual editing of Khmer translation text (`is_manually_edited=True`, `is_outdated=False`).
+  - `POST /api/projects/{id}/translations/{segment_id}/retranslate`: Single segment retranslation from English transcript.
   - `GET /api/projects/{id}/jobs`: Processing jobs and progress tracking.
   - `GET /api/projects/{id}/video`: Stream uploaded MP4 for browser video preview.
   - `GET /api/projects/{id}/audio`: Stream extracted 16kHz WAV audio for browser playback.
 - **`services/transcription/`**:
   - `FasterWhisperTranscriptionProvider`: Concretely implements `TranscriptionProvider`. Features thread-safe lazy model loading, CTranslate2 INT8 quantization, Voice Activity Detection, and generator consumption returning timestamped `TranscriptionSegment` instances.
+- **`services/translation/`**:
+  - `NLLBTranslationProvider`: Concretely implements `TranslationProvider`. Uses Meta's `facebook/nllb-200-distilled-600M` (`eng_Latn` → `khm_Khmr`) with thread-safe lazy loading (`_cache_lock`), beam search decoding, RSS RAM monitoring via `psutil`, and persistent caching in Docker volume `model_cache` (`/root/.cache`).
 - **`services/video/`**:
   - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
 - **`workers/`**:
-  - `process_audio_extraction`: Non-blocking background worker updating job status and logging processing errors.
+  - `process_audio_extraction`: Non-blocking background worker updating audio extraction job status.
+  - `process_transcription`: Background STT worker populating `TranscriptSegment` database records.
+  - `process_translation`: Background translation worker processing English segments, respecting and preserving manually edited translations (`is_manually_edited`), and populating `TranslationSegment` records.
 
 ### 2.2 Frontend (`frontend/src`)
 - **Layout**: Clean left sidebar with Dashboard, Projects, and Settings tabs; top header with live backend connectivity status.

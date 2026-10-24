@@ -5,6 +5,8 @@ import {
   ProcessingJob,
   TranscriptResponse,
   TranscriptSegment,
+  TranslationSegment,
+  TranslationListResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -165,6 +167,64 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Failed to update segment: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async startTranslation(projectId: string): Promise<ProcessingJob> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/translate`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Translation request failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getTranslations(projectId: string): Promise<TranslationListResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/translations`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch translations: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateTranslationSegment(
+    projectId: string,
+    segmentId: string,
+    khmerText: string
+  ): Promise<TranslationSegment> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/translations/${segmentId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ khmer_text: khmerText }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update translation: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async retranslateSegment(
+    projectId: string,
+    segmentId: string
+  ): Promise<TranslationSegment> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/translations/${segmentId}/retranslate`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to retranslate segment: ${res.statusText}`);
     }
     return res.json();
   },

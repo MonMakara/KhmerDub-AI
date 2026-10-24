@@ -57,13 +57,29 @@ class TranscriptResponse(BaseModel):
 
 class TranslationSegmentResponse(BaseModel):
     id: str
+    project_id: str
     transcript_segment_id: Optional[str] = None
     segment_order: int
     khmer_text: str
+    english_text: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    is_manually_edited: bool = False
+    is_outdated: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TranslationSegmentUpdate(BaseModel):
+    khmer_text: str
+
+
+class TranslationListResponse(BaseModel):
+    project_id: str
+    status: ProjectStatus
+    segments: List[TranslationSegmentResponse]
 
 
 class ProjectCreate(BaseModel):

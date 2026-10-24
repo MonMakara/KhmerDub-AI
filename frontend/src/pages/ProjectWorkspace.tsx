@@ -16,8 +16,10 @@ import {
   X,
   Sparkles,
   RotateCcw,
+  Languages,
+  AlertTriangle,
 } from 'lucide-react';
-import { ProjectDetail, TranscriptSegment } from '../types';
+import { ProjectDetail, TranscriptSegment, TranslationSegment } from '../types';
 import { api } from '../services/api';
 
 interface ProjectWorkspaceProps {
@@ -48,6 +50,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [editingText, setEditingText] = useState<string>('');
   const [savingSegmentId, setSavingSegmentId] = useState<string | null>(null);
 
+  // Translation state
+  const [translationSegments, setTranslationSegments] = useState<TranslationSegment[]>([]);
+  const [translating, setTranslating] = useState<boolean>(false);
+  const [translationError, setTranslationError] = useState<string | null>(null);
+  const [editingTransId, setEditingTransId] = useState<string | null>(null);
+  const [editingTransText, setEditingTransText] = useState<string>('');
+  const [savingTransId, setSavingTransId] = useState<string | null>(null);
+  const [retranslatingTransId, setRetranslatingTransId] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchTranscriptData = useCallback(async () => {
@@ -59,25 +70,45 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   }, [projectId]);
 
+  const fetchTranslationData = useCallback(async () => {
+    try {
+      const data = await api.getTranslations(projectId);
+      setTranslationSegments(data.segments);
+    } catch (err: any) {
+      console.error('Failed to load translations:', err);
+    }
+  }, [projectId]);
+
   const fetchProjectData = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
       setProject(data);
-      if (data.status === 'transcribed' || (data.transcript_segments && data.transcript_segments.length > 0)) {
+      if (
+        data.status === 'transcribed' ||
+        data.status === 'translating' ||
+        data.status === 'translated' ||
+        (data.transcript_segments && data.transcript_segments.length > 0)
+      ) {
         await fetchTranscriptData();
+      }
+      if (
+        data.status === 'translated' ||
+        (data.translation_segments && data.translation_segments.length > 0)
+      ) {
+        await fetchTranslationData();
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load project details');
     } finally {
       setLoading(false);
     }
-  }, [projectId, fetchTranscriptData]);
+  }, [projectId, fetchTranscriptData, fetchTranslationData]);
 
   useEffect(() => {
     fetchProjectData();
   }, [fetchProjectData]);
 
-  // Polling for background audio extraction or transcription jobs
+  // Polling for background audio extraction, transcription, or translation jobs
   useEffect(() => {
     if (!project) return;
     const isExtracting =
@@ -88,11 +119,18 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       project.status === 'transcribing' ||
       project.jobs?.some((j) => j.job_type === 'transcribe' && (j.status === 'pending' || j.status === 'running'));
 
+    const isTransRunning =
+      project.status === 'translating' ||
+      project.jobs?.some((j) => j.job_type === 'translate' && (j.status === 'pending' || j.status === 'running'));
+
     if (isSttRunning) {
       setTranscribing(true);
     }
+    if (isTransRunning) {
+      setTranslating(true);
+    }
 
-    if (!isExtracting && !isSttRunning) return;
+    if (!isExtracting && !isSttRunning && !isTransRunning) return;
 
     const interval = setInterval(async () => {
       try {
@@ -114,6 +152,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           }
         }
 
+        // Check if translation just finished
+        if (isTransRunning) {
+          const translateJob = data.jobs?.find((j) => j.job_type === 'translate');
+          if (translateJob?.status === 'completed' || data.status === 'translated') {
+            setTranslating(false);
+            setTranslationError(null);
+            await fetchTranslationData();
+            if (onProjectUpdated) onProjectUpdated();
+          } else if (translateJob?.status === 'failed' || data.status === 'failed') {
+            setTranslating(false);
+            setTranslationError(translateJob?.error_message || 'Translation failed.');
+            if (onProjectUpdated) onProjectUpdated();
+          }
+        }
+
         if (isExtracting && (data.status === 'audio_extracted' || data.status === 'failed')) {
           if (onProjectUpdated) onProjectUpdated();
         }
@@ -123,7 +176,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [project, projectId, fetchTranscriptData, onProjectUpdated]);
+  }, [project, projectId, fetchTranscriptData, fetchTranslationData, onProjectUpdated]);
 
   const handleFileSelect = async (file: File) => {
     setError(null);
@@ -233,12 +286,70 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       setTranscriptSegments((prev) =>
         prev.map((s) => (s.id === segmentId ? { ...s, text: updated.text } : s))
       );
+      // Mark linked translation as outdated in frontend state
+      setTranslationSegments((prev) =>
+        prev.map((s) => (s.transcript_segment_id === segmentId ? { ...s, is_outdated: true } : s))
+      );
       setEditingSegmentId(null);
       setEditingText('');
     } catch (err: any) {
       alert(`Error saving segment: ${err.message}`);
     } finally {
       setSavingSegmentId(null);
+    }
+  };
+
+  // Translation Handlers
+  const handleStartTranslation = async () => {
+    try {
+      setTranslating(true);
+      setTranslationError(null);
+      await api.startTranslation(projectId);
+      await fetchProjectData();
+    } catch (err: any) {
+      setTranslating(false);
+      setTranslationError(err.message || 'Failed to start translation');
+    }
+  };
+
+  const handleStartEditTrans = (seg: TranslationSegment) => {
+    setEditingTransId(seg.id);
+    setEditingTransText(seg.khmer_text);
+  };
+
+  const handleCancelEditTrans = () => {
+    setEditingTransId(null);
+    setEditingTransText('');
+  };
+
+  const handleSaveEditTrans = async (segmentId: string) => {
+    if (!editingTransText.trim()) return;
+    try {
+      setSavingTransId(segmentId);
+      const updated = await api.updateTranslationSegment(projectId, segmentId, editingTransText.trim());
+      setTranslationSegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? updated : s))
+      );
+      setEditingTransId(null);
+      setEditingTransText('');
+    } catch (err: any) {
+      alert(`Error saving translation: ${err.message}`);
+    } finally {
+      setSavingTransId(null);
+    }
+  };
+
+  const handleRetranslateSegment = async (segmentId: string) => {
+    try {
+      setRetranslatingTransId(segmentId);
+      const updated = await api.retranslateSegment(projectId, segmentId);
+      setTranslationSegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? updated : s))
+      );
+    } catch (err: any) {
+      alert(`Error retranslating segment: ${err.message}`);
+    } finally {
+      setRetranslatingTransId(null);
     }
   };
 
@@ -283,6 +394,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   const latestExtractJob = project.jobs?.find((j) => j.job_type === 'extract_audio');
   const latestSttJob = project.jobs?.find((j) => j.job_type === 'transcribe');
+  const latestTransJob = project.jobs?.find((j) => j.job_type === 'translate');
 
   const isAudioReady = project.status === 'audio_extracted' || !!project.video?.extracted_audio_path;
   const isExtractionFailed = latestExtractJob?.status === 'failed' && !project.video?.extracted_audio_path;
@@ -293,8 +405,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   const isTranscribed =
     project.status === 'transcribed' ||
+    project.status === 'translating' ||
+    project.status === 'translated' ||
     transcriptSegments.length > 0 ||
     latestSttJob?.status === 'completed';
+
+  const isTranslated =
+    project.status === 'translated' ||
+    translationSegments.length > 0 ||
+    latestTransJob?.status === 'completed';
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -356,8 +475,16 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           >
             2. Transcribe {isTranscribed && '✓'}
           </div>
-          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
-            3. Translate (P4)
+          <div
+            className={`p-2.5 rounded-lg border font-semibold ${
+              isTranslated
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : isTranscribed
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                : 'bg-slate-50 border-slate-200 text-slate-400'
+            }`}
+          >
+            3. Khmer Translation {isTranslated && '✓'}
           </div>
           <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
             4. Khmer Voice (P5)
@@ -780,6 +907,253 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 <h4 className="text-sm font-semibold text-slate-700">No transcript generated yet</h4>
                 <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
                   Click the <strong>Start Transcription</strong> button above to transcribe the extracted audio with faster-whisper.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Section 3: English-to-Khmer Translation (Meta NLLB-200) */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+            {/* Header & Controls */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Languages className="w-5 h-5 text-indigo-600" />
+                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                    Khmer Translation
+                  </h3>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  <span className="px-2 py-0.5 rounded bg-slate-100 font-medium text-slate-700 border border-slate-200">
+                    Model: facebook/nllb-200-distilled-600M (eng_Latn → khm_Khmr)
+                  </span>
+                  <span>•</span>
+                  <span>
+                    Status:{' '}
+                    <strong className="capitalize text-slate-800">
+                      {translating
+                        ? 'Translating...'
+                        : isTranslated
+                        ? 'Completed'
+                        : latestTransJob?.status || 'Pending'}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Button */}
+              <div>
+                {!isTranslated ? (
+                  <button
+                    onClick={handleStartTranslation}
+                    disabled={!isTranscribed || translating}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition-colors shadow-sm"
+                  >
+                    {translating ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Translating with NLLB...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Languages className="w-4 h-4" />
+                        <span>Translate to Khmer</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartTranslation}
+                    disabled={translating}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-semibold transition-colors"
+                  >
+                    <RotateCcw className={`w-3.5 h-3.5 ${translating ? 'animate-spin' : ''}`} />
+                    <span>{translating ? 'Retranslating...' : 'Retranslate All'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Error Banner */}
+            {translationError && (
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold block">Translation Error</span>
+                    <span>{translationError}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleStartTranslation}
+                  className="px-3 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shrink-0"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* Translating Spinner View */}
+            {translating ? (
+              <div className="p-12 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-3">
+                <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
+                <h4 className="text-sm font-bold text-slate-800">
+                  Translating English Transcript into Khmer with NLLB-200...
+                </h4>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  Running Seq2Seq neural machine translation with beam search. Preserves manually edited translations and aligns timing segments.
+                </p>
+              </div>
+            ) : translationSegments.length > 0 ? (
+              /* Comparative Segment List (English vs Khmer) */
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-xs text-slate-500 pb-2">
+                  <span>
+                    Total Translated Segments:{' '}
+                    <strong className="text-slate-800 font-semibold">
+                      {translationSegments.length}
+                    </strong>
+                  </span>
+                  <span>Review English & Khmer side by side. Edit or retranslate individual segments.</span>
+                </div>
+
+                <div className="space-y-4">
+                  {translationSegments.map((seg) => {
+                    const isEditing = editingTransId === seg.id;
+                    const isSaving = savingTransId === seg.id;
+                    const isRetranslating = retranslatingTransId === seg.id;
+
+                    return (
+                      <div
+                        key={seg.id}
+                        className={`p-4 rounded-xl border transition-all ${
+                          isEditing
+                            ? 'bg-indigo-50/30 border-indigo-300 ring-2 ring-indigo-500/20'
+                            : seg.is_outdated
+                            ? 'bg-amber-50/30 border-amber-300'
+                            : 'bg-slate-50/50 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        {/* Segment Top Bar: Order, Timestamps, and Status Badges */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-200/60">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
+                              #{seg.segment_order}
+                            </span>
+                            {seg.start_time !== undefined && seg.start_time !== null && (
+                              <span className="text-xs font-mono font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-200 flex items-center gap-1">
+                                <Clock className="w-3 h-3 text-indigo-500" />
+                                {formatTimestamp(seg.start_time)} – {formatTimestamp(seg.end_time || 0)}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {seg.is_outdated && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
+                                <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                English Changed (Outdated)
+                              </span>
+                            )}
+                            {seg.is_manually_edited && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-700 bg-indigo-100/70 px-2 py-0.5 rounded-full border border-indigo-200">
+                                <CheckCircle2 className="w-3 h-3 text-indigo-600" />
+                                Manually Edited
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Dual Column Comparative Layout */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Left: Original English */}
+                          <div className="p-3 rounded-lg bg-white border border-slate-200 space-y-1">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                              Original English
+                            </span>
+                            <p className="text-sm text-slate-700 leading-relaxed font-normal">
+                              {seg.english_text || '(No English transcript)'}
+                            </p>
+                          </div>
+
+                          {/* Right: Khmer Translation */}
+                          <div className="p-3 rounded-lg bg-white border border-indigo-100 space-y-1 relative">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">
+                                Khmer Translation
+                              </span>
+                              {!isEditing && (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleRetranslateSegment(seg.id)}
+                                    disabled={isRetranslating}
+                                    className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors"
+                                    title="Retranslate this segment"
+                                  >
+                                    <RotateCcw className={`w-3.5 h-3.5 ${isRetranslating ? 'animate-spin text-indigo-600' : ''}`} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleStartEditTrans(seg)}
+                                    className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors"
+                                    title="Edit Khmer text"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
+                            {isEditing ? (
+                              <div className="space-y-2 pt-1">
+                                <textarea
+                                  value={editingTransText}
+                                  onChange={(e) => setEditingTransText(e.target.value)}
+                                  rows={3}
+                                  className="w-full px-3 py-2 text-sm rounded-lg border border-indigo-300 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30 font-sans leading-relaxed text-slate-900"
+                                  autoFocus
+                                />
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => handleSaveEditTrans(seg.id)}
+                                    disabled={isSaving || !editingTransText.trim()}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm"
+                                  >
+                                    <Save className="w-3.5 h-3.5" />
+                                    {isSaving ? 'Saving...' : 'Save'}
+                                  </button>
+                                  <button
+                                    onClick={handleCancelEditTrans}
+                                    disabled={isSaving}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-slate-600 text-xs font-medium"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-900 leading-relaxed font-normal">
+                                {seg.khmer_text}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* Prompt to start translation */
+              <div className="p-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                <Languages className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-slate-700">
+                  {isTranscribed ? 'Ready for Khmer Translation' : 'Awaiting English Transcription'}
+                </h4>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  {isTranscribed
+                    ? 'Click the "Translate to Khmer" button above to translate the English transcript into Khmer using Meta NLLB-200.'
+                    : 'Complete Step 2 (English Transcription) before translating text.'}
                 </p>
               </div>
             )}

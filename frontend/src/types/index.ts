@@ -79,9 +79,31 @@ export interface TranscriptResponse {
   segments: TranscriptSegment[];
 }
 
+export interface TranslationSegment {
+  id: string;
+  project_id: string;
+  transcript_segment_id?: string | null;
+  segment_order: number;
+  khmer_text: string;
+  english_text?: string | null;
+  start_time?: number | null;
+  end_time?: number | null;
+  is_manually_edited: boolean;
+  is_outdated: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TranslationListResponse {
+  project_id: string;
+  status: ProjectStatus;
+  segments: TranslationSegment[];
+}
+
 export interface ProjectDetail extends ProjectSummary {
   original_video_path?: string | null;
   video?: VideoInfo | null;
   jobs?: ProcessingJob[];
   transcript_segments?: TranscriptSegment[];
+  translation_segments?: TranslationSegment[];
 }

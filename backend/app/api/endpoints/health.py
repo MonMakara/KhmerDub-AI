@@ -22,5 +22,8 @@ def get_health() -> HealthResponse:
             "storage_ready": storage_ready,
             "whisper_device": settings.WHISPER_DEVICE,
             "whisper_model": settings.WHISPER_MODEL_SIZE,
+            "translation_provider": settings.TRANSLATION_PROVIDER,
+            "translation_model": settings.TRANSLATION_MODEL,
+            "translation_device": settings.TRANSLATION_DEVICE,
         },
     )
