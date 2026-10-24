@@ -6,13 +6,13 @@
 
 ## 1. Features (Version 1 Scope)
 
-1. **Video Upload**: Safe MP4 video uploads with duration and size validation.
-2. **Audio Extraction**: High-fidelity audio extraction using FFmpeg.
-3. **English Transcription**: Accurate timestamped English transcription using `faster-whisper`.
-4. **English-to-Khmer Translation**: Free, locally runnable translation model with full transcript editing capabilities.
-5. **Khmer Text-to-Speech**: Speech synthesis using Google gTTS for Khmer audio segments.
-6. **Audio Synchronization**: Dynamic audio alignment matching original segment timestamps with conservative speed adjustment.
-7. **Video Export**: Clean remuxing via FFmpeg to export a final dubbed MP4 video.
+1. **Video Upload** *(Phase 2 Complete)*: Safe MP4 video uploads with streaming chunk processing (< 500 MB limit), FFprobe container inspection, filename sanitization, and video metadata extraction.
+2. **Audio Extraction** *(Phase 2 Complete)*: FFmpeg extraction converting video audio track to 16,000 Hz mono 16-bit PCM WAV in a non-blocking background job. Includes audio preview player and retry support.
+3. **English Transcription** *(Phase 3)*: Accurate timestamped English transcription using `faster-whisper`.
+4. **English-to-Khmer Translation** *(Phase 4)*: Free, locally runnable translation model with full transcript editing capabilities.
+5. **Khmer Text-to-Speech** *(Phase 5)*: Speech synthesis using Google gTTS for Khmer audio segments.
+6. **Audio Synchronization** *(Phase 6)*: Dynamic audio alignment matching original segment timestamps with conservative speed adjustment.
+7. **Video Export** *(Phase 6)*: Clean remuxing via FFmpeg to export a final dubbed MP4 video.
 
 ---
 

@@ -12,6 +12,8 @@ export type ProjectStatus =
   | 'completed'
   | 'failed';
 
+export type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
+
 export interface HealthResponse {
   status: string;
   app_name: string;
@@ -26,6 +28,32 @@ export interface HealthResponse {
   };
 }
 
+export interface ProcessingJob {
+  id: string;
+  project_id: string;
+  job_type: string;
+  status: JobStatus;
+  progress_percentage: number;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VideoInfo {
+  id: string;
+  filename: string;
+  file_path?: string | null;
+  file_size_bytes: number;
+  duration_seconds?: number | null;
+  width?: number | null;
+  height?: number | null;
+  video_codec?: string | null;
+  audio_codec?: string | null;
+  extracted_audio_path?: string | null;
+  exported_video_path?: string | null;
+  created_at: string;
+}
+
 export interface ProjectSummary {
   id: string;
   title: string;
@@ -36,17 +64,8 @@ export interface ProjectSummary {
   updated_at: string;
 }
 
-export interface VideoInfo {
-  id: string;
-  filename: string;
-  file_size_bytes: number;
-  duration_seconds?: number;
-  extracted_audio_path?: string;
-  exported_video_path?: string;
-  created_at: string;
-}
-
 export interface ProjectDetail extends ProjectSummary {
-  original_video_path?: string;
-  video?: VideoInfo;
+  original_video_path?: string | null;
+  video?: VideoInfo | null;
+  jobs?: ProcessingJob[];
 }

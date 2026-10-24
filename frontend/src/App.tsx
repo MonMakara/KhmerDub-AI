@@ -4,11 +4,13 @@ import { Header } from './components/layout/Header';
 import { Dashboard } from './pages/Dashboard';
 import { Projects } from './pages/Projects';
 import { Settings } from './pages/Settings';
+import { ProjectWorkspace } from './pages/ProjectWorkspace';
 import { api } from './services/api';
 import { HealthResponse, ProjectSummary } from './types';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [healthLoading, setHealthLoading] = useState<boolean>(true);
@@ -46,20 +48,30 @@ export const App: React.FC = () => {
     fetchHealth();
     fetchProjects();
 
-    // Auto-refresh health every 30 seconds
     const interval = setInterval(fetchHealth, 30000);
     return () => clearInterval(interval);
   }, [fetchHealth, fetchProjects]);
 
-  const handleCreateProject = async (title: string) => {
-    await api.createProject(title);
+  const handleCreateProject = async (title: string): Promise<string> => {
+    const created = await api.createProject(title);
     await fetchProjects();
+    return created.id;
+  };
+
+  const handleTabChange = (tab: string) => {
+    setCurrentTab(tab);
+    setSelectedProjectId(null);
+  };
+
+  const handleSelectProject = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setCurrentTab('projects');
   };
 
   return (
     <div className="flex h-screen bg-slate-100 text-slate-800 font-sans overflow-hidden">
       {/* Sidebar */}
-      <Sidebar currentTab={currentTab} onTabChange={setCurrentTab} />
+      <Sidebar currentTab={currentTab} onTabChange={handleTabChange} />
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -90,16 +102,26 @@ export const App: React.FC = () => {
               health={health}
               projects={projects}
               onCreateProject={handleCreateProject}
-              onNavigateProjects={() => setCurrentTab('projects')}
+              onNavigateProjects={() => handleTabChange('projects')}
+              onSelectProject={handleSelectProject}
             />
           )}
 
-          {currentTab === 'projects' && (
+          {currentTab === 'projects' && !selectedProjectId && (
             <Projects
               projects={projects}
               loading={projectsLoading}
               onCreateProject={handleCreateProject}
               onRefresh={fetchProjects}
+              onSelectProject={handleSelectProject}
+            />
+          )}
+
+          {currentTab === 'projects' && selectedProjectId && (
+            <ProjectWorkspace
+              projectId={selectedProjectId}
+              onBack={() => setSelectedProjectId(null)}
+              onProjectUpdated={fetchProjects}
             />
           )}
 

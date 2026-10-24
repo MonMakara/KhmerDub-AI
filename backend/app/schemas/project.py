@@ -1,17 +1,35 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict
-from app.models.project import ProjectStatus
+from app.models.project import ProjectStatus, JobStatus
 
 
 class VideoResponse(BaseModel):
     id: str
     filename: str
+    file_path: Optional[str] = None
     file_size_bytes: int
     duration_seconds: Optional[float] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    video_codec: Optional[str] = None
+    audio_codec: Optional[str] = None
     extracted_audio_path: Optional[str] = None
     exported_video_path: Optional[str] = None
     created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProcessingJobResponse(BaseModel):
+    id: str
+    project_id: str
+    job_type: str
+    status: JobStatus
+    progress_percentage: int
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,6 +77,7 @@ class ProjectSummaryResponse(BaseModel):
 class ProjectResponse(ProjectSummaryResponse):
     original_video_path: Optional[str] = None
     video: Optional[VideoResponse] = None
+    jobs: List[ProcessingJobResponse] = []
     transcript_segments: List[TranscriptSegmentResponse] = []
     translation_segments: List[TranslationSegmentResponse] = []
 

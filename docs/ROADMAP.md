@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 1 — Environment Initialization & Baseline Connectivity
+- **Current Phase**: Phase 2 Complete — Video Upload & FFmpeg Audio Extraction Verified
 - **Overall Status**: In Progress
 
 ---
@@ -18,11 +18,13 @@
 - [x] Service provider abstract interfaces defined for transcription, translation, TTS, and video processing.
 - [x] Automated backend tests verifying health and database operations.
 
-### [ ] Phase 2: Video Upload & Audio Extraction
-- [ ] Safe MP4 video upload API endpoint with size validation.
-- [ ] FFmpeg integration for extracting 16kHz mono audio tracks.
-- [ ] Video preview component in frontend.
-- [ ] Media processing unit tests.
+### [x] Phase 2: Video Upload & Audio Extraction
+- [x] Safe MP4 video upload API endpoint (`POST /api/projects/{id}/upload`) with 500 MB streaming limit.
+- [x] FFprobe container validation and metadata extraction (dimensions, duration, codecs).
+- [x] `FFmpegVideoProcessor` implementation extracting 16kHz mono 16-bit PCM WAV.
+- [x] Non-blocking background worker with `ProcessingJob` progress and error logging.
+- [x] Frontend drag-and-drop upload, upload progress indicator, video player preview, and audio preview player.
+- [x] Comprehensive test suite (15 tests passing) with synthetic MP4 test fixtures.
 
 ### [ ] Phase 3: English Transcription (faster-whisper)
 - [ ] faster-whisper integration inside `TranscriptionProvider`.

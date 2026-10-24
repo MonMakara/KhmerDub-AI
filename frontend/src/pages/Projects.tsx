@@ -5,8 +5,9 @@ import { ProjectSummary } from '../types';
 interface ProjectsProps {
   projects: ProjectSummary[];
   loading: boolean;
-  onCreateProject: (title: string) => Promise<void>;
+  onCreateProject: (title: string) => Promise<string | void>;
   onRefresh: () => void;
+  onSelectProject: (projectId: string) => void;
 }
 
 export const Projects: React.FC<ProjectsProps> = ({
@@ -14,6 +15,7 @@ export const Projects: React.FC<ProjectsProps> = ({
   loading,
   onCreateProject,
   onRefresh,
+  onSelectProject,
 }) => {
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -121,12 +123,16 @@ export const Projects: React.FC<ProjectsProps> = ({
                   <th className="px-6 py-3 font-semibold">Languages</th>
                   <th className="px-6 py-3 font-semibold">Status</th>
                   <th className="px-6 py-3 font-semibold">Created</th>
-                  <th className="px-6 py-3 font-semibold text-right">Project ID</th>
+                  <th className="px-6 py-3 font-semibold text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {projects.map((proj) => (
-                  <tr key={proj.id} className="hover:bg-slate-50/70 transition-colors">
+                  <tr
+                    key={proj.id}
+                    onClick={() => onSelectProject(proj.id)}
+                    className="hover:bg-indigo-50/40 cursor-pointer transition-colors"
+                  >
                     <td className="px-6 py-4 font-medium text-slate-900 flex items-center gap-2">
                       <FolderKanban className="w-4 h-4 text-indigo-500 shrink-0" />
                       <span>{proj.title}</span>
@@ -144,8 +150,16 @@ export const Projects: React.FC<ProjectsProps> = ({
                         {new Date(proj.created_at).toLocaleString()}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right font-mono text-xs text-slate-400">
-                      {proj.id.substring(0, 8)}...
+                    <td className="px-6 py-4 text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectProject(proj.id);
+                        }}
+                        className="px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-xs font-semibold transition-colors"
+                      >
+                        Open Workspace
+                      </button>
                     </td>
                   </tr>
                 ))}

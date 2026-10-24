@@ -62,6 +62,28 @@ docker compose logs -f frontend
 docker compose exec backend pytest -v
 ```
 
+### Run Frontend Typecheck and Build
+```bash
+docker compose exec frontend npm run typecheck
+docker compose exec frontend npm run build
+```
+
+### Testing Video Upload via cURL
+To test video upload from your Ubuntu terminal without using the web UI:
+```bash
+# 1. Create a project
+PROJ_ID=$(curl -s -X POST http://localhost:8000/api/projects \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Terminal Upload Test"}' | jq -r .id)
+
+# 2. Upload an MP4 video file
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/upload" \
+  -F "file=@/path/to/video.mp4"
+
+# 3. Check status and extracted audio
+curl -s "http://localhost:8000/api/projects/$PROJ_ID" | jq .
+```
+
 ### Stop containers
 ```bash
 docker compose down

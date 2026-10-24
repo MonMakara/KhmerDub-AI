@@ -16,8 +16,9 @@ import { HealthResponse, ProjectSummary } from '../types';
 interface DashboardProps {
   health: HealthResponse | null;
   projects: ProjectSummary[];
-  onCreateProject: (title: string) => Promise<void>;
+  onCreateProject: (title: string) => Promise<string | void>;
   onNavigateProjects: () => void;
+  onSelectProject: (projectId: string) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -25,6 +26,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   projects,
   onCreateProject,
   onNavigateProjects,
+  onSelectProject,
 }) => {
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -35,10 +37,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
     if (!newTitle.trim()) return;
     try {
       setCreating(true);
-      await onCreateProject(newTitle.trim());
+      const newId = await onCreateProject(newTitle.trim());
       setNewTitle('');
       setCreateMsg('Project created successfully!');
-      setTimeout(() => setCreateMsg(null), 3000);
+      if (newId) {
+        onSelectProject(newId);
+      } else {
+        setTimeout(() => setCreateMsg(null), 3000);
+      }
     } catch (err: any) {
       alert(`Error creating project: ${err.message}`);
     } finally {

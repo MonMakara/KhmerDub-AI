@@ -43,16 +43,21 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
 
 ### 2.1 Backend (`backend/app`)
 - **`core/config.py`**: Centralized configuration management using Pydantic Settings.
-- **`database/`**: SQLAlchemy SQLite session manager and table initialization.
+- **`database/`**: SQLAlchemy SQLite session manager and table initialization with automated schema column upgrades.
 - **`models/`**: Relational models for `Project`, `Video`, `TranscriptSegment`, `TranslationSegment`, `ProcessingJob`, and `GeneratedAudio`.
-- **`schemas/`**: Pydantic input/output validation schemas.
-- **`api/endpoints/`**: Thin REST API controllers delegating work to services.
-- **`services/`**: Pluggable provider interfaces:
-  - `TranscriptionProvider`: Defines `transcribe(audio_path, language)`
-  - `TranslationProvider`: Defines `translate(texts, source_lang, target_lang)`
-  - `TTSProvider`: Defines `synthesize(text, output_path, language)`
-  - `VideoProcessor`: Defines `get_metadata()`, `extract_audio()`, and `merge_audio_video()`
-  - `DubbingPipeline`: Coordinates the end-to-end synchronization workflow.
+- **`schemas/`**: Pydantic input/output validation schemas (`ProjectResponse`, `VideoResponse`, `ProcessingJobResponse`).
+- **`api/endpoints/`**:
+  - `GET /api/health`: Diagnostics and environment readiness.
+  - `GET /api/projects` & `POST /api/projects`: Project list and creation.
+  - `POST /api/projects/{id}/upload`: Streaming MP4 upload with FFprobe container validation.
+  - `POST /api/projects/{id}/extract-audio`: Manual trigger or retry for background audio extraction.
+  - `GET /api/projects/{id}/jobs`: Processing jobs and progress tracking.
+  - `GET /api/projects/{id}/video`: Stream uploaded MP4 for browser video preview.
+  - `GET /api/projects/{id}/audio`: Stream extracted 16kHz WAV audio for browser playback.
+- **`services/video/`**:
+  - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
+- **`workers/`**:
+  - `process_audio_extraction`: Non-blocking background worker updating job status and logging processing errors.
 
 ### 2.2 Frontend (`frontend/src`)
 - **Layout**: Clean left sidebar with Dashboard, Projects, and Settings tabs; top header with live backend connectivity status.
