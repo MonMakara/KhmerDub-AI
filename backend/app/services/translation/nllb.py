@@ -6,6 +6,8 @@ from typing import Dict, List, Optional, Tuple, Any
 import psutil
 from app.core.config import settings
 from app.services.translation.base import TranslationProvider
+from app.services.translation.formatter import KhmerTextFormatter
+from app.services.translation.glossary import KhmerGlossary
 from app.services.translation.exceptions import (
     TranslationError,
     ModelLoadError,
@@ -54,12 +56,14 @@ class NLLBTranslationProvider(TranslationProvider):
         cache_dir: Optional[Path] = None,
         batch_size: Optional[int] = None,
         max_input_tokens: Optional[int] = None,
+        num_beams: Optional[int] = None,
     ):
         self.model_name = model_name or settings.TRANSLATION_MODEL or "facebook/nllb-200-distilled-600M"
         self.device = device or settings.TRANSLATION_DEVICE or "cpu"
         self.cache_dir = cache_dir or settings.MODEL_CACHE_DIR
         self.batch_size = batch_size or settings.TRANSLATION_BATCH_SIZE or 1
         self.max_input_tokens = max_input_tokens or settings.TRANSLATION_MAX_INPUT_TOKENS or 512
+        self.num_beams = num_beams or settings.TRANSLATION_NUM_BEAMS or 2
 
     def _get_cache_key(self) -> str:
         return f"{self.model_name}_{self.device}"
@@ -122,8 +126,9 @@ class NLLBTranslationProvider(TranslationProvider):
         texts: List[str],
         source_lang: str = "eng_Latn",
         target_lang: str = "khm_Khmr",
+        contexts: Optional[List[str]] = None,
     ) -> List[str]:
-        """Translate a list of English texts into Khmer Unicode text."""
+        """Translate a list of English texts into natural Khmer Unicode text."""
         if not texts:
             return []
 
@@ -187,7 +192,7 @@ class NLLBTranslationProvider(TranslationProvider):
                         **inputs,
                         forced_bos_token_id=forced_bos_token_id,
                         max_length=self.max_input_tokens,
-                        num_beams=4,
+                        num_beams=self.num_beams,
                         early_stopping=True,
                     )
 
@@ -196,11 +201,21 @@ class NLLBTranslationProvider(TranslationProvider):
                         skip_special_tokens=True,
                     )
 
-                    # Reassemble original batch ordering including empty segments
+                    # Reassemble original batch ordering, apply terminology alignment & natural Khmer formatting
                     sub_idx = 0
-                    for idx in range(len(batch_raw)):
-                        if idx in non_empty_indices:
-                            results.append(decoded_batch[sub_idx].strip())
+                    for rel_idx in range(len(batch_raw)):
+                        global_idx = i + rel_idx
+                        if rel_idx in non_empty_indices:
+                            raw_khmer = decoded_batch[sub_idx].strip()
+                            source_en = batch_raw[rel_idx]
+                            context_en = (
+                                contexts[global_idx]
+                                if contexts and global_idx < len(contexts) and contexts[global_idx]
+                                else source_en
+                            )
+                            aligned_khmer = KhmerGlossary.align_terminology(context_en, raw_khmer)
+                            formatted_khmer = KhmerTextFormatter.format(aligned_khmer)
+                            results.append(formatted_khmer)
                             sub_idx += 1
                         else:
                             results.append("")

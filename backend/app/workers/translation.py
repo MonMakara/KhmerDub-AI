@@ -69,6 +69,7 @@ def process_translation(project_id: str, job_id: str, db: Optional[Session] = No
 
         # Identify which segments need translation vs preserved manual edits
         segments_to_translate = []
+        contexts_to_translate = []
         indices_to_translate = []
 
         for idx, t_seg in enumerate(transcript_segments):
@@ -81,8 +82,15 @@ def process_translation(project_id: str, job_id: str, db: Optional[Session] = No
                     project_id,
                 )
                 continue
+
             segments_to_translate.append(t_seg.text)
             indices_to_translate.append(idx)
+
+            # Build lightweight context window from adjacent segments
+            prev_text = transcript_segments[idx - 1].text if idx > 0 else ""
+            next_text = transcript_segments[idx + 1].text if idx + 1 < len(transcript_segments) else ""
+            context_str = f"{prev_text} {t_seg.text} {next_text}".strip()
+            contexts_to_translate.append(context_str)
 
         translated_texts = []
         if segments_to_translate:
@@ -97,6 +105,7 @@ def process_translation(project_id: str, job_id: str, db: Optional[Session] = No
                 texts=segments_to_translate,
                 source_lang=project.original_language or "eng_Latn",
                 target_lang=project.target_language or "khm_Khmr",
+                contexts=contexts_to_translate,
             )
             job.progress_percentage = 85
             db.commit()

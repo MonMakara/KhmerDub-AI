@@ -601,11 +601,31 @@ def retranslate_segment(
             detail="Corresponding English transcript text is missing",
         )
 
+    # Build lightweight context from surrounding transcript segments
+    prev_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == segment.segment_order - 1,
+        )
+        .first()
+    )
+    next_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == segment.segment_order + 1,
+        )
+        .first()
+    )
+    context_text = f"{prev_seg.text + ' ' if prev_seg else ''}{segment.transcript_segment.text}{' ' + next_seg.text if next_seg else ''}".strip()
+
     provider = NLLBTranslationProvider()
     translated_texts = provider.translate(
         texts=[segment.transcript_segment.text],
         source_lang=project.original_language or "eng_Latn",
         target_lang=project.target_language or "khm_Khmr",
+        contexts=[context_text],
     )
 
     if not translated_texts or not translated_texts[0]:

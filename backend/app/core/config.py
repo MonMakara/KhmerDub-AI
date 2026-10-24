@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     TRANSLATION_TARGET_LANG: str = "khm_Khmr"
     TRANSLATION_DEVICE: str = "cpu"
     TRANSLATION_BATCH_SIZE: int = 1
+    TRANSLATION_NUM_BEAMS: int = 2
     TRANSLATION_MAX_INPUT_TOKENS: int = 512
 
     # Limits

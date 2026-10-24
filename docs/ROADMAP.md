@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 4 Complete — English-to-Khmer Translation Verified
+- **Current Phase**: Phase 4.1 Complete — Translation Quality & Natural Khmer Formatting Verified
 - **Overall Status**: In Progress
 
 ---
@@ -46,6 +46,16 @@
 - [x] API endpoints: `POST /translate`, `GET /translations`, `PATCH /translations/{id}`, `POST /translations/{id}/retranslate`.
 - [x] Frontend comparative UI (English vs. Khmer side-by-side) with inline editing and per-segment retranslate.
 - [x] 31 unit, integration, and workflow tests passing in Docker.
+
+### [x] Phase 4.1: Translation Quality & Natural Khmer Text Formatting
+- [x] Natural Khmer orthography formatter (`KhmerTextFormatter`) collapsing artificial inter-word spaces.
+- [x] Protection of punctuation clinging, Latin/English brand names (`KhmerDub AI`), and numbers.
+- [x] Technical terminology alignment (`KhmerGlossary`) correcting AI (`បញ្ញាសិប្បនិម្មិត`) and greeting hallucinations.
+- [x] Lightweight context-aware window strategy across adjacent segments in `process_translation`.
+- [x] Dynamic target language token ID resolution from tokenizer.
+- [x] Model comparison between NLLB-200 and alternative open-source translation models.
+- [x] Comprehensive 20-sentence benchmark evaluation dataset tested on real CPU inference.
+- [x] 38 automated unit and integration tests passing in Docker.
 
 ### [ ] Phase 5: Google Khmer TTS
 - [ ] Verification of Google gTTS Khmer (`km`) support with sample audio generation.
