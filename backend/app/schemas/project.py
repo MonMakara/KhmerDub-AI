@@ -45,6 +45,16 @@ class TranscriptSegmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TranscriptSegmentUpdate(BaseModel):
+    text: str
+
+
+class TranscriptResponse(BaseModel):
+    project_id: str
+    status: ProjectStatus
+    segments: List[TranscriptSegmentResponse]
+
+
 class TranslationSegmentResponse(BaseModel):
     id: str
     transcript_segment_id: Optional[str] = None

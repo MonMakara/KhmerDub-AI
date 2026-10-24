@@ -6,6 +6,8 @@ from app.schemas.project import (
     VideoResponse,
     ProcessingJobResponse,
     TranscriptSegmentResponse,
+    TranscriptSegmentUpdate,
+    TranscriptResponse,
     TranslationSegmentResponse,
 )
 
@@ -17,5 +19,7 @@ __all__ = [
     "VideoResponse",
     "ProcessingJobResponse",
     "TranscriptSegmentResponse",
+    "TranscriptSegmentUpdate",
+    "TranscriptResponse",
     "TranslationSegmentResponse",
 ]

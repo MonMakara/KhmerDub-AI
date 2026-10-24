@@ -10,8 +10,14 @@ import {
   Music,
   Maximize2,
   FileCheck,
+  FileText,
+  Edit2,
+  Save,
+  X,
+  Sparkles,
+  RotateCcw,
 } from 'lucide-react';
-import { ProjectDetail } from '../types';
+import { ProjectDetail, TranscriptSegment } from '../types';
 import { api } from '../services/api';
 
 interface ProjectWorkspaceProps {
@@ -34,37 +40,81 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [dragOver, setDragOver] = useState<boolean>(false);
   const [retryingExtraction, setRetryingExtraction] = useState<boolean>(false);
 
+  // Transcription state
+  const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+  const [transcribing, setTranscribing] = useState<boolean>(false);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState<string>('');
+  const [savingSegmentId, setSavingSegmentId] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchTranscriptData = useCallback(async () => {
+    try {
+      const data = await api.getTranscript(projectId);
+      setTranscriptSegments(data.segments);
+    } catch (err: any) {
+      console.error('Failed to load transcript:', err);
+    }
+  }, [projectId]);
 
   const fetchProjectData = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
       setProject(data);
+      if (data.status === 'transcribed' || (data.transcript_segments && data.transcript_segments.length > 0)) {
+        await fetchTranscriptData();
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load project details');
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, fetchTranscriptData]);
 
   useEffect(() => {
     fetchProjectData();
   }, [fetchProjectData]);
 
-  // Polling for background job status if extraction is pending/running
+  // Polling for background audio extraction or transcription jobs
   useEffect(() => {
     if (!project) return;
     const isExtracting =
       project.status === 'uploaded' ||
       project.jobs?.some((j) => j.job_type === 'extract_audio' && (j.status === 'pending' || j.status === 'running'));
 
-    if (!isExtracting) return;
+    const isSttRunning =
+      project.status === 'transcribing' ||
+      project.jobs?.some((j) => j.job_type === 'transcribe' && (j.status === 'pending' || j.status === 'running'));
+
+    if (isSttRunning) {
+      setTranscribing(true);
+    }
+
+    if (!isExtracting && !isSttRunning) return;
 
     const interval = setInterval(async () => {
       try {
         const data = await api.getProject(projectId);
         setProject(data);
-        if (data.status === 'audio_extracted' || data.status === 'failed') {
+
+        // Check if transcription just finished
+        if (isSttRunning) {
+          const transJob = data.jobs?.find((j) => j.job_type === 'transcribe');
+          if (transJob?.status === 'completed' || data.status === 'transcribed') {
+            setTranscribing(false);
+            setTranscriptionError(null);
+            await fetchTranscriptData();
+            if (onProjectUpdated) onProjectUpdated();
+          } else if (transJob?.status === 'failed' || data.status === 'failed') {
+            setTranscribing(false);
+            setTranscriptionError(transJob?.error_message || 'Transcription failed.');
+            if (onProjectUpdated) onProjectUpdated();
+          }
+        }
+
+        if (isExtracting && (data.status === 'audio_extracted' || data.status === 'failed')) {
           if (onProjectUpdated) onProjectUpdated();
         }
       } catch (err) {
@@ -73,18 +123,16 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [project, projectId, onProjectUpdated]);
+  }, [project, projectId, fetchTranscriptData, onProjectUpdated]);
 
   const handleFileSelect = async (file: File) => {
     setError(null);
 
-    // Validate format
     if (!file.name.toLowerCase().endsWith('.mp4') && !file.name.toLowerCase().endsWith('.mov')) {
       setError('Invalid file format. Please upload an MP4 video file.');
       return;
     }
 
-    // Validate size (500 MB max)
     const maxBytes = 500 * 1024 * 1024;
     if (file.size > maxBytes) {
       setError(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum limit is 500 MB.`);
@@ -153,6 +201,47 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   };
 
+  // Start Speech-to-Text Transcription
+  const handleStartTranscription = async () => {
+    try {
+      setTranscribing(true);
+      setTranscriptionError(null);
+      await api.startTranscription(projectId);
+      await fetchProjectData();
+    } catch (err: any) {
+      setTranscribing(false);
+      setTranscriptionError(err.message || 'Failed to start transcription');
+    }
+  };
+
+  // Inline editing functions
+  const handleStartEdit = (segment: TranscriptSegment) => {
+    setEditingSegmentId(segment.id);
+    setEditingText(segment.text);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingSegmentId(null);
+    setEditingText('');
+  };
+
+  const handleSaveEdit = async (segmentId: string) => {
+    if (!editingText.trim()) return;
+    try {
+      setSavingSegmentId(segmentId);
+      const updated = await api.updateTranscriptSegment(projectId, segmentId, editingText.trim());
+      setTranscriptSegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? { ...s, text: updated.text } : s))
+      );
+      setEditingSegmentId(null);
+      setEditingText('');
+    } catch (err: any) {
+      alert(`Error saving segment: ${err.message}`);
+    } finally {
+      setSavingSegmentId(null);
+    }
+  };
+
   const formatFileSize = (bytes: number): string => {
     if (bytes >= 1024 * 1024 * 1024) {
       return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
@@ -163,8 +252,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     return `${(bytes / 1024).toFixed(1)} KB`;
   };
 
-  const formatDuration = (seconds?: number | null): string => {
-    if (!seconds || seconds <= 0) return '00:00';
+  const formatTimestamp = (seconds: number): string => {
+    if (seconds < 0) seconds = 0;
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
@@ -192,13 +281,20 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     );
   }
 
-  const latestJob = project.jobs && project.jobs.length > 0 ? project.jobs[0] : null;
+  const latestExtractJob = project.jobs?.find((j) => j.job_type === 'extract_audio');
+  const latestSttJob = project.jobs?.find((j) => j.job_type === 'transcribe');
+
   const isAudioReady = project.status === 'audio_extracted' || !!project.video?.extracted_audio_path;
-  const isExtractionFailed = latestJob?.status === 'failed' || project.status === 'failed';
+  const isExtractionFailed = latestExtractJob?.status === 'failed' && !project.video?.extracted_audio_path;
   const isExtracting =
     !isAudioReady &&
     !isExtractionFailed &&
-    (project.status === 'uploaded' || latestJob?.status === 'running' || latestJob?.status === 'pending');
+    (project.status === 'uploaded' || latestExtractJob?.status === 'running' || latestExtractJob?.status === 'pending');
+
+  const isTranscribed =
+    project.status === 'transcribed' ||
+    transcriptSegments.length > 0 ||
+    latestSttJob?.status === 'completed';
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -240,11 +336,25 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       {/* Dubbing Stepper Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div className="grid grid-cols-5 gap-2 text-center text-xs">
-          <div className="p-2.5 rounded-lg bg-indigo-50 border border-indigo-300 font-semibold text-indigo-700">
-            1. Video & Audio
+          <div
+            className={`p-2.5 rounded-lg border font-semibold ${
+              isAudioReady
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : 'bg-indigo-50 border-indigo-300 text-indigo-700'
+            }`}
+          >
+            1. Video & Audio {isAudioReady && '✓'}
           </div>
-          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
-            2. Transcribe (P3)
+          <div
+            className={`p-2.5 rounded-lg border font-semibold ${
+              isTranscribed
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : isAudioReady
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                : 'bg-slate-50 border-slate-200 text-slate-400'
+            }`}
+          >
+            2. Transcribe {isTranscribed && '✓'}
           </div>
           <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
             3. Translate (P4)
@@ -269,7 +379,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Main Workspace: Step 1 Video Upload & Audio Extraction */}
+      {/* Section 1: Video Upload & Audio Extraction */}
       {!project.video ? (
         /* Dropzone Upload View */
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-10">
@@ -385,7 +495,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                     <span className="text-slate-400 block mb-1">Duration</span>
                     <span className="font-semibold text-slate-800 flex items-center gap-1">
                       <Clock className="w-3.5 h-3.5 text-slate-500" />
-                      {formatDuration(project.video.duration_seconds)} ({project.video.duration_seconds}s)
+                      {formatTimestamp(project.video.duration_seconds || 0)} ({project.video.duration_seconds}s)
                     </span>
                   </div>
 
@@ -411,11 +521,6 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                     </span>
                   </div>
                 </div>
-
-                <div className="p-3 rounded-lg bg-slate-50 border border-slate-100 text-xs font-mono text-slate-500 break-all">
-                  <span className="text-slate-400 block font-sans mb-0.5">Uploaded File Path</span>
-                  {project.video.file_path}
-                </div>
               </div>
 
               {/* Audio Extraction Status Card */}
@@ -428,32 +533,19 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   {isAudioReady && (
                     <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      Ready
+                      Ready (16kHz WAV)
                     </span>
                   )}
                 </div>
 
                 {isAudioReady ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-slate-600">
-                      Audio extracted to <span className="font-semibold text-slate-800">16,000 Hz mono 16-bit PCM WAV</span> format.
-                    </p>
-
-                    {/* Audio Preview Player */}
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block">
-                        Extracted WAV Preview
-                      </span>
                       <audio
                         src={api.getAudioUrl(projectId)}
                         controls
                         className="w-full h-10"
                       />
-                    </div>
-
-                    <div className="p-3 rounded-lg bg-emerald-50/60 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>Audio track extracted and ready for Phase 3 (faster-whisper transcription).</span>
                     </div>
                   </div>
                 ) : isExtracting ? (
@@ -473,7 +565,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                       <div>
                         <span className="font-semibold block">Audio Extraction Failed</span>
                         <p className="text-rose-700 mt-0.5">
-                          {latestJob?.error_message || 'Could not extract audio track.'}
+                          {latestExtractJob?.error_message || 'Could not extract audio track.'}
                         </p>
                       </div>
                     </div>
@@ -493,6 +585,204 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Section 2: English Automatic Speech Recognition (faster-whisper) */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+            {/* Header & Controls */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-indigo-600" />
+                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                    English Transcription
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <span className="px-2 py-0.5 rounded bg-slate-100 font-medium text-slate-700 border border-slate-200">
+                    Model: faster-whisper base (int8 / CPU)
+                  </span>
+                  <span>•</span>
+                  <span>
+                    Status:{' '}
+                    <strong className="capitalize text-slate-800">
+                      {transcribing
+                        ? 'Transcribing...'
+                        : isTranscribed
+                        ? 'Completed'
+                        : latestSttJob?.status || 'Pending'}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Button */}
+              <div>
+                {!isTranscribed ? (
+                  <button
+                    onClick={handleStartTranscription}
+                    disabled={!isAudioReady || transcribing}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition-colors shadow-sm"
+                  >
+                    {transcribing ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Transcribing Speech...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        <span>Start Transcription</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartTranscription}
+                    disabled={transcribing}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-semibold transition-colors"
+                  >
+                    <RotateCcw className={`w-3.5 h-3.5 ${transcribing ? 'animate-spin' : ''}`} />
+                    <span>{transcribing ? 'Retranscribing...' : 'Retranscribe'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Error Banner */}
+            {transcriptionError && (
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold block">Transcription Error</span>
+                    <span>{transcriptionError}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleStartTranscription}
+                  className="px-3 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shrink-0"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* Transcription State Displays */}
+            {transcribing ? (
+              <div className="p-12 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-3">
+                <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
+                <h4 className="text-sm font-bold text-slate-800">
+                  Transcribing English Audio with faster-whisper...
+                </h4>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  Running speech recognition inference with voice activity detection (VAD). This typically takes a few seconds.
+                </p>
+              </div>
+            ) : transcriptSegments.length > 0 ? (
+              /* Segment List */
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-xs text-slate-500 pb-2">
+                  <span>
+                    Total Segments:{' '}
+                    <strong className="text-slate-800 font-semibold">
+                      {transcriptSegments.length}
+                    </strong>
+                  </span>
+                  <span>Click [Edit] on any segment to correct recognized words</span>
+                </div>
+
+                <div className="space-y-3">
+                  {transcriptSegments.map((seg) => {
+                    const isEditing = editingSegmentId === seg.id;
+                    const isSaving = savingSegmentId === seg.id;
+
+                    return (
+                      <div
+                        key={seg.id}
+                        className={`p-4 rounded-xl border transition-all ${
+                          isEditing
+                            ? 'bg-indigo-50/40 border-indigo-300 ring-2 ring-indigo-500/20'
+                            : 'bg-slate-50/50 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 space-y-2">
+                            {/* Segment header: order & timestamp */}
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
+                                #{seg.segment_order}
+                              </span>
+                              <span className="text-xs font-mono font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-200 flex items-center gap-1">
+                                <Clock className="w-3 h-3 text-indigo-500" />
+                                {formatTimestamp(seg.start_time)} – {formatTimestamp(seg.end_time)}
+                              </span>
+                              <span className="text-[11px] text-slate-400 font-mono">
+                                ({(seg.end_time - seg.start_time).toFixed(1)}s)
+                              </span>
+                            </div>
+
+                            {/* Text content or edit textarea */}
+                            {isEditing ? (
+                              <div className="space-y-2 pt-1">
+                                <textarea
+                                  value={editingText}
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  rows={2}
+                                  className="w-full px-3 py-2 text-sm rounded-lg border border-indigo-300 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30 font-sans"
+                                  autoFocus
+                                />
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => handleSaveEdit(seg.id)}
+                                    disabled={isSaving || !editingText.trim()}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm"
+                                  >
+                                    <Save className="w-3.5 h-3.5" />
+                                    {isSaving ? 'Saving...' : 'Save'}
+                                  </button>
+                                  <button
+                                    onClick={handleCancelEdit}
+                                    disabled={isSaving}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-slate-600 text-xs font-medium"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-800 leading-relaxed font-normal">
+                                {seg.text}
+                              </p>
+                            )}
+                          </div>
+
+                          {!isEditing && (
+                            <button
+                              onClick={() => handleStartEdit(seg)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors shrink-0"
+                              title="Edit segment text"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* Prompt to start transcription */
+              <div className="p-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                <FileText className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-slate-700">No transcript generated yet</h4>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  Click the <strong>Start Transcription</strong> button above to transcribe the extracted audio with faster-whisper.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -1,4 +1,11 @@
-import { HealthResponse, ProjectSummary, ProjectDetail, ProcessingJob } from '../types';
+import {
+  HealthResponse,
+  ProjectSummary,
+  ProjectDetail,
+  ProcessingJob,
+  TranscriptResponse,
+  TranscriptSegment,
+} from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
   ? `${import.meta.env.VITE_API_BASE_URL}/api`
@@ -119,5 +126,46 @@ export const api = {
 
   getAudioUrl(projectId: string): string {
     return `${API_BASE}/projects/${projectId}/audio`;
+  },
+
+  async startTranscription(projectId: string): Promise<ProcessingJob> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/transcribe`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Transcription request failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getTranscript(projectId: string): Promise<TranscriptResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/transcript`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch transcript: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateTranscriptSegment(
+    projectId: string,
+    segmentId: string,
+    text: string
+  ): Promise<TranscriptSegment> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/transcript/${segmentId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update segment: ${res.statusText}`);
+    }
+    return res.json();
   },
 };

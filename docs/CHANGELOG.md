@@ -2,6 +2,32 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.3.0] - Phase 3 Complete (2026-10-24)
+
+### Added
+- **faster-whisper Transcription Provider (`FasterWhisperTranscriptionProvider`)**:
+  - Implemented concrete speech-to-text provider using `faster-whisper` and CTranslate2.
+  - Thread-safe lazy loading with in-memory model caching to avoid redundant model loads.
+  - Configurable model size (`base`, `tiny`, `small`), device (`cpu`), compute type (`int8`), and Voice Activity Detection (`vad_filter=True`).
+  - Safe error handling for incompatible compute types on CPU (`float16` rejected with clear guidance) and model loading failures.
+  - Fully consumes generator to extract timestamped segments (`start_time`, `end_time`, `text`).
+- **Transcription API Endpoints**:
+  - `POST /api/projects/{project_id}/transcribe`: Initiates asynchronous background transcription job, preventing duplicate concurrent runs (`HTTP 409 Conflict`).
+  - `GET /api/projects/{project_id}/transcript`: Returns ordered transcript segments with timestamps and project status.
+  - `PATCH /api/projects/{project_id}/transcript/{segment_id}`: Allows inline editing of transcript segment text with database persistence.
+- **Background Worker (`process_transcription`)**:
+  - Safely deletes previous segments on retranscription to prevent duplicates.
+  - Transitions `ProcessingJob` through `pending` → `running` (20%, 80%) → `completed` (100%) or `failed`.
+- **Frontend Transcript Editor (`ProjectWorkspace.tsx`)**:
+  - "English Transcription" section with model badge and "Start Transcription" / "Retranscribe" controls.
+  - Live background polling for transcription status.
+  - Segment card list displaying timestamps (`[00:00 – 00:11]`), segment index, duration, and text.
+  - Inline edit mode with "Edit", "Save", and "Cancel" buttons communicating with PATCH API.
+  - Persistent state on page refresh.
+- **Testing**:
+  - 24 automated backend unit and integration tests passing in 1.56s in Docker.
+  - Real end-to-end inference verification using short speech audio.
+
 ## [0.2.0] - Phase 2 Complete (2026-10-24)
 
 ### Added

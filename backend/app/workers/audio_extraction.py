@@ -1,5 +1,7 @@
 import logging
 from pathlib import Path
+from typing import Optional
+from sqlalchemy.orm import Session
 from app.database.session import SessionLocal
 from app.models.project import Project, Video, ProcessingJob, ProjectStatus, JobStatus
 from app.services.video.ffmpeg import FFmpegVideoProcessor
@@ -8,9 +10,13 @@ from app.services.video.exceptions import VideoProcessingError
 logger = logging.getLogger(__name__)
 
 
-def process_audio_extraction(project_id: str, job_id: str) -> None:
+def process_audio_extraction(project_id: str, job_id: str, db: Optional[Session] = None) -> None:
     """Synchronous worker function designed to run in background tasks."""
-    db = SessionLocal()
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+
     try:
         job = db.query(ProcessingJob).filter(ProcessingJob.id == job_id).first()
         project = db.query(Project).filter(Project.id == project_id).first()
@@ -64,4 +70,5 @@ def process_audio_extraction(project_id: str, job_id: str) -> None:
         db.commit()
 
     finally:
-        db.close()
+        if should_close:
+            db.close()

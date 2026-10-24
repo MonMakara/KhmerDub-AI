@@ -50,9 +50,12 @@ class Settings(BaseSettings):
 
     # AI & Audio Cache
     MODEL_CACHE_DIR: Path = Path("/root/.cache")
+    WHISPER_MODEL: str = "base"
     WHISPER_MODEL_SIZE: str = "base"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"
+    WHISPER_LANGUAGE: str = "en"
+    WHISPER_VAD_FILTER: bool = True
 
     # Limits
     MAX_UPLOAD_SIZE_MB: int = 500

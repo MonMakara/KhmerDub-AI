@@ -68,8 +68,28 @@ docker compose exec frontend npm run typecheck
 docker compose exec frontend npm run build
 ```
 
-### Testing Video Upload via cURL
-To test video upload from your Ubuntu terminal without using the web UI:
+### Testing Transcription via cURL
+```bash
+# 1. Trigger transcription for a project with extracted audio
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/transcribe"
+
+# 2. View generated transcript segments
+curl -s "http://localhost:8000/api/projects/$PROJ_ID/transcript" | jq .
+
+# 3. Edit a transcript segment
+curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/transcript/$SEGMENT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Corrected transcript text"}'
+```
+
+### Whisper Model Configuration
+The following variables in `.env` control speech recognition:
+- `WHISPER_MODEL`: Model size (`tiny`, `base`, `small`, `medium`, `large-v3`). Defaults to `base`.
+- `WHISPER_DEVICE`: Execution device (`cpu` or `cuda`). Defaults to `cpu`.
+- `WHISPER_COMPUTE_TYPE`: Precision/quantization (`int8`, `float32`, or `float16` on CUDA). Defaults to `int8`.
+- `WHISPER_LANGUAGE`: Primary transcription language (default `en`).
+- `WHISPER_VAD_FILTER`: Voice activity detection filter (default `true`).
+Model weights are automatically cached inside the persistent Docker volume `khmerdub_model_cache` at `/root/.cache`.
 ```bash
 # 1. Create a project
 PROJ_ID=$(curl -s -X POST http://localhost:8000/api/projects \

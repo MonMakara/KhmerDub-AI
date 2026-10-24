@@ -19,12 +19,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.database.session import get_db
-from app.models.project import Project, Video, ProcessingJob, ProjectStatus, JobStatus
+from app.models.project import Project, Video, TranscriptSegment, ProcessingJob, ProjectStatus, JobStatus
 from app.schemas.project import (
     ProjectCreate,
     ProjectResponse,
     ProjectSummaryResponse,
     ProcessingJobResponse,
+    TranscriptSegmentResponse,
+    TranscriptSegmentUpdate,
+    TranscriptResponse,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
@@ -33,6 +36,7 @@ from app.services.video.exceptions import (
     VideoProcessingError,
 )
 from app.workers.audio_extraction import process_audio_extraction
+from app.workers.transcription import process_transcription
 
 logger = logging.getLogger(__name__)
 
@@ -285,3 +289,113 @@ def get_project_audio(project_id: str, db: Session = Depends(get_db)):
         media_type="audio/wav",
         filename="extracted_audio.wav",
     )
+
+
+@router.post("/{project_id}/transcribe", response_model=ProcessingJobResponse)
+def start_transcription(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ProcessingJobResponse:
+    """Start asynchronous speech-to-text transcription using faster-whisper."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    video = db.query(Video).filter(Video.project_id == project_id).first()
+    if (
+        not video
+        or not video.extracted_audio_path
+        or not Path(video.extracted_audio_path).exists()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Extracted audio file not found. Please upload a video first.",
+        )
+
+    # Prevent duplicate concurrent transcription jobs
+    active_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.job_type == "transcribe",
+            ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+        )
+        .first()
+    )
+    if active_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A transcription job is already in progress for this project.",
+        )
+
+    job = ProcessingJob(
+        project_id=project_id,
+        job_type="transcribe",
+        status=JobStatus.PENDING,
+        progress_percentage=0,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(process_transcription, project_id, job.id)
+    return job
+
+
+@router.get("/{project_id}/transcript", response_model=TranscriptResponse)
+def get_transcript(
+    project_id: str, db: Session = Depends(get_db)
+) -> TranscriptResponse:
+    """Retrieve all transcribed segments for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segments = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+    return TranscriptResponse(
+        project_id=project_id,
+        status=project.status,
+        segments=segments,
+    )
+
+
+@router.patch(
+    "/{project_id}/transcript/{segment_id}",
+    response_model=TranscriptSegmentResponse,
+)
+def update_transcript_segment(
+    project_id: str,
+    segment_id: str,
+    payload: TranscriptSegmentUpdate,
+    db: Session = Depends(get_db),
+) -> TranscriptSegmentResponse:
+    """Update transcription text for a single segment."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.id == segment_id,
+            TranscriptSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Transcript segment not found")
+
+    clean_text = payload.text.strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Segment text cannot be empty")
+
+    segment.text = clean_text
+    db.commit()
+    db.refresh(segment)
+    return segment

@@ -64,8 +64,24 @@ export interface ProjectSummary {
   updated_at: string;
 }
 
+export interface TranscriptSegment {
+  id: string;
+  segment_order: number;
+  start_time: number;
+  end_time: number;
+  text: string;
+  created_at?: string;
+}
+
+export interface TranscriptResponse {
+  project_id: string;
+  status: ProjectStatus;
+  segments: TranscriptSegment[];
+}
+
 export interface ProjectDetail extends ProjectSummary {
   original_video_path?: string | null;
   video?: VideoInfo | null;
   jobs?: ProcessingJob[];
+  transcript_segments?: TranscriptSegment[];
 }

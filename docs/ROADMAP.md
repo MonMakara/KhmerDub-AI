@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 2 Complete — Video Upload & FFmpeg Audio Extraction Verified
+- **Current Phase**: Phase 3 Complete — English Automatic Speech Recognition Verified
 - **Overall Status**: In Progress
 
 ---
@@ -26,11 +26,14 @@
 - [x] Frontend drag-and-drop upload, upload progress indicator, video player preview, and audio preview player.
 - [x] Comprehensive test suite (15 tests passing) with synthetic MP4 test fixtures.
 
-### [ ] Phase 3: English Transcription (faster-whisper)
-- [ ] faster-whisper integration inside `TranscriptionProvider`.
-- [ ] Segment generation with start/end timestamps.
-- [ ] Interactive transcript viewer and editor on frontend.
-- [ ] Model size configuration (base, small, medium).
+### [x] Phase 3: English Transcription (faster-whisper)
+- [x] `FasterWhisperTranscriptionProvider` implementation using faster-whisper and CTranslate2.
+- [x] Thread-safe lazy model caching to avoid reloading weights per request.
+- [x] Segment generation with start/end timestamps and Voice Activity Detection (VAD).
+- [x] Background worker (`process_transcription`) with duplicate prevention on retranscribe.
+- [x] API endpoints: `POST /transcribe`, `GET /transcript`, `PATCH /transcript/{segment_id}`.
+- [x] Frontend English Transcription workspace with segment list and inline editor.
+- [x] 24 unit, integration, and real inference tests passing in Docker.
 
 ### [ ] Phase 4: English-to-Khmer Translation
 - [ ] Open-source translation model integration (NLLB-200).

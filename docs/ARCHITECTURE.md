@@ -51,9 +51,14 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `GET /api/projects` & `POST /api/projects`: Project list and creation.
   - `POST /api/projects/{id}/upload`: Streaming MP4 upload with FFprobe container validation.
   - `POST /api/projects/{id}/extract-audio`: Manual trigger or retry for background audio extraction.
+  - `POST /api/projects/{id}/transcribe`: Asynchronous speech-to-text inference with faster-whisper.
+  - `GET /api/projects/{id}/transcript`: Retrieve ordered timestamped transcript segments.
+  - `PATCH /api/projects/{id}/transcript/{segment_id}`: Inline editing of transcript segment text.
   - `GET /api/projects/{id}/jobs`: Processing jobs and progress tracking.
   - `GET /api/projects/{id}/video`: Stream uploaded MP4 for browser video preview.
   - `GET /api/projects/{id}/audio`: Stream extracted 16kHz WAV audio for browser playback.
+- **`services/transcription/`**:
+  - `FasterWhisperTranscriptionProvider`: Concretely implements `TranscriptionProvider`. Features thread-safe lazy model loading, CTranslate2 INT8 quantization, Voice Activity Detection, and generator consumption returning timestamped `TranscriptionSegment` instances.
 - **`services/video/`**:
   - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
 - **`workers/`**:
