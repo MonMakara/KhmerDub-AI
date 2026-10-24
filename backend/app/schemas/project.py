@@ -15,8 +15,13 @@ class VideoResponse(BaseModel):
     video_codec: Optional[str] = None
     audio_codec: Optional[str] = None
     extracted_audio_path: Optional[str] = None
+    audio_timeline_path: Optional[str] = None
     exported_video_path: Optional[str] = None
+    exported_duration_seconds: Optional[float] = None
+    exported_file_size_bytes: Optional[int] = None
+    is_export_outdated: bool = False
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -105,6 +110,35 @@ class GeneratedAudioListResponse(BaseModel):
     status: ProjectStatus
     audios: List[GeneratedAudioResponse]
     total_duration_seconds: float = 0.0
+
+
+class TimingConflictResponse(BaseModel):
+    segment_order: int
+    transcript_segment_id: str
+    start_time: float
+    end_time: float
+    original_duration: float
+    khmer_duration: float
+    tempo_factor: float
+    overflow_seconds: float
+    message: str
+
+
+class ExportStatusResponse(BaseModel):
+    project_id: str
+    status: ProjectStatus
+    job: Optional[ProcessingJobResponse] = None
+    is_export_ready: bool
+    is_export_outdated: bool
+    exported_video_path: Optional[str] = None
+    audio_timeline_path: Optional[str] = None
+    exported_duration_seconds: Optional[float] = None
+    exported_file_size_bytes: Optional[int] = None
+    timing_conflicts: List[TimingConflictResponse] = []
+    video_url: Optional[str] = None
+    download_url: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ProjectCreate(BaseModel):

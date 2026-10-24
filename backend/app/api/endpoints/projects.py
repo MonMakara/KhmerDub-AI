@@ -18,6 +18,12 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.storage import (
+    resolve_audio_file,
+    get_timeline_audio_path,
+    get_exported_video_path,
+    get_project_output_dir,
+)
 from app.database.session import get_db
 from app.models.project import (
     Project,
@@ -42,6 +48,8 @@ from app.schemas.project import (
     TranslationListResponse,
     GeneratedAudioResponse,
     GeneratedAudioListResponse,
+    TimingConflictResponse,
+    ExportStatusResponse,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
@@ -55,6 +63,7 @@ from app.workers.audio_extraction import process_audio_extraction
 from app.workers.transcription import process_transcription
 from app.workers.translation import process_translation
 from app.workers.tts import process_tts, synthesize_segment_audio
+from app.workers.dubbing import process_dubbing
 
 logger = logging.getLogger(__name__)
 
@@ -428,6 +437,10 @@ def update_transcript_segment(
         )
         if linked_trans:
             linked_trans.is_outdated = True
+            if linked_trans.generated_audio:
+                linked_trans.generated_audio.is_outdated = True
+        if project.video and project.video.exported_video_path:
+            project.video.is_export_outdated = True
 
     db.commit()
     db.refresh(segment)
@@ -572,6 +585,8 @@ def update_translation_segment(
         segment.is_outdated = False
         if segment.generated_audio:
             segment.generated_audio.is_outdated = True
+        if project.video and project.video.exported_video_path:
+            project.video.is_export_outdated = True
         db.commit()
         db.refresh(segment)
 
@@ -646,6 +661,8 @@ def retranslate_segment(
     segment.is_outdated = False
     if segment.generated_audio:
         segment.generated_audio.is_outdated = True
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
     db.commit()
     db.refresh(segment)
 
@@ -794,6 +811,9 @@ def regenerate_audio_segment(
     try:
         provider = GoogleTTSProvider()
         audio_record = synthesize_segment_audio(project_id, segment, provider, db)
+        if project.video and project.video.exported_video_path:
+            project.video.is_export_outdated = True
+            db.commit()
     except Exception as e:
         logger.error("Failed to regenerate audio segment %s: %s", segment_id, e)
         raise HTTPException(status_code=500, detail=f"Failed to generate speech: {e}")
@@ -819,7 +839,7 @@ def stream_audio_segment(
     if not audio_record:
         raise HTTPException(status_code=404, detail="Generated audio record not found")
 
-    file_path = Path(audio_record.audio_path)
+    file_path = resolve_audio_file(project_id, segment_id, audio_record.audio_path)
     if not file_path.exists() or file_path.stat().st_size == 0:
         raise HTTPException(status_code=404, detail="Audio file not found on disk")
 
@@ -828,4 +848,209 @@ def stream_audio_segment(
         media_type="audio/mpeg",
         filename=f"tts_{project_id}_{segment_id}.mp3",
     )
+
+
+@router.post("/{project_id}/export", response_model=ProcessingJobResponse)
+def start_dubbing_export(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ProcessingJobResponse:
+    """Trigger background audio synchronization and dubbed video export."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    video = project.video
+    if not video or not video.file_path or not Path(video.file_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Original video file is missing or not uploaded.",
+        )
+
+    translation_segments = (
+        db.query(TranslationSegment)
+        .filter(TranslationSegment.project_id == project_id)
+        .order_by(TranslationSegment.segment_order.asc())
+        .all()
+    )
+    if not translation_segments:
+        raise HTTPException(
+            status_code=400,
+            detail="No Khmer translation segments found. Please translate transcript first.",
+        )
+
+    # Validate that every segment has generated audio and none is outdated
+    for trans_seg in translation_segments:
+        audio = trans_seg.generated_audio
+        if not audio:
+            audio = (
+                db.query(GeneratedAudio)
+                .filter(GeneratedAudio.translation_segment_id == trans_seg.id)
+                .first()
+            )
+        if not audio:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing generated audio for segment #{trans_seg.segment_order}. Please generate audio first.",
+            )
+        if audio.is_outdated:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Generated audio for segment #{trans_seg.segment_order} is outdated "
+                    f"because translation text was modified. Please regenerate audio before export."
+                ),
+            )
+
+    # Check for active running export job
+    active_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.job_type == "dub",
+            ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+        )
+        .first()
+    )
+    if active_job:
+        return active_job
+
+    job = ProcessingJob(
+        project_id=project_id,
+        job_type="dub",
+        status=JobStatus.PENDING,
+        progress_percentage=0,
+    )
+    db.add(job)
+    project.status = ProjectStatus.SYNCHRONIZING
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(process_dubbing, project_id, job.id)
+    return job
+
+
+@router.get("/{project_id}/export/status", response_model=ExportStatusResponse)
+def get_export_status(
+    project_id: str,
+    db: Session = Depends(get_db),
+) -> ExportStatusResponse:
+    """Check export readiness, current job status, timing conflicts, and media details."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    video = project.video
+    dub_job = (
+        db.query(ProcessingJob)
+        .filter(ProcessingJob.project_id == project_id, ProcessingJob.job_type == "dub")
+        .order_by(ProcessingJob.created_at.desc())
+        .first()
+    )
+
+    is_ready = bool(
+        video and video.exported_video_path and Path(video.exported_video_path).exists()
+    )
+    is_outdated = bool(video and video.is_export_outdated)
+
+    video_url = f"/api/projects/{project_id}/export/video" if is_ready else None
+    download_url = f"/api/projects/{project_id}/export/download" if is_ready else None
+
+    # Calculate any timing conflicts from current segments
+    timing_conflicts: List[TimingConflictResponse] = []
+    if project.translation_segments:
+        for idx, trans_seg in enumerate(project.translation_segments):
+            t_seg = trans_seg.transcript_segment
+            audio_rec = trans_seg.generated_audio
+            if t_seg and audio_rec and audio_rec.duration_seconds:
+                orig_dur = max(0.1, t_seg.end_time - t_seg.start_time)
+                if idx < len(project.translation_segments) - 1:
+                    next_t = project.translation_segments[idx + 1].transcript_segment
+                    next_start = next_t.start_time if next_t else t_seg.end_time
+                else:
+                    next_start = video.duration_seconds if video and video.duration_seconds else t_seg.end_time
+
+                avail_window = max(orig_dur, next_start - t_seg.start_time)
+                raw_dur = float(audio_rec.duration_seconds)
+                if raw_dur > avail_window:
+                    adjusted_est = raw_dur / 1.25
+                    if adjusted_est > avail_window:
+                        overflow = round(adjusted_est - avail_window, 2)
+                        timing_conflicts.append(
+                            TimingConflictResponse(
+                                segment_order=t_seg.segment_order,
+                                transcript_segment_id=t_seg.id,
+                                start_time=round(t_seg.start_time, 2),
+                                end_time=round(t_seg.end_time, 2),
+                                original_duration=round(orig_dur, 2),
+                                khmer_duration=round(raw_dur, 2),
+                                tempo_factor=1.25,
+                                overflow_seconds=overflow,
+                                message=(
+                                    f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
+                                    f"({avail_window:.1f}s) by {overflow:.1f}s even at 1.25x speed."
+                                ),
+                            )
+                        )
+
+    job_resp = ProcessingJobResponse.model_validate(dub_job) if dub_job else None
+
+    return ExportStatusResponse(
+        project_id=project_id,
+        status=project.status,
+        job=job_resp,
+        is_export_ready=is_ready,
+        is_export_outdated=is_outdated,
+        exported_video_path=video.exported_video_path if video else None,
+        audio_timeline_path=video.audio_timeline_path if video else None,
+        exported_duration_seconds=video.exported_duration_seconds if video else None,
+        exported_file_size_bytes=video.exported_file_size_bytes if video else None,
+        timing_conflicts=timing_conflicts,
+        video_url=video_url,
+        download_url=download_url,
+    )
+
+
+@router.api_route("/{project_id}/export/video", methods=["GET", "HEAD"])
+def stream_exported_video(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """Stream or preview the exported Khmer-dubbed MP4 video file with HTTP byte ranges."""
+    video = db.query(Video).filter(Video.project_id == project_id).first()
+    if not video or not video.exported_video_path or not Path(video.exported_video_path).exists():
+        raise HTTPException(status_code=404, detail="Exported dubbed video not found")
+
+    return FileResponse(
+        video.exported_video_path,
+        media_type="video/mp4",
+        filename=f"dubbed_{project_id}.mp4",
+    )
+
+
+@router.get("/{project_id}/export/download")
+def download_exported_video(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """Download the exported Khmer-dubbed MP4 video file as an attachment."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    video = project.video
+    if not video or not video.exported_video_path or not Path(video.exported_video_path).exists():
+        raise HTTPException(status_code=404, detail="Exported dubbed video not found")
+
+    safe_title = sanitize_filename(project.title).replace(".mp4", "")
+    download_filename = f"dubbed_{safe_title}.mp4"
+
+    return FileResponse(
+        path=video.exported_video_path,
+        media_type="video/mp4",
+        filename=download_filename,
+        headers={"Content-Disposition": f'attachment; filename="{download_filename}"'},
+    )
+
 

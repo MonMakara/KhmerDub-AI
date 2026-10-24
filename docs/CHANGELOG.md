@@ -2,6 +2,56 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.6.0] - Phase 6 Complete (2026-10-24)
+
+### Added
+- **Project-Specific Storage (`backend/app/core/storage.py`)**:
+  - Organized persistent storage under `data/projects/{project_id}/` with dedicated folders:
+    - `voice/`: Synthesized Khmer segment audio (`audio_{segment_id}.wav` / `.mp3`).
+    - `output/`: Aligned timeline audio (`khmer_timeline.wav`) and exported video (`dubbed_khmer.mp4`).
+    - `uploads/`: Original uploaded video.
+  - Transparent backward compatibility (`resolve_audio_file`) resolving legacy `data/temp/` audio files.
+- **Audio Synchronization Engine (`AudioSynchronizationService`)**:
+  - Built robust timeline constructor sorting speech segments by start timestamp.
+  - Generates silence segments (`anullsrc`) matching intervals between segments and between video start/end.
+  - Standardizes audio formats (44.1kHz, 16-bit, stereo PCM WAV) to enable lossless FFmpeg concat demuxer concatenation.
+  - Implements conservative tempo adjustment (up to 1.25x via `atempo` filter) to gracefully fit slightly longer Khmer speech without chipmunking or pitch degradation.
+  - Non-destructive timing conflict detection: if a segment still exceeds its allocated window, it preserves the complete speech audio without silent truncation and logs structured `TimingConflict` details.
+- **Video Export Service (`VideoExportService`)**:
+  - Remuxes video with synchronized timeline audio using explicit stream mapping (`-map 0:v:0 -map 1:a:0`).
+  - Encodes audio to high-quality AAC (`-c:a aac -b:a 192k`).
+  - Applies `-movflags +faststart` for instant web streaming and playback initialization.
+  - Atomic export safety: writes to `.tmp.mp4` staging file before replacing final output file.
+  - FFprobe container and stream verification checking duration and format integrity.
+- **Dubbing Pipeline & Background Worker (`DubbingPipeline` & `process_dubbing`)**:
+  - Full end-to-end orchestration connecting segments, synchronizer, exporter, and database state.
+  - Background worker updating `ProcessingJob` progress (10% -> 30% -> 60% -> 80% -> 100%).
+  - Transitions `Project.status` to `EXPORTING` and then `COMPLETED`.
+  - Detailed error capturing and informative timing conflict notifications in job message.
+- **Database Tracking & Alembic Migration**:
+  - Extended `Video` model with `audio_timeline_path`, `exported_duration_seconds`, `exported_file_size_bytes`, and `is_export_outdated`.
+  - Migration revision `b90d366cd5b0` created and executed cleanly against SQLite.
+  - Automatic invalidation: editing transcripts, editing translations, retranslating, or regenerating TTS automatically flags `video.is_export_outdated = True`.
+- **Dubbing & Export REST API Endpoints**:
+  - `POST /api/projects/{project_id}/export`: Triggers asynchronous background dubbing and export.
+  - `GET /api/projects/{project_id}/export/status`: Returns export readiness, job status, file size, duration, timing conflicts, and media URLs.
+  - `GET /api/projects/{project_id}/export/video`: Media streaming endpoint supporting HTTP 206 Partial Content byte ranges for smooth video seeking.
+  - `GET /api/projects/{project_id}/export/download`: Direct attachment download with project title filename.
+- **Frontend Step 5 Workspace (`ProjectWorkspace.tsx`)**:
+  - Stepper indicator updated to include Step 5: `5. Dubbed Video`.
+  - Section 5 UI featuring:
+    - Pre-export readiness checklist (Video uploaded, Transcribed, Translated, Voice generated).
+    - "Generate Dubbed Video" / "Re-export Video" action buttons with real-time progress bar.
+    - Prominent yellow warning banner when upstream transcripts/translations/audio were modified (`is_export_outdated = True`).
+    - Timing conflicts panel detailing affected segments, original duration, Khmer duration, speed adjustment applied, and remaining overflow.
+    - In-browser HTML5 `<video controls>` preview player loaded with the dubbed video.
+    - Quick actions: "Download Dubbed Video (MP4)" and "Open in New Tab".
+- **Testing**:
+  - 9 comprehensive unit and integration tests in `backend/tests/test_dubbing.py`.
+  - Live end-to-end dubbing pipeline verification on Docker backend container.
+  - 60 backend automated tests passing with 0 failures.
+  - TypeScript strict typecheck and production build passing with 0 errors.
+
 ## [0.5.0] - Phase 5 Complete (2026-10-24)
 
 ### Added

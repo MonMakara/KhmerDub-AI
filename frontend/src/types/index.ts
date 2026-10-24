@@ -50,7 +50,11 @@ export interface VideoInfo {
   video_codec?: string | null;
   audio_codec?: string | null;
   extracted_audio_path?: string | null;
+  audio_timeline_path?: string | null;
   exported_video_path?: string | null;
+  exported_duration_seconds?: number | null;
+  exported_file_size_bytes?: number | null;
+  is_export_outdated?: boolean;
   created_at: string;
 }
 
@@ -121,6 +125,33 @@ export interface GeneratedAudioListResponse {
   status: ProjectStatus;
   audios: GeneratedAudio[];
   total_duration_seconds: number;
+}
+
+export interface TimingConflict {
+  segment_order: number;
+  transcript_segment_id: string;
+  start_time: number;
+  end_time: number;
+  original_duration: number;
+  khmer_duration: number;
+  tempo_factor: number;
+  overflow_seconds: number;
+  message: string;
+}
+
+export interface ExportStatusResponse {
+  project_id: string;
+  status: ProjectStatus;
+  job?: ProcessingJob | null;
+  is_export_ready: boolean;
+  is_export_outdated: boolean;
+  exported_video_path?: string | null;
+  audio_timeline_path?: string | null;
+  exported_duration_seconds?: number | null;
+  exported_file_size_bytes?: number | null;
+  timing_conflicts: TimingConflict[];
+  video_url?: string | null;
+  download_url?: string | null;
 }
 
 export interface ProjectDetail extends ProjectSummary {

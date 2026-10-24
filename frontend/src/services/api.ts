@@ -9,6 +9,7 @@ import {
   TranslationListResponse,
   GeneratedAudio,
   GeneratedAudioListResponse,
+  ExportStatusResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -269,5 +270,32 @@ export const api = {
 
   getAudioSegmentUrl(projectId: string, segmentId: string): string {
     return `${API_BASE}/projects/${projectId}/tts/${segmentId}/audio`;
+  },
+
+  async startExport(projectId: string): Promise<ProcessingJob> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/export`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Export request failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getExportStatus(projectId: string): Promise<ExportStatusResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/export/status`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch export status: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getExportVideoUrl(projectId: string): string {
+    return `${API_BASE}/projects/${projectId}/export/video`;
+  },
+
+  getExportDownloadUrl(projectId: string): string {
+    return `${API_BASE}/projects/${projectId}/export/download`;
   },
 };

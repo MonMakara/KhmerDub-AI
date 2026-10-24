@@ -11,8 +11,8 @@
 3. **English Transcription** *(Phase 3 Complete)*: Accurate timestamped English transcription using `faster-whisper` (CTranslate2 INT8 on CPU) with Voice Activity Detection, background execution, and inline transcript editing in the web UI.
 4. **English-to-Khmer Translation** *(Phase 4 & 4.1 Complete)*: Free, locally runnable neural machine translation using Meta's NLLB-200 (`eng_Latn` → `khm_Khmr`) with thread-safe lazy caching, natural Khmer text compaction (`KhmerTextFormatter`), terminology glossary (`KhmerGlossary`), context-aware translation, side-by-side comparative review, manual editing preservation, and single-segment retranslation.
 5. **Khmer Text-to-Speech** *(Phase 5 Complete)*: Speech synthesis using Google gTTS for Khmer audio segments with exponential backoff retries, duration measurement, audio preview players, individual segment regeneration, and automatic invalidation when translations are edited.
-6. **Audio Synchronization** *(Phase 6)*: Dynamic audio alignment matching original segment timestamps with conservative speed adjustment.
-7. **Video Export** *(Phase 6)*: Clean remuxing via FFmpeg to export a final dubbed MP4 video.
+6. **Audio Synchronization** *(Phase 6 Complete)*: Transcript-timed audio synchronization that aligns synthesized Khmer speech segments onto original English timestamps, standardizes audio pieces (44.1kHz stereo 16-bit PCM WAV), inserts silence padding, applies conservative tempo adjustment (max 1.25x via `atempo`), and detects timing conflicts without silent speech truncation.
+7. **Video Export** *(Phase 6 Complete)*: Clean remuxing via FFmpeg replacing the original audio with the synchronized Khmer speech track using explicit stream mapping (`-map 0:v:0 -map 1:a:0`), AAC audio, faststart MP4 container optimization for web streaming, atomic publishing, in-browser video preview player, and instant download.
 
 ---
 
@@ -82,7 +82,8 @@ KhmerDub-AI/
 ├── data/                 # Persistent media directory
 │   ├── uploads/          # Original uploaded videos
 │   ├── outputs/          # Dubbed exported videos
-│   └── temp/             # Extracted audio & synthesized segments
+│   ├── temp/             # Temporary processing files
+│   └── projects/         # Per-project media (voice, timeline, exported video)
 ├── docs/                 # Documentation (Architecture, Development, Roadmap)
 ├── compose.yaml          # Docker Compose definition
 ├── .env.example          # Environment variable template

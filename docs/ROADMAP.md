@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 5 Complete — Google Khmer Text-to-Speech (gTTS) Integrated & Verified
+- **Current Phase**: Phase 6 Complete — Audio Synchronization & Khmer Dubbed Video Export Integrated & Verified
 - **Overall Status**: In Progress
 
 ---
@@ -68,11 +68,20 @@
 - [x] Frontend Step 4 workspace: audio players, duration readouts, outdated warnings, individual segment regeneration.
 - [x] 51 automated unit, integration, and real TTS tests passing in Docker.
 
-### [ ] Phase 6: Audio Synchronization & Video Export
-- [ ] Transcript-timed audio synchronization with conservative speed adjustment.
-- [ ] Conflict detection for timing overflows without silent truncation.
-- [ ] FFmpeg remuxing replacing original speech with synchronized Khmer audio.
-- [ ] Final video preview and download.
+### [x] Phase 6: Audio Synchronization & Video Export
+- [x] Project storage centralization under `data/projects/{project_id}/` (voice, timeline, exported MP4) with backward compatibility.
+- [x] Transcript-timed audio synchronization (`AudioSynchronizationService`) aligning synthesized Khmer speech to English segment timestamps.
+- [x] Standardized WAV pieces (44.1kHz, 16-bit, stereo) concatenated via FFmpeg concat demuxer without re-encoding quality degradation.
+- [x] Conservative tempo adjustment (max 1.25x via `atempo`) to fit natural Khmer speech into allocated time slots.
+- [x] Non-destructive timing conflict detection reporting overflows without silent speech truncation.
+- [x] Clean FFmpeg remuxing (`VideoExportService`) replacing original audio with synchronized Khmer audio (`-map 0:v:0 -map 1:a:0`).
+- [x] Faststart MP4 container optimization (`+faststart`) for instant in-browser web playback.
+- [x] Atomic video publishing via temporary staging file (`.tmp.mp4`) preventing incomplete or corrupted downloads.
+- [x] Database migration adding `audio_timeline_path`, `exported_duration_seconds`, `exported_file_size_bytes`, `is_export_outdated`, and `updated_at`.
+- [x] Automatic invalidation: modifying transcript, translation, or audio triggers `is_export_outdated = True`.
+- [x] API endpoints: `POST /export`, `GET /export/status`, `GET /export/video` (HTTP 206 Partial Content), `GET /export/download`.
+- [x] Frontend Step 5 workspace: readiness checklist, timing conflicts panel, real-time export progress, video player preview, and download button.
+- [x] 60 automated backend tests passing in Docker with verified end-to-end dubbing pipeline.
 
 ### [ ] Phase 7: Polish, Robustness & Comprehensive Testing
 - [ ] End-to-end integration testing.

@@ -114,6 +114,21 @@ curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/tts/$TRANSLATION_SEGME
 curl -o segment.mp3 "http://localhost:8000/api/projects/$PROJ_ID/tts/$TRANSLATION_SEGMENT_ID/audio"
 ```
 
+### Testing Audio Synchronization & Video Export via cURL (Phase 6)
+```bash
+# 1. Trigger background dubbing and video export
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/export"
+
+# 2. Poll export status, progress, and timing conflicts
+curl -s "http://localhost:8000/api/projects/$PROJ_ID/export/status" | jq .
+
+# 3. Stream dubbed MP4 video with byte-range support (HTTP 206)
+curl -i -r 0-1023 "http://localhost:8000/api/projects/$PROJ_ID/export/video"
+
+# 4. Download finalized dubbed MP4 video with attachment headers
+curl -O -J "http://localhost:8000/api/projects/$PROJ_ID/export/download"
+```
+
 ### Text-to-Speech Configuration (gTTS)
 The following variables in `.env` control Khmer speech synthesis:
 - `TTS_PROVIDER`: Text-to-speech engine (`gtts`).

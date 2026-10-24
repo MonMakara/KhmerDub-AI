@@ -20,8 +20,16 @@ import {
   AlertTriangle,
   Volume2,
   Headphones,
+  Film,
+  Download,
 } from 'lucide-react';
-import { ProjectDetail, TranscriptSegment, TranslationSegment, GeneratedAudio } from '../types';
+import {
+  ProjectDetail,
+  TranscriptSegment,
+  TranslationSegment,
+  GeneratedAudio,
+  ExportStatusResponse,
+} from '../types';
 import { api } from '../services/api';
 
 interface ProjectWorkspaceProps {
@@ -67,6 +75,11 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [ttsError, setTtsError] = useState<string | null>(null);
   const [regeneratingAudioId, setRegeneratingAudioId] = useState<string | null>(null);
 
+  // Dubbing & Export state
+  const [exportStatus, setExportStatus] = useState<ExportStatusResponse | null>(null);
+  const [exporting, setExporting] = useState<boolean>(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchTranscriptData = useCallback(async () => {
@@ -96,6 +109,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   }, [projectId]);
 
+  const fetchExportData = useCallback(async () => {
+    try {
+      const data = await api.getExportStatus(projectId);
+      setExportStatus(data);
+    } catch (err: any) {
+      console.error('Failed to load export status:', err);
+    }
+  }, [projectId]);
+
   const fetchProjectData = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
@@ -106,6 +128,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         data.status === 'translated' ||
         data.status === 'generating_voice' ||
         data.status === 'voice_generated' ||
+        data.status === 'synchronizing' ||
+        data.status === 'completed' ||
         (data.transcript_segments && data.transcript_segments.length > 0)
       ) {
         await fetchTranscriptData();
@@ -114,6 +138,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         data.status === 'translated' ||
         data.status === 'generating_voice' ||
         data.status === 'voice_generated' ||
+        data.status === 'synchronizing' ||
+        data.status === 'completed' ||
         (data.translation_segments && data.translation_segments.length > 0)
       ) {
         await fetchTranslationData();
@@ -127,18 +153,26 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       ) {
         await fetchAudioData();
       }
+      if (
+        data.status === 'voice_generated' ||
+        data.status === 'synchronizing' ||
+        data.status === 'completed' ||
+        !!data.video?.exported_video_path
+      ) {
+        await fetchExportData();
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load project details');
     } finally {
       setLoading(false);
     }
-  }, [projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData]);
+  }, [projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, fetchExportData]);
 
   useEffect(() => {
     fetchProjectData();
   }, [fetchProjectData]);
 
-  // Polling for background audio extraction, transcription, translation, or TTS jobs
+  // Polling for background audio extraction, transcription, translation, TTS, or dubbing jobs
   useEffect(() => {
     if (!project) return;
     const isExtracting =
@@ -157,6 +191,10 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       project.status === 'generating_voice' ||
       project.jobs?.some((j) => j.job_type === 'tts' && (j.status === 'pending' || j.status === 'running'));
 
+    const isDubRunning =
+      project.status === 'synchronizing' ||
+      project.jobs?.some((j) => j.job_type === 'dub' && (j.status === 'pending' || j.status === 'running'));
+
     if (isSttRunning) {
       setTranscribing(true);
     }
@@ -166,8 +204,11 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     if (isTtsRunning) {
       setGeneratingVoice(true);
     }
+    if (isDubRunning) {
+      setExporting(true);
+    }
 
-    if (!isExtracting && !isSttRunning && !isTransRunning && !isTtsRunning) return;
+    if (!isExtracting && !isSttRunning && !isTransRunning && !isTtsRunning && !isDubRunning) return;
 
     const interval = setInterval(async () => {
       try {
@@ -219,6 +260,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           }
         }
 
+        // Check if Dubbing export just finished
+        if (isDubRunning) {
+          const dubJob = data.jobs?.find((j) => j.job_type === 'dub');
+          if (dubJob?.status === 'completed' || data.status === 'completed') {
+            setExporting(false);
+            setExportError(null);
+            await fetchExportData();
+            if (onProjectUpdated) onProjectUpdated();
+          } else if (dubJob?.status === 'failed' || data.status === 'failed') {
+            setExporting(false);
+            setExportError(dubJob?.error_message || 'Video dubbing export failed.');
+            if (onProjectUpdated) onProjectUpdated();
+          }
+        }
+
         if (isExtracting && (data.status === 'audio_extracted' || data.status === 'failed')) {
           if (onProjectUpdated) onProjectUpdated();
         }
@@ -228,7 +284,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [project, projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, onProjectUpdated]);
+  }, [project, projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, fetchExportData, onProjectUpdated]);
 
   const handleFileSelect = async (file: File) => {
     setError(null);
@@ -435,10 +491,25 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         return [...prev, updatedAudio];
       });
       await fetchProjectData();
+      await fetchExportData();
     } catch (err: any) {
       setTtsError(err.message || 'Failed to regenerate audio segment');
     } finally {
       setRegeneratingAudioId(null);
+    }
+  };
+
+  // Dubbing & Export Handlers
+  const handleStartExport = async () => {
+    try {
+      setExporting(true);
+      setExportError(null);
+      await api.startExport(projectId);
+      await fetchProjectData();
+      await fetchExportData();
+    } catch (err: any) {
+      setExporting(false);
+      setExportError(err.message || 'Failed to start video export');
     }
   };
 
@@ -485,6 +556,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const latestSttJob = project.jobs?.find((j) => j.job_type === 'transcribe');
   const latestTransJob = project.jobs?.find((j) => j.job_type === 'translate');
   const latestTtsJob = project.jobs?.find((j) => j.job_type === 'tts');
+  const latestDubJob = project.jobs?.find((j) => j.job_type === 'dub');
 
   const isAudioReady = project.status === 'audio_extracted' || !!project.video?.extracted_audio_path;
   const isExtractionFailed = latestExtractJob?.status === 'failed' && !project.video?.extracted_audio_path;
@@ -499,6 +571,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     project.status === 'translated' ||
     project.status === 'generating_voice' ||
     project.status === 'voice_generated' ||
+    project.status === 'synchronizing' ||
+    project.status === 'completed' ||
     transcriptSegments.length > 0 ||
     latestSttJob?.status === 'completed';
 
@@ -506,6 +580,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     project.status === 'translated' ||
     project.status === 'generating_voice' ||
     project.status === 'voice_generated' ||
+    project.status === 'synchronizing' ||
+    project.status === 'completed' ||
     translationSegments.length > 0 ||
     latestTransJob?.status === 'completed';
 
@@ -515,6 +591,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     project.status === 'completed' ||
     (generatedAudios.length > 0 && latestTtsJob?.status === 'completed') ||
     (generatedAudios.length > 0 && generatedAudios.length === translationSegments.length);
+
+  const isVoiceReady =
+    generatedAudios.length > 0 &&
+    generatedAudios.length === translationSegments.length &&
+    !generatedAudios.some((a) => a.is_outdated);
+
+  const isExportReady =
+    (!!project.video?.exported_video_path || !!exportStatus?.exported_video_path) &&
+    (project.status === 'completed' || exportStatus?.is_export_ready === true);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -598,8 +683,16 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           >
             4. Khmer Voice {isVoiceGenerated && '✓'}
           </div>
-          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
-            5. Export Dub (P6)
+          <div
+            className={`p-2.5 rounded-lg border font-semibold ${
+              isExportReady
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : isVoiceGenerated
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                : 'bg-slate-50 border-slate-200 text-slate-400'
+            }`}
+          >
+            5. Export Dub {isExportReady && '✓'}
           </div>
         </div>
       </div>
@@ -1467,6 +1560,256 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   {isTranslated
                     ? 'Click "Generate Khmer Audio" above to convert all translated Khmer segments into natural speech.'
                     : 'Complete Step 3 (Khmer Translation) before synthesizing voice.'}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Section 5: Khmer Dubbed Video Export */}
+      {project.video && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          {/* Header */}
+          <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                <Film className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-800">
+                    5. Khmer Dubbed Video Export
+                  </h3>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    MP4 H.264
+                  </span>
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                    Audio: AAC Stereo
+                  </span>
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                    Timeline: 44.1 kHz
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Synchronizes Khmer speech segments with original timestamps and remuxes into a final downloadable MP4.
+                </p>
+              </div>
+            </div>
+
+            {/* Action Button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleStartExport}
+                disabled={!isVoiceReady || exporting || generatingVoice || translating}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all shadow-emerald-200"
+              >
+                {exporting ? (
+                  <>
+                    <RotateCcw className="w-4 h-4 animate-spin" />
+                    <span>Exporting Dub... ({latestDubJob?.progress_percentage || 0}%)</span>
+                  </>
+                ) : (
+                  <>
+                    <Film className="w-4 h-4" />
+                    <span>
+                      {isExportReady ? 'Regenerate Dubbed Video' : 'Generate Dubbed Video'}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="p-6 space-y-4">
+            {/* Prerequisites Checklist */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="text-slate-600">Source Video:</span>
+                <span className="font-semibold text-emerald-700">Ready</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {isTranscribed ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
+                <span className="text-slate-600">Transcript:</span>
+                <span className={`font-semibold ${isTranscribed ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {isTranscribed ? 'Ready' : 'Pending'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {isTranslated ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
+                <span className="text-slate-600">Translation:</span>
+                <span className={`font-semibold ${isTranslated ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {isTranslated ? 'Ready' : 'Pending'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {isVoiceReady ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                )}
+                <span className="text-slate-600">Speech Audio:</span>
+                <span
+                  className={`font-semibold ${
+                    isVoiceReady
+                      ? 'text-emerald-700'
+                      : generatedAudios.some((a) => a.is_outdated)
+                      ? 'text-amber-700'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  {isVoiceReady
+                    ? 'Ready'
+                    : generatedAudios.some((a) => a.is_outdated)
+                    ? 'Outdated'
+                    : 'Pending'}
+                </span>
+              </div>
+            </div>
+
+            {/* Error Alert */}
+            {exportError && (
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-semibold block mb-0.5">Export Error</span>
+                  <span>{exportError}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Outdated Video Warning */}
+            {exportStatus?.is_export_outdated && isExportReady && (
+              <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-3">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-semibold block mb-0.5">Video Export Outdated</span>
+                  <span>
+                    The Khmer translation or speech audio was updated after this video was generated.
+                    Click <strong>"Regenerate Dubbed Video"</strong> to update the final export.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Active Export Progress Bar */}
+            {exporting && latestDubJob && (
+              <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-2">
+                <div className="flex items-center justify-between text-xs text-emerald-900 font-semibold">
+                  <span className="flex items-center gap-2">
+                    <RotateCcw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                    Synchronizing audio and encoding MP4 video...
+                  </span>
+                  <span>{latestDubJob.progress_percentage}%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-emerald-200 overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-600 transition-all duration-300 rounded-full"
+                    style={{ width: `${latestDubJob.progress_percentage}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Timing Conflicts Panel */}
+            {exportStatus?.timing_conflicts && exportStatus.timing_conflicts.length > 0 && (
+              <div className="p-4 rounded-xl bg-amber-50/60 border border-amber-200 space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    Audio Timing Mismatch: {exportStatus.timing_conflicts.length} segment(s) exceeded the natural video interval (speed adjusted up to 1.25x).
+                  </span>
+                </div>
+                <div className="text-xs text-amber-800 space-y-1 pl-6">
+                  {exportStatus.timing_conflicts.map((c, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">Segment #{c.segment_order}:</span>
+                      <span>
+                        Orig {c.original_duration}s vs Khmer {c.khmer_duration}s (+{c.overflow_seconds}s overflow).
+                      </span>
+                      <span className="text-[11px] text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                        Tempo: {c.tempo_factor}x
+                      </span>
+                    </div>
+                  ))}
+                  <p className="text-[11px] text-amber-700 pt-1">
+                    Tip: If speech sounds slightly rapid, you can shorten the Khmer sentence in Step 3 and re-export.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Completed Video Player & Download Card */}
+            {isExportReady ? (
+              <div className="space-y-4">
+                <div className="rounded-xl overflow-hidden bg-black shadow-md border border-slate-200">
+                  <video
+                    controls
+                    className="w-full max-h-[500px] aspect-video mx-auto"
+                    src={api.getExportVideoUrl(projectId)}
+                    preload="metadata"
+                  />
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                  <div className="flex flex-wrap items-center gap-4 text-slate-700">
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">Duration</span>
+                      <span className="font-semibold text-sm">
+                        {exportStatus?.exported_duration_seconds
+                          ? formatTimestamp(exportStatus.exported_duration_seconds)
+                          : project.video?.exported_duration_seconds
+                          ? formatTimestamp(project.video.exported_duration_seconds)
+                          : formatTimestamp(project.video?.duration_seconds || 0)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">File Size</span>
+                      <span className="font-semibold text-sm">
+                        {exportStatus?.exported_file_size_bytes
+                          ? formatFileSize(exportStatus.exported_file_size_bytes)
+                          : project.video?.exported_file_size_bytes
+                          ? formatFileSize(project.video.exported_file_size_bytes)
+                          : 'MP4 Video'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">Audio Track</span>
+                      <span className="font-semibold text-sm text-emerald-700">Khmer (Synchronized)</span>
+                    </div>
+                  </div>
+
+                  <a
+                    href={api.getExportDownloadUrl(projectId)}
+                    download
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-sm transition-all shadow-emerald-200 text-xs shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Dubbed Video (MP4)</span>
+                  </a>
+                </div>
+              </div>
+            ) : (
+              /* Awaiting Dubbing View */
+              <div className="p-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                <Film className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-slate-700">
+                  {isVoiceReady ? 'Ready for Dubbed Video Export' : 'Awaiting Prior Dubbing Steps'}
+                </h4>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  {isVoiceReady
+                    ? 'Click "Generate Dubbed Video" above to synchronize all speech segments and create the final MP4.'
+                    : 'Complete Steps 1–4 (Video, Transcription, Translation, and Khmer Voice) before exporting.'}
                 </p>
               </div>
             )}

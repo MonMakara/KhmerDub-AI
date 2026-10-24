@@ -29,6 +29,8 @@ data/outputs/*
 !data/outputs/.gitkeep
 data/temp/*
 !data/temp/.gitkeep
+data/projects/*
+!data/projects/.gitkeep
 *.db
 *.sqlite
 *.sqlite3

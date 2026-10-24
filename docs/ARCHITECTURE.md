@@ -43,8 +43,9 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
 
 ### 2.1 Backend (`backend/app`)
 - **`core/config.py`**: Centralized configuration management using Pydantic Settings.
+- **`core/storage.py`**: Project file storage manager organizing project assets (`data/projects/{project_id}/`) with paths for uploads, extracted audio, voice segments, audio timelines, and exported videos with backward compatibility resolution.
 - **`database/`**: SQLAlchemy SQLite session manager and table initialization with automated schema column upgrades.
-- **`models/`**: Relational models for `Project`, `Video`, `TranscriptSegment`, `TranslationSegment`, `ProcessingJob`, and `GeneratedAudio`.
+- **`models/`**: Relational models for `Project`, `Video` (with export metadata & `is_export_outdated` flag), `TranscriptSegment`, `TranslationSegment`, `ProcessingJob`, and `GeneratedAudio`.
 - **`schemas/`**: Pydantic input/output validation schemas (`ProjectResponse`, `VideoResponse`, `ProcessingJobResponse`).
 - **`api/endpoints/`**:
   - `GET /api/health`: Diagnostics and environment readiness.
@@ -62,6 +63,10 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `GET /api/projects/{id}/generated-audio`: Retrieve all synthesized audio records with playback URLs and outdated flags.
   - `POST /api/projects/{id}/tts/{segment_id}/regenerate`: Single segment audio regeneration.
   - `GET /api/projects/{id}/tts/{segment_id}/audio`: Stream synthesized MP3 audio for browser playback.
+  - `POST /api/projects/{id}/export`: Dispatch asynchronous background audio synchronization and dubbed video export.
+  - `GET /api/projects/{id}/export/status`: Retrieve export status, job progress, file metadata, and timing conflicts.
+  - `GET /api/projects/{id}/export/video`: Stream dubbed MP4 video with HTTP 206 Partial Content byte-range support.
+  - `GET /api/projects/{id}/export/download`: Download finalized dubbed MP4 video as attachment with project title filename.
   - `GET /api/projects/{id}/jobs`: Processing jobs and progress tracking.
   - `GET /api/projects/{id}/video`: Stream uploaded MP4 for browser video preview.
   - `GET /api/projects/{id}/audio`: Stream extracted 16kHz WAV audio for browser playback.
@@ -73,11 +78,16 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `GoogleTTSProvider`: Concretely implements `TTSProvider`. Streams speech MP3 from Google gTTS (`km`) with exponential backoff retries, text validation, and duration measurement using `FFmpegVideoProcessor.get_audio_duration`.
 - **`services/video/`**:
   - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, measures audio duration, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
+- **`services/dubbing/`**:
+  - `AudioSynchronizationService`: Coordinates timeline construction, inserts silence gaps via `anullsrc`, standardizes pieces to 44.1kHz 16-bit stereo PCM WAV, applies conservative `atempo` adjustment (max 1.25x), and detects timing conflicts without silent truncation.
+  - `VideoExportService`: Remuxes video with synchronized timeline audio using explicit FFmpeg stream mapping (`-map 0:v:0 -map 1:a:0`), AAC encoding at 192kbps, faststart container optimization, and atomic staging (`.tmp.mp4` -> final).
+  - `DubbingPipeline`: Orchestrates the complete end-to-end synchronization and export workflow, returning an `ExportResult`.
 - **`workers/`**:
   - `process_audio_extraction`: Non-blocking background worker updating audio extraction job status.
   - `process_transcription`: Background STT worker populating `TranscriptSegment` database records.
   - `process_translation`: Background translation worker processing English segments, respecting and preserving manually edited translations (`is_manually_edited`), and populating `TranslationSegment` records.
   - `process_tts`: Background TTS worker orchestrating segment-level speech synthesis, updating `GeneratedAudio` records and tracking invalidation (`is_outdated`).
+  - `process_dubbing`: Background dubbing worker orchestrating audio synchronization, video export, conflict logging, and database metadata updates.
 
 ### 2.2 Frontend (`frontend/src`)
 - **Layout**: Clean left sidebar with Dashboard, Projects, and Settings tabs; top header with live backend connectivity status.
@@ -101,8 +111,11 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
 4. **Step 4: Khmer Speech Synthesis**:
    - Google gTTS generates audio segments for each Khmer sentence into `data/temp/`.
 5. **Step 5: Audio Synchronization & Video Remux**:
-   - Audio segments are aligned against original timestamps with modest time-stretching if necessary.
-   - FFmpeg replaces the original audio track with the synchronized Khmer dubbed track, producing the final output in `data/outputs/`.
+   - Synthesized Khmer speech audio segments are fetched and validated against original segment timestamps.
+   - `AudioSynchronizationService` calculates offsets, inserts silence gaps via `anullsrc`, standardizes sample rates, applies conservative tempo scaling (max 1.25x), and generates a master timeline WAV (`khmer_timeline.wav`).
+   - If audio exceeds the available timestamp slot even with tempo adjustment, the system preserves the full audio and surfaces a descriptive `TimingConflict` report rather than truncating speech.
+   - `VideoExportService` cleanly muxes the video stream from the uploaded MP4 with the synchronized audio timeline using FFmpeg (`-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -movflags +faststart`).
+   - Video is atomically saved to `data/projects/{project_id}/output/dubbed_khmer.mp4` and made accessible via in-browser streaming player and direct download.
 
 ---
 

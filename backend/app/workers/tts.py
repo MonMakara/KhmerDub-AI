@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.storage import get_audio_segment_path
 from app.database.session import SessionLocal
 from app.models.project import (
     Project,
@@ -26,7 +27,7 @@ def synthesize_segment_audio(
     db: Session,
 ) -> GeneratedAudio:
     """Helper to synthesize audio for a single translation segment and update the database."""
-    output_path = settings.TEMP_DIR / f"tts_{project_id}_{segment.id}.mp3"
+    output_path = get_audio_segment_path(project_id, segment.id)
     result = provider.synthesize(
         text=segment.khmer_text,
         output_path=output_path,

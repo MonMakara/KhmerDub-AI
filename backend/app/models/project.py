@@ -101,8 +101,13 @@ class Video(Base):
     video_codec = Column(String(50), nullable=True)
     audio_codec = Column(String(50), nullable=True)
     extracted_audio_path = Column(String(1024), nullable=True)
+    audio_timeline_path = Column(String(1024), nullable=True)
     exported_video_path = Column(String(1024), nullable=True)
+    exported_duration_seconds = Column(Float, nullable=True)
+    exported_file_size_bytes = Column(Integer, nullable=True)
+    is_export_outdated = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
     project = relationship("Project", back_populates="video")
 
