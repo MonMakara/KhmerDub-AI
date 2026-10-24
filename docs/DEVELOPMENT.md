@@ -99,6 +99,40 @@ curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLA
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/retranslate"
 ```
 
+### Testing AI Translation API & LLM Features via cURL (Phase 9)
+```bash
+# 1. List translation providers and styles
+curl -s "http://localhost:8000/api/translation/providers" | jq .
+
+# 2. Test Gemini API connection
+curl -X POST "http://localhost:8000/api/translation/test-connection" \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "gemini", "api_key": "YOUR_GEMINI_KEY"}'
+
+# 3. Securely save Gemini API key
+curl -X POST "http://localhost:8000/api/translation/credentials" \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "gemini", "api_key": "YOUR_GEMINI_KEY"}'
+
+# 4. Update project translation settings (Google Gemini with 'short' dubbing mode)
+curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translation-settings" \
+  -H "Content-Type: application/json" \
+  -d '{"translation_provider": "gemini", "translation_style": "short"}'
+
+# 5. AI improve an individual translation segment with timing awareness
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/ai-improve" \
+  -H "Content-Type: application/json" \
+  -d '{"style": "short", "custom_prompt": "Make concise to fit under 2.5s"}'
+
+# 6. Generate 3 structured alternatives (Natural, Simple, Short)
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/alternatives"
+
+# 7. Apply chosen translation alternative
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/apply" \
+  -H "Content-Type: application/json" \
+  -d '{"khmer_text": "វីដេអូនេះពន្យល់ពីដំណើរការបញ្ញាសិប្បនិម្មិត។", "style": "short"}'
+```
+
 ### Testing Khmer Text-to-Speech & Voice Selection via cURL (Phase 5 & Phase 8)
 ```bash
 # 1. List all available Khmer voices (Google Khmer, Microsoft Piseth, Microsoft Sreymom)

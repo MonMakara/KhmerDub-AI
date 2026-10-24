@@ -31,6 +31,9 @@ data/temp/*
 !data/temp/.gitkeep
 data/projects/*
 !data/projects/.gitkeep
+data/.secrets/
+*.enc
+*.key
 *.db
 *.sqlite
 *.sqlite3

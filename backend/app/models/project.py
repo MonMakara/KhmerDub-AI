@@ -47,6 +47,8 @@ class Project(Base):
     original_video_path = Column(String(1024), nullable=True)
     original_language = Column(String(10), default="en", nullable=False)
     target_language = Column(String(10), default="km", nullable=False)
+    translation_provider = Column(String(50), default="nllb", nullable=False)
+    translation_style = Column(String(50), default="natural", nullable=False)
     tts_provider = Column(String(50), default="gtts", nullable=False)
     tts_voice = Column(String(100), default="default", nullable=False)
     status = Column(
@@ -136,6 +138,8 @@ class TranslationSegment(Base):
     transcript_segment_id = Column(String(36), ForeignKey("transcript_segments.id"), nullable=True)
     segment_order = Column(Integer, nullable=False)
     khmer_text = Column(Text, nullable=False)
+    style = Column(String(50), default="natural", nullable=True)
+    explanation = Column(Text, nullable=True)
     is_manually_edited = Column(Boolean, default=False, nullable=False)
     is_outdated = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

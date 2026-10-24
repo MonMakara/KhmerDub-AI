@@ -25,6 +25,7 @@ import {
   Play,
   Square,
   Check,
+  Layers,
 } from 'lucide-react';
 import {
   ProjectDetail,
@@ -33,6 +34,9 @@ import {
   GeneratedAudio,
   ExportStatusResponse,
   VoiceOption,
+  TranslationProviderInfo,
+  AlternativesResponse,
+  AIImproveResponse,
 } from '../types';
 import { api } from '../services/api';
 
@@ -72,6 +76,22 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [editingTransText, setEditingTransText] = useState<string>('');
   const [savingTransId, setSavingTransId] = useState<string | null>(null);
   const [retranslatingTransId, setRetranslatingTransId] = useState<string | null>(null);
+
+  // Translation Provider & Style state (Phase 9)
+  const [translationProviders, setTranslationProviders] = useState<TranslationProviderInfo[]>([]);
+  const [selectedTransProvider, setSelectedTransProvider] = useState<string>('nllb');
+  const [selectedTransStyle, setSelectedTransStyle] = useState<string>('natural');
+  const [updatingTransSettings, setUpdatingTransSettings] = useState<boolean>(false);
+
+  // AI LLM Modal state (Phase 9: Improve & Alternatives)
+  const [aiModalSegment, setAiModalSegment] = useState<TranslationSegment | null>(null);
+  const [aiModalMode, setAiModalMode] = useState<'improve' | 'alternatives' | null>(null);
+  const [improvingSegmentId, setImprovingSegmentId] = useState<string | null>(null);
+  const [improvedResult, setImprovedResult] = useState<AIImproveResponse | null>(null);
+  const [loadingAlternatives, setLoadingAlternatives] = useState<boolean>(false);
+  const [alternativesResult, setAlternativesResult] = useState<AlternativesResponse | null>(null);
+  const [applyingSuggestion, setApplyingSuggestion] = useState<boolean>(false);
+  const [aiCustomPrompt, setAiCustomPrompt] = useState<string>('');
 
   // Text-to-Speech (gTTS & Edge TTS) state
   const [availableVoices, setAvailableVoices] = useState<VoiceOption[]>([]);
@@ -139,6 +159,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   }, []);
 
+  const fetchTranslationProviders = useCallback(async () => {
+    try {
+      const data = await api.getTranslationProviders();
+      setTranslationProviders(data.providers);
+    } catch (err: any) {
+      console.error('Failed to load translation providers:', err);
+    }
+  }, []);
+
   const fetchProjectData = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
@@ -148,6 +177,12 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           provider: data.tts_provider,
           voice: data.tts_voice,
         });
+      }
+      if (data.translation_provider) {
+        setSelectedTransProvider(data.translation_provider);
+      }
+      if (data.translation_style) {
+        setSelectedTransStyle(data.translation_style);
       }
       if (
         data.status === 'transcribed' ||
@@ -197,6 +232,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   useEffect(() => {
     fetchVoices();
+    fetchTranslationProviders();
     fetchProjectData();
     return () => {
       if (previewAudioRef.current) {
@@ -204,7 +240,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         previewAudioRef.current = null;
       }
     };
-  }, [fetchVoices, fetchProjectData]);
+  }, [fetchVoices, fetchTranslationProviders, fetchProjectData]);
 
   // Polling for background audio extraction, transcription, translation, TTS, or dubbing jobs
   useEffect(() => {
@@ -496,6 +532,106 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       alert(`Error retranslating segment: ${err.message}`);
     } finally {
       setRetranslatingTransId(null);
+    }
+  };
+
+  const handleUpdateTranslationSettings = async (provider: string, style: string) => {
+    try {
+      setUpdatingTransSettings(true);
+      setSelectedTransProvider(provider);
+      setSelectedTransStyle(style);
+      const updated = await api.updateProjectTranslationSettings(projectId, {
+        translation_provider: provider,
+        translation_style: style,
+      });
+      setProject(updated);
+      if (onProjectUpdated) onProjectUpdated();
+    } catch (err: any) {
+      alert(`Failed to update translation settings: ${err.message}`);
+    } finally {
+      setUpdatingTransSettings(false);
+    }
+  };
+
+  const handleOpenAiImprove = async (seg: TranslationSegment) => {
+    setAiModalSegment(seg);
+    setAiModalMode('improve');
+    setImprovedResult(null);
+    setAiCustomPrompt('');
+    setImprovingSegmentId(seg.id);
+    try {
+      const res = await api.aiImproveSegment(projectId, seg.id, {
+        style: selectedTransStyle,
+      });
+      setImprovedResult(res);
+    } catch (err: any) {
+      alert(`AI improvement failed: ${err.message}`);
+      setAiModalSegment(null);
+      setAiModalMode(null);
+    } finally {
+      setImprovingSegmentId(null);
+    }
+  };
+
+  const handleRerunAiImprove = async () => {
+    if (!aiModalSegment) return;
+    setImprovingSegmentId(aiModalSegment.id);
+    try {
+      const res = await api.aiImproveSegment(projectId, aiModalSegment.id, {
+        style: selectedTransStyle,
+        custom_prompt: aiCustomPrompt.trim() || undefined,
+      });
+      setImprovedResult(res);
+    } catch (err: any) {
+      alert(`AI improvement failed: ${err.message}`);
+    } finally {
+      setImprovingSegmentId(null);
+    }
+  };
+
+  const handleOpenAlternatives = async (seg: TranslationSegment) => {
+    setAiModalSegment(seg);
+    setAiModalMode('alternatives');
+    setAlternativesResult(null);
+    setLoadingAlternatives(true);
+    try {
+      const res = await api.getTranslationAlternatives(projectId, seg.id);
+      setAlternativesResult(res);
+    } catch (err: any) {
+      alert(`Failed to generate alternatives: ${err.message}`);
+      setAiModalSegment(null);
+      setAiModalMode(null);
+    } finally {
+      setLoadingAlternatives(false);
+    }
+  };
+
+  const handleApplySuggestion = async (
+    khmerText: string,
+    style?: string,
+    explanation?: string
+  ) => {
+    if (!aiModalSegment) return;
+    try {
+      setApplyingSuggestion(true);
+      const updated = await api.applyTranslationSuggestion(projectId, aiModalSegment.id, {
+        khmer_text: khmerText,
+        style: style || undefined,
+        explanation: explanation || undefined,
+      });
+      setTranslationSegments((prev) =>
+        prev.map((s) => (s.id === aiModalSegment.id ? updated : s))
+      );
+      setAiModalSegment(null);
+      setAiModalMode(null);
+      setImprovedResult(null);
+      setAlternativesResult(null);
+      await fetchAudioData();
+      await fetchExportData();
+    } catch (err: any) {
+      alert(`Failed to apply translation suggestion: ${err.message}`);
+    } finally {
+      setApplyingSuggestion(false);
     }
   };
 
@@ -1226,64 +1362,133 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             )}
           </div>
 
-          {/* Section 3: English-to-Khmer Translation (Meta NLLB-200) */}
+          {/* Section 3: English-to-Khmer Translation */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
             {/* Header & Controls */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <Languages className="w-5 h-5 text-indigo-600" />
-                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
-                    Khmer Translation
-                  </h3>
+            <div className="flex flex-col gap-4 pb-4 border-b border-slate-100">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Languages className="w-5 h-5 text-indigo-600" />
+                    <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                      Khmer Translation
+                    </h3>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    <span className="px-2 py-0.5 rounded bg-slate-100 font-medium text-slate-700 border border-slate-200">
+                      {selectedTransProvider === 'gemini'
+                        ? 'Provider: Google Gemini (AI LLM)'
+                        : 'Provider: Meta NLLB-200 (Offline)'}
+                    </span>
+                    <span>•</span>
+                    <span>
+                      Status:{' '}
+                      <strong className="capitalize text-slate-800">
+                        {translating
+                          ? 'Translating...'
+                          : isTranslated
+                          ? 'Completed'
+                          : latestTransJob?.status || 'Pending'}
+                      </strong>
+                    </span>
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                  <span className="px-2 py-0.5 rounded bg-slate-100 font-medium text-slate-700 border border-slate-200">
-                    Model: facebook/nllb-200-distilled-600M (eng_Latn → khm_Khmr)
-                  </span>
-                  <span>•</span>
-                  <span>
-                    Status:{' '}
-                    <strong className="capitalize text-slate-800">
-                      {translating
-                        ? 'Translating...'
-                        : isTranslated
-                        ? 'Completed'
-                        : latestTransJob?.status || 'Pending'}
-                    </strong>
-                  </span>
+
+                {/* Action Button */}
+                <div>
+                  {!isTranslated ? (
+                    <button
+                      onClick={handleStartTranslation}
+                      disabled={!isTranscribed || translating}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition-colors shadow-sm"
+                    >
+                      {translating ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>
+                            {selectedTransProvider === 'gemini'
+                              ? 'Translating with Gemini...'
+                              : 'Translating with NLLB...'}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <Languages className="w-4 h-4" />
+                          <span>Translate to Khmer</span>
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleStartTranslation}
+                      disabled={translating}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-semibold transition-colors"
+                    >
+                      <RotateCcw className={`w-3.5 h-3.5 ${translating ? 'animate-spin' : ''}`} />
+                      <span>{translating ? 'Retranslating...' : 'Retranslate All'}</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Action Button */}
-              <div>
-                {!isTranslated ? (
-                  <button
-                    onClick={handleStartTranslation}
-                    disabled={!isTranscribed || translating}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition-colors shadow-sm"
-                  >
-                    {translating ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Translating with NLLB...</span>
-                      </>
+              {/* Translation Provider & Style Configuration Toolbar */}
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Provider Selector */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-slate-600 text-[11px] uppercase tracking-wide">
+                      Provider:
+                    </span>
+                    <select
+                      value={selectedTransProvider}
+                      onChange={(e) =>
+                        handleUpdateTranslationSettings(e.target.value, selectedTransStyle)
+                      }
+                      disabled={updatingTransSettings || translating}
+                      className="bg-white border border-slate-300 rounded-lg px-2.5 py-1 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="nllb">Meta NLLB-200 (Local Free)</option>
+                      <option value="gemini">Google Gemini (AI LLM)</option>
+                    </select>
+                  </div>
+
+                  {/* Style Selector */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-slate-600 text-[11px] uppercase tracking-wide">
+                      Style:
+                    </span>
+                    <select
+                      value={selectedTransStyle}
+                      onChange={(e) =>
+                        handleUpdateTranslationSettings(selectedTransProvider, e.target.value)
+                      }
+                      disabled={updatingTransSettings || translating}
+                      className="bg-white border border-slate-300 rounded-lg px-2.5 py-1 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="natural">Natural Spoken (Default)</option>
+                      <option value="short">Short for Video Dubbing</option>
+                      <option value="simple">Simple & Clear</option>
+                      <option value="formal">Formal / Professional</option>
+                      <option value="standard">Standard / Faithful</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Gemini configuration status reminder */}
+                {selectedTransProvider === 'gemini' && (
+                  <div className="flex items-center gap-2 text-[11px]">
+                    {translationProviders.find((p) => p.id === 'gemini')?.is_configured ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-medium">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        Gemini Configured
+                      </span>
                     ) : (
-                      <>
-                        <Languages className="w-4 h-4" />
-                        <span>Translate to Khmer</span>
-                      </>
+                      <span className="inline-flex items-center gap-1 text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium">
+                        <AlertTriangle className="w-3 h-3 text-amber-600" />
+                        Gemini key not configured (Set in Settings)
+                      </span>
                     )}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleStartTranslation}
-                    disabled={translating}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-semibold transition-colors"
-                  >
-                    <RotateCcw className={`w-3.5 h-3.5 ${translating ? 'animate-spin' : ''}`} />
-                    <span>{translating ? 'Retranslating...' : 'Retranslate All'}</span>
-                  </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -1391,13 +1596,38 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                           </div>
 
                           {/* Right: Khmer Translation */}
-                          <div className="p-3 rounded-lg bg-white border border-indigo-100 space-y-1 relative">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">
-                                Khmer Translation
-                              </span>
+                          <div className="p-3 rounded-lg bg-white border border-indigo-100 space-y-2 relative">
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">
+                                  Khmer Translation
+                                </span>
+                                {seg.style && (
+                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-semibold border border-indigo-100 capitalize">
+                                    {seg.style}
+                                  </span>
+                                )}
+                              </div>
                               {!isEditing && (
-                                <div className="flex items-center gap-1">
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <button
+                                    onClick={() => handleOpenAiImprove(seg)}
+                                    disabled={improvingSegmentId === seg.id}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition"
+                                    title="Improve phrasing or fit timing with AI"
+                                  >
+                                    <Sparkles className="w-3 h-3 text-indigo-600" />
+                                    <span>AI Improve</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleOpenAlternatives(seg)}
+                                    disabled={loadingAlternatives}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium text-slate-700 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border border-slate-200 transition"
+                                    title="View 3 translation style alternatives"
+                                  >
+                                    <Layers className="w-3 h-3 text-slate-500" />
+                                    <span>Alternatives</span>
+                                  </button>
                                   <button
                                     onClick={() => handleRetranslateSegment(seg.id)}
                                     disabled={isRetranslating}
@@ -1446,9 +1676,17 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                                 </div>
                               </div>
                             ) : (
-                              <p className="text-sm text-slate-900 leading-relaxed font-normal">
-                                {seg.khmer_text}
-                              </p>
+                              <>
+                                <p className="text-sm text-slate-900 leading-relaxed font-normal">
+                                  {seg.khmer_text}
+                                </p>
+                                {seg.explanation && (
+                                  <div className="mt-1.5 p-2 rounded bg-indigo-50/50 border border-indigo-100 text-[11px] text-indigo-900 flex items-start gap-1.5">
+                                    <Sparkles className="w-3 h-3 text-indigo-500 shrink-0 mt-0.5" />
+                                    <span>{seg.explanation}</span>
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
                         </div>
@@ -2078,6 +2316,217 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                     ? 'Click "Generate Dubbed Video" above to synchronize all speech segments and create the final MP4.'
                     : 'Complete Steps 1–4 (Video, Transcription, Translation, and Khmer Voice) before exporting.'}
                 </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* AI LLM Modal: Improve & Alternatives (Phase 9) */}
+      {aiModalSegment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-5">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-indigo-50 text-indigo-600">
+                  {aiModalMode === 'improve' ? <Sparkles className="w-5 h-5" /> : <Layers className="w-5 h-5" />}
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {aiModalMode === 'improve' ? 'AI Translation Improvement' : 'Translation Alternatives'}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Segment #{aiModalSegment.segment_order} • Timing:{' '}
+                    {formatTimestamp(aiModalSegment.start_time || 0)} – {formatTimestamp(aiModalSegment.end_time || 0)}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setAiModalSegment(null);
+                  setAiModalMode(null);
+                }}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Context Box: English vs Current Khmer */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Original English</span>
+                <p className="text-slate-800 leading-relaxed">{aiModalSegment.english_text || '(No text)'}</p>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <span className="text-[10px] uppercase font-bold text-slate-400">Current Translation</span>
+                <p className="text-slate-800 leading-relaxed font-sans">{aiModalSegment.khmer_text}</p>
+              </div>
+            </div>
+
+            {/* AI Improve Content */}
+            {aiModalMode === 'improve' && (
+              <div className="space-y-4">
+                {improvingSegmentId === aiModalSegment.id ? (
+                  <div className="p-8 text-center bg-indigo-50/40 rounded-xl border border-indigo-100 space-y-3">
+                    <RefreshCw className="w-7 h-7 text-indigo-600 animate-spin mx-auto" />
+                    <h4 className="text-sm font-semibold text-slate-800">
+                      Analyzing with Google Gemini...
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Evaluating natural phrasing, terminology glossary, and speech timing slot.
+                    </p>
+                  </div>
+                ) : improvedResult ? (
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-xl bg-indigo-50/50 border border-indigo-200 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-indigo-900 uppercase tracking-wide flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                          AI-Improved Translation ({improvedResult.style})
+                        </span>
+                        <span className="text-[11px] font-mono text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                          {improvedResult.model}
+                        </span>
+                      </div>
+                      <div className="p-3 bg-white rounded-lg border border-indigo-100">
+                        <p className="text-base text-slate-900 font-medium leading-relaxed">
+                          {improvedResult.improved_khmer_text}
+                        </p>
+                      </div>
+                      {improvedResult.explanation && (
+                        <div className="text-xs text-indigo-800 bg-white/80 p-2.5 rounded-lg border border-indigo-100/60 leading-relaxed">
+                          <strong className="font-semibold">Reasoning: </strong>
+                          {improvedResult.explanation}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Fine-tuning input */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-slate-700">
+                        Optional Prompt / Instructions to Refine:
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="e.g. Make it even shorter to fit 2 seconds, or use simpler words..."
+                          value={aiCustomPrompt}
+                          onChange={(e) => setAiCustomPrompt(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleRerunAiImprove()}
+                          className="flex-1 text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                        <button
+                          onClick={handleRerunAiImprove}
+                          disabled={improvingSegmentId === aiModalSegment.id}
+                          className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg transition"
+                        >
+                          Re-improve
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                      <button
+                        onClick={() => {
+                          setAiModalSegment(null);
+                          setAiModalMode(null);
+                        }}
+                        className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleApplySuggestion(
+                            improvedResult.improved_khmer_text,
+                            improvedResult.style,
+                            improvedResult.explanation
+                          )
+                        }
+                        disabled={applyingSuggestion}
+                        className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm transition"
+                      >
+                        <Check className="w-4 h-4" />
+                        {applyingSuggestion ? 'Applying...' : 'Apply This Translation'}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
+            {/* Alternatives Content */}
+            {aiModalMode === 'alternatives' && (
+              <div className="space-y-4">
+                {loadingAlternatives ? (
+                  <div className="p-8 text-center bg-indigo-50/40 rounded-xl border border-indigo-100 space-y-3">
+                    <RefreshCw className="w-7 h-7 text-indigo-600 animate-spin mx-auto" />
+                    <h4 className="text-sm font-semibold text-slate-800">
+                      Generating Translation Alternatives...
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Creating Natural Spoken, Simple Words, and Short (Dubbing Tempo) options with Gemini.
+                    </p>
+                  </div>
+                ) : alternativesResult ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {alternativesResult.alternatives.map((alt) => (
+                        <div
+                          key={alt.style}
+                          className="p-4 rounded-xl border border-slate-200 bg-slate-50/60 flex flex-col justify-between space-y-3 hover:border-indigo-300 transition"
+                        >
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
+                                {alt.label}
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 font-medium capitalize">
+                                {alt.style}
+                              </span>
+                            </div>
+                            <div className="p-3 bg-white rounded-lg border border-slate-200 min-h-[70px]">
+                              <p className="text-sm text-slate-900 font-medium leading-relaxed">
+                                {alt.khmer_text}
+                              </p>
+                            </div>
+                            {alt.explanation && (
+                              <p className="text-[11px] text-slate-500 leading-snug">
+                                {alt.explanation}
+                              </p>
+                            )}
+                          </div>
+
+                          <button
+                            onClick={() =>
+                              handleApplySuggestion(alt.khmer_text, alt.style, alt.explanation || undefined)
+                            }
+                            disabled={applyingSuggestion}
+                            className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm transition"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            Apply {alt.label}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                      <button
+                        onClick={() => {
+                          setAiModalSegment(null);
+                          setAiModalMode(null);
+                        }}
+                        className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

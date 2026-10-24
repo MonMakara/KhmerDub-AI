@@ -63,6 +63,8 @@ export interface ProjectSummary {
   title: string;
   original_language: string;
   target_language: string;
+  translation_provider?: string;
+  translation_style?: string;
   tts_provider?: string;
   tts_voice?: string;
   status: ProjectStatus;
@@ -94,6 +96,8 @@ export interface TranslationSegment {
   english_text?: string | null;
   start_time?: number | null;
   end_time?: number | null;
+  style?: string | null;
+  explanation?: string | null;
   is_manually_edited: boolean;
   is_outdated: boolean;
   created_at: string;
@@ -190,4 +194,90 @@ export interface VoicePreviewRequest {
   provider: string;
   voice: string;
   text?: string;
+}
+
+export interface TranslationProviderInfo {
+  id: string;
+  name: string;
+  type: string;
+  description: string;
+  requires_api_key: boolean;
+  is_configured: boolean;
+  masked_key?: string | null;
+  supports_styles: boolean;
+  supports_alternatives: boolean;
+  default_model: string;
+  available_models: string[];
+}
+
+export interface TranslationStyleOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface TranslationProviderListResponse {
+  providers: TranslationProviderInfo[];
+  default_provider: string;
+  default_style: string;
+  styles: TranslationStyleOption[];
+}
+
+export interface TestConnectionRequest {
+  provider?: string;
+  api_key?: string;
+  model?: string;
+}
+
+export interface TestConnectionResponse {
+  success: boolean;
+  message: string;
+  provider: string;
+}
+
+export interface SaveCredentialsRequest {
+  provider: string;
+  api_key: string;
+}
+
+export interface AIImproveRequest {
+  style?: string;
+  target_duration?: number;
+  custom_prompt?: string;
+}
+
+export interface AIImproveResponse {
+  segment_id: string;
+  original_text: string;
+  current_khmer_text: string;
+  improved_khmer_text: string;
+  explanation: string;
+  style: string;
+  provider: string;
+  model: string;
+}
+
+export interface AlternativeOption {
+  style: string;
+  label: string;
+  khmer_text: string;
+  explanation?: string | null;
+}
+
+export interface AlternativesResponse {
+  segment_id: string;
+  english_text: string;
+  current_khmer_text: string;
+  alternatives: AlternativeOption[];
+}
+
+export interface ApplyTranslationRequest {
+  khmer_text: string;
+  style?: string;
+  explanation?: string;
+}
+
+export interface ProjectTranslationSettingsUpdate {
+  translation_provider: string;
+  translation_style: string;
 }

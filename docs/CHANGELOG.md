@@ -2,6 +2,50 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.9.0] - Phase 9 Complete (2026-10-25)
+
+### Added
+- **AI Translation API Integration (Google Gemini)**:
+  - Installed official `google-genai>=2.33.0` and `cryptography>=46.0.0` inside Docker environment without global dependencies.
+  - Implemented `GeminiTranslationProvider` (`backend/app/services/translation/gemini.py`) supporting `gemini-2.5-flash` (default), `gemini-1.5-flash`, and `gemini-1.5-pro`.
+  - Batch translation with JSON schema mode and graceful per-segment fallback.
+  - Exponential backoff retry logic handling rate limits (HTTP 429 / `RESOURCE_EXHAUSTED`), timeouts, and transient errors.
+  - Automatic post-processing through `KhmerGlossary.align_terminology` and `KhmerTextFormatter.format` ensuring orthographic spacing compaction and terminology accuracy (`បញ្ញាសិប្បនិម្មិត`, `ដំណើរការ`).
+- **Translation Styles & Prompt Engineering (`backend/app/services/translation/prompts.py`)**:
+  - 5 translation styles: `natural` (authentic spoken Khmer), `short` (concise phrasing for speech time fitting), `simple` (clear everyday vocabulary), `formal` (polite, elevated register), and `standard` (faithful literal translation).
+  - Strict system prompt with technical terminology glossary injection and prompt injection defense.
+- **Symmetric Credential Encryption (`backend/app/core/credentials.py`)**:
+  - Fernet encryption (AES-128-CBC + HMAC-SHA256) storing client API keys in `/app/data/.secrets/credentials.enc` with 0o600 key permissions.
+  - Precedence for `GEMINI_API_KEY` environment variable.
+  - Masked API key representation (`AIzaSy...4aB8`), preventing plaintext exposure to logs or browser clients.
+- **Database Schema Migration (`d2a83b5e1f02`)**:
+  - Added `translation_provider` (default `'nllb'`) and `translation_style` (default `'natural'`) to `projects` table.
+  - Added `style` (default `'natural'`) and `explanation` (Text) to `translation_segments` table.
+  - Safe SQLite column introspection preventing duplicate column migration errors.
+- **API Endpoints**:
+  - `GET /api/translation/providers`: Returns provider catalog, supported models, and styles.
+  - `POST /api/translation/test-connection`: Non-blocking API key and model connectivity test.
+  - `POST /api/translation/credentials` & `DELETE /api/translation/credentials/{provider}`: Encrypted credential storage and deletion.
+  - `PATCH /api/projects/{id}/translation-settings`: Update project translation provider and style mode.
+  - `POST /api/projects/{id}/translations/{segment_id}/ai-improve`: Context- and speech-duration-aware translation improvement via Gemini.
+  - `POST /api/projects/{id}/translations/{segment_id}/alternatives`: Generate 3 structured alternatives (Natural, Simple, Short) side-by-side.
+  - `POST /api/projects/{id}/translations/{segment_id}/apply`: 1-click apply of AI suggestion/alternative, setting `is_manually_edited=True`, and invalidating `GeneratedAudio` and `Video.is_export_outdated=True`.
+- **Frontend Step 3 & Settings Updates**:
+  - `Settings.tsx`: New "AI Translation Providers & API Keys" configuration card with key input (show/hide toggle), masked representation display, connection test status indicator, and security notice.
+  - `ProjectWorkspace.tsx`: Step 3 header toolbar with Provider toggle (NLLB vs Gemini) and Style dropdown. Segment cards enhanced with "AI Improve" (Sparkles) and "Alternatives" (Layers) buttons, style badge, and AI reasoning note.
+  - Interactive AI Modal: Side-by-side comparative inspection, fine-tuning prompt input, and 1-click apply for improvements and alternatives.
+- **Testing**:
+  - 10 new automated test cases in `backend/tests/test_ai_translation.py` (102 tests total passing, 100% pass rate):
+    - Fernet credential encryption, decryption, and masking.
+    - Environment variable precedence.
+    - Glossary and style prompt injection.
+    - Unconfigured API key exception handling.
+    - Mocked Gemini translation, AI improve, and alternatives generation.
+    - Translation provider registry and validation.
+    - API provider listing, connection test, and credential management.
+    - Project translation settings updates and audio invalidation on apply.
+  - Frontend typecheck and production build verified with 0 errors.
+
 ## [0.8.0] - Phase 8 Complete (2026-10-24)
 
 ### Added

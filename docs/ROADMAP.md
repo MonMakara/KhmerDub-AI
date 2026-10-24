@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 8 Complete — Multiple Khmer Voice Selection & Edge TTS Integration Verified
+- **Current Phase**: Phase 9 Complete — AI Translation API Integration (Google Gemini) Verified
 - **Overall Status**: Version 1 Complete & Verified
 
 ---
@@ -123,6 +123,31 @@
   - Voice metadata label displayed on each synthesized segment card.
 - [x] Total automated test suite expanded to 92 passing backend tests (11 new tests in `tests/test_voice_selection.py`).
 - [x] Production frontend build verified with TypeScript strict mode enabled.
+
+### [x] Phase 9: AI Translation API Integration (Google Gemini)
+- [x] Official `google-genai` Python SDK installed in Docker environment with cryptography library for secure credentials.
+- [x] Symmetric credential encryption (`backend/app/core/credentials.py`) using Fernet (AES-128-CBC + HMAC-SHA256) at `/app/data/.secrets/credentials.enc`.
+- [x] Masked API key display (`AIzaSy...4aB8`), environment variable override (`GEMINI_API_KEY`), and zero plaintext exposure.
+- [x] Multi-style translation prompt engineering (`backend/app/services/translation/prompts.py`) supporting 5 distinct modes: `natural`, `short`, `simple`, `formal`, `standard`.
+- [x] Strict technical glossary (`KhmerGlossary`) prompt injection and regex normalization guaranteeing standard terminology (`បញ្ញាសិប្បនិម្មិត`, `ដំណើរការ`).
+- [x] Prompt injection defense sanitizing and strictly bounding user custom prompt instructions.
+- [x] Concrete `GeminiTranslationProvider` (`backend/app/services/translation/gemini.py`) implementing `TranslationProvider` with exponential backoff on rate limits, JSON structured outputs, and fallback per-segment processing.
+- [x] Dynamic provider registry (`backend/app/services/translation/registry.py`) and connection validation supporting `nllb` (local offline default) and `gemini` (cloud AI).
+- [x] Database migration (`d2a83b5e1f02`) adding `translation_provider` and `translation_style` to `projects` table, plus `style` and `explanation` to `translation_segments`.
+- [x] API endpoints:
+  - `GET /api/translation/providers`: Catalog of providers, supported models (`gemini-2.5-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`), and styles.
+  - `POST /api/translation/test-connection`: Non-blocking authentication test and connectivity ping.
+  - `POST /api/translation/credentials` & `DELETE /api/translation/credentials/{provider}`: Secure storage and removal of API keys.
+  - `PATCH /api/projects/{id}/translation-settings`: Project translation provider and style updates.
+  - `POST /api/projects/{id}/translations/{segment_id}/ai-improve`: Per-segment context-, style-, and duration-aware AI translation improvement.
+  - `POST /api/projects/{id}/translations/{segment_id}/alternatives`: Generation of 3 distinct alternatives (Natural, Simple, Short) side-by-side.
+  - `POST /api/projects/{id}/translations/{segment_id}/apply`: 1-click apply of AI suggestion/alternative, updating segment and automatically invalidating generated audio and video export.
+- [x] Frontend UI updates:
+  - `Settings.tsx`: Dedicated "AI Translation Providers & API Keys" card with masked key, connection test button, save/delete key buttons, model dropdown, and security notice.
+  - `ProjectWorkspace.tsx`: Step 3 header toolbar with Provider toggle (NLLB vs Gemini) and Style dropdown. Segment cards enhanced with "AI Improve" (Sparkles) and "Alternatives" (Layers) buttons, style badge, and AI reasoning display.
+  - Interactive AI Modal: Side-by-side comparative inspection, fine-tuning prompt input, and 1-click apply for improvements and alternatives.
+- [x] Automated test suite expanded to 102 passing backend tests (10 new tests in `tests/test_ai_translation.py`).
+- [x] Production frontend build verified with TypeScript strict mode enabled (0 errors).
 
 ---
 

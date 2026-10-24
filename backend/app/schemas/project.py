@@ -69,6 +69,8 @@ class TranslationSegmentResponse(BaseModel):
     english_text: Optional[str] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
+    style: Optional[str] = "natural"
+    explanation: Optional[str] = None
     is_manually_edited: bool = False
     is_outdated: bool = False
     created_at: datetime
@@ -168,6 +170,92 @@ class VoicePreviewRequest(BaseModel):
     text: Optional[str] = None
 
 
+class TranslationProviderResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    description: str
+    requires_api_key: bool
+    is_configured: bool
+    masked_key: Optional[str] = None
+    supports_styles: bool
+    supports_alternatives: bool
+    default_model: str
+    available_models: List[str]
+
+
+class TranslationStyleOption(BaseModel):
+    id: str
+    label: str
+    description: str
+
+
+class TranslationProviderListResponse(BaseModel):
+    providers: List[TranslationProviderResponse]
+    default_provider: str
+    default_style: str
+    styles: List[TranslationStyleOption]
+
+
+class TestConnectionRequest(BaseModel):
+    provider: str = "gemini"
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+
+
+class TestConnectionResponse(BaseModel):
+    success: bool
+    message: str
+    provider: str
+
+
+class SaveCredentialsRequest(BaseModel):
+    provider: str
+    api_key: str
+
+
+class AIImproveRequest(BaseModel):
+    style: Optional[str] = "natural"
+    target_duration: Optional[float] = None
+    custom_prompt: Optional[str] = None
+
+
+class AIImproveResponse(BaseModel):
+    segment_id: str
+    original_text: str
+    current_khmer_text: str
+    improved_khmer_text: str
+    explanation: str
+    style: str
+    provider: str
+    model: str
+
+
+class AlternativeOption(BaseModel):
+    style: str
+    label: str
+    khmer_text: str
+    explanation: Optional[str] = None
+
+
+class AlternativesResponse(BaseModel):
+    segment_id: str
+    english_text: str
+    current_khmer_text: str
+    alternatives: List[AlternativeOption]
+
+
+class ApplyTranslationRequest(BaseModel):
+    khmer_text: str
+    style: Optional[str] = None
+    explanation: Optional[str] = None
+
+
+class ProjectTranslationSettingsUpdate(BaseModel):
+    translation_provider: str
+    translation_style: str
+
+
 class ProjectVoiceUpdate(BaseModel):
     tts_provider: str
     tts_voice: str
@@ -177,6 +265,8 @@ class ProjectCreate(BaseModel):
     title: str
     original_language: str = "en"
     target_language: str = "km"
+    translation_provider: Optional[str] = "nllb"
+    translation_style: Optional[str] = "natural"
     tts_provider: Optional[str] = "gtts"
     tts_voice: Optional[str] = "default"
 
@@ -186,6 +276,8 @@ class ProjectSummaryResponse(BaseModel):
     title: str
     original_language: str
     target_language: str
+    translation_provider: str = "nllb"
+    translation_style: str = "natural"
     tts_provider: str = "gtts"
     tts_voice: str = "default"
     status: ProjectStatus

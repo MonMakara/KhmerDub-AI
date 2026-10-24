@@ -51,6 +51,12 @@ from app.schemas.project import (
     TimingConflictResponse,
     ExportStatusResponse,
     ProjectVoiceUpdate,
+    ProjectTranslationSettingsUpdate,
+    AIImproveRequest,
+    AIImproveResponse,
+    AlternativeOption,
+    AlternativesResponse,
+    ApplyTranslationRequest,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
@@ -59,6 +65,17 @@ from app.services.video.exceptions import (
     VideoProcessingError,
 )
 from app.services.translation.nllb import NLLBTranslationProvider
+from app.services.translation.registry import (
+    get_translation_provider,
+    validate_translation_provider,
+)
+from app.services.translation.exceptions import (
+    TranslationError,
+    ProviderAuthenticationError,
+    RateLimitError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
 from app.services.tts.google import GoogleTTSProvider
 from app.services.tts.registry import (
     get_tts_provider,
@@ -103,10 +120,20 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
             detail=f"Invalid voice combination: provider='{tts_provider}', voice='{tts_voice}'",
         )
 
+    trans_provider = (payload.translation_provider or "nllb").strip().lower()
+    trans_style = (payload.translation_style or "natural").strip().lower()
+    if not validate_translation_provider(trans_provider):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid translation provider: '{trans_provider}'",
+        )
+
     project = Project(
         title=payload.title,
         original_language=payload.original_language,
         target_language=payload.target_language,
+        translation_provider=trans_provider,
+        translation_style=trans_style,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
         status=ProjectStatus.CREATED,
@@ -149,6 +176,40 @@ def update_project_voice(
         db.commit()
         db.refresh(project)
 
+    return project
+
+
+@router.patch("/{project_id}/translation-settings", response_model=ProjectResponse)
+def update_project_translation_settings(
+    project_id: str,
+    payload: ProjectTranslationSettingsUpdate,
+    db: Session = Depends(get_db),
+) -> ProjectResponse:
+    """Update selected translation provider and style for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    provider_id = (payload.translation_provider or "nllb").strip().lower()
+    style_id = (payload.translation_style or "natural").strip().lower()
+
+    if not validate_translation_provider(provider_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid translation provider: '{provider_id}'. Valid options: nllb, gemini",
+        )
+
+    valid_styles = ["natural", "simple", "formal", "short", "standard"]
+    if style_id not in valid_styles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid translation style: '{style_id}'. Valid options: {', '.join(valid_styles)}",
+        )
+
+    project.translation_provider = provider_id
+    project.translation_style = style_id
+    db.commit()
+    db.refresh(project)
     return project
 
 
@@ -515,7 +576,7 @@ def update_transcript_segment(
 def _enrich_translation_segment(
     trans_seg: TranslationSegment,
 ) -> TranslationSegmentResponse:
-    """Enrich TranslationSegment with timing and English transcript text."""
+    """Enrich TranslationSegment with timing, style, explanation, and English transcript text."""
     english_text = trans_seg.transcript_segment.text if trans_seg.transcript_segment else None
     start_time = trans_seg.transcript_segment.start_time if trans_seg.transcript_segment else None
     end_time = trans_seg.transcript_segment.end_time if trans_seg.transcript_segment else None
@@ -529,6 +590,8 @@ def _enrich_translation_segment(
         english_text=english_text,
         start_time=start_time,
         end_time=end_time,
+        style=getattr(trans_seg, "style", "natural") or "natural",
+        explanation=getattr(trans_seg, "explanation", None),
         is_manually_edited=trans_seg.is_manually_edited,
         is_outdated=trans_seg.is_outdated,
         created_at=trans_seg.created_at,
@@ -708,13 +771,27 @@ def retranslate_segment(
     )
     context_text = f"{prev_seg.text + ' ' if prev_seg else ''}{segment.transcript_segment.text}{' ' + next_seg.text if next_seg else ''}".strip()
 
-    provider = NLLBTranslationProvider()
-    translated_texts = provider.translate(
-        texts=[segment.transcript_segment.text],
-        source_lang=project.original_language or "eng_Latn",
-        target_lang=project.target_language or "khm_Khmr",
-        contexts=[context_text],
-    )
+    provider_id = (project.translation_provider or "nllb").lower()
+    style = project.translation_style or "natural"
+    try:
+        if provider_id == "nllb":
+            provider = NLLBTranslationProvider()
+        else:
+            provider = get_translation_provider(provider_id)
+        translated_texts = provider.translate(
+            texts=[segment.transcript_segment.text],
+            source_lang=project.original_language or "eng_Latn",
+            target_lang=project.target_language or "khm_Khmr",
+            contexts=[context_text],
+            style=style,
+        )
+    except ProviderAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to retranslate segment %s: %s", segment_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to translate segment: {str(exc)}")
 
     if not translated_texts or not translated_texts[0]:
         raise HTTPException(
@@ -722,12 +799,251 @@ def retranslate_segment(
         )
 
     segment.khmer_text = translated_texts[0]
+    segment.style = style
+    segment.explanation = None
     segment.is_manually_edited = False
     segment.is_outdated = False
     if segment.generated_audio:
         segment.generated_audio.is_outdated = True
     if project.video and project.video.exported_video_path:
         project.video.is_export_outdated = True
+    db.commit()
+    db.refresh(segment)
+
+    return _enrich_translation_segment(segment)
+
+
+@router.post(
+    "/{project_id}/translations/{segment_id}/ai-improve",
+    response_model=AIImproveResponse,
+)
+def ai_improve_segment(
+    project_id: str,
+    segment_id: str,
+    payload: AIImproveRequest,
+    db: Session = Depends(get_db),
+) -> AIImproveResponse:
+    """Use AI LLM (Gemini) to improve, naturalize, or shorten a translation segment."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.id == segment_id,
+            TranslationSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Translation segment not found")
+
+    if not segment.transcript_segment or not segment.transcript_segment.text:
+        raise HTTPException(
+            status_code=400,
+            detail="Corresponding English transcript text is missing",
+        )
+
+    # Calculate target duration if not provided
+    target_duration = payload.target_duration
+    if target_duration is None and segment.transcript_segment:
+        target_duration = segment.transcript_segment.end_time - segment.transcript_segment.start_time
+
+    # Build surrounding context
+    prev_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == segment.segment_order - 1,
+        )
+        .first()
+    )
+    next_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == segment.segment_order + 1,
+        )
+        .first()
+    )
+    context_parts = []
+    if prev_seg:
+        context_parts.append(f"Previous English: {prev_seg.text}")
+    context_parts.append(f"Current English: {segment.transcript_segment.text}")
+    if next_seg:
+        context_parts.append(f"Next English: {next_seg.text}")
+    context_str = " | ".join(context_parts)
+
+    provider_id = project.translation_provider if project.translation_provider != "nllb" else "gemini"
+    try:
+        provider = get_translation_provider(provider_id)
+        result = provider.improve_translation(
+            english_text=segment.transcript_segment.text,
+            current_khmer_text=segment.khmer_text,
+            context=context_str,
+            target_duration=target_duration,
+            style=payload.style or project.translation_style or "natural",
+            custom_prompt=payload.custom_prompt,
+        )
+    except ProviderAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to AI improve segment %s: %s", segment_id, exc)
+        raise HTTPException(status_code=500, detail=f"AI improve failed: {str(exc)}")
+
+    return AIImproveResponse(
+        segment_id=segment.id,
+        original_text=segment.transcript_segment.text,
+        current_khmer_text=segment.khmer_text,
+        improved_khmer_text=result.improved_khmer_text,
+        explanation=result.explanation,
+        style=result.style,
+        provider=getattr(provider, "name", "gemini"),
+        model=getattr(provider, "model", "gemini-2.5-flash"),
+    )
+
+
+@router.post(
+    "/{project_id}/translations/{segment_id}/alternatives",
+    response_model=AlternativesResponse,
+)
+def get_translation_alternatives(
+    project_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+) -> AlternativesResponse:
+    """Generate 3 structured translation alternatives (Natural, Simple, Short) using AI LLM."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.id == segment_id,
+            TranslationSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Translation segment not found")
+
+    if not segment.transcript_segment or not segment.transcript_segment.text:
+        raise HTTPException(
+            status_code=400,
+            detail="Corresponding English transcript text is missing",
+        )
+
+    target_duration = (
+        segment.transcript_segment.end_time - segment.transcript_segment.start_time
+        if segment.transcript_segment
+        else None
+    )
+
+    prev_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == segment.segment_order - 1,
+        )
+        .first()
+    )
+    next_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == segment.segment_order + 1,
+        )
+        .first()
+    )
+    context_parts = []
+    if prev_seg:
+        context_parts.append(f"Previous: {prev_seg.text}")
+    context_parts.append(f"Current: {segment.transcript_segment.text}")
+    if next_seg:
+        context_parts.append(f"Next: {next_seg.text}")
+    context_str = " | ".join(context_parts)
+
+    provider_id = project.translation_provider if project.translation_provider != "nllb" else "gemini"
+    try:
+        provider = get_translation_provider(provider_id)
+        alts = provider.generate_alternatives(
+            english_text=segment.transcript_segment.text,
+            current_khmer_text=segment.khmer_text,
+            context=context_str,
+            target_duration=target_duration,
+        )
+    except ProviderAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to generate alternatives for segment %s: %s", segment_id, exc)
+        raise HTTPException(status_code=500, detail=f"Alternatives generation failed: {str(exc)}")
+
+    return AlternativesResponse(
+        segment_id=segment.id,
+        english_text=segment.transcript_segment.text,
+        current_khmer_text=segment.khmer_text,
+        alternatives=[
+            AlternativeOption(
+                style=alt.style,
+                label=alt.label,
+                khmer_text=alt.khmer_text,
+                explanation=alt.explanation,
+            )
+            for alt in alts
+        ],
+    )
+
+
+@router.post(
+    "/{project_id}/translations/{segment_id}/apply",
+    response_model=TranslationSegmentResponse,
+)
+def apply_translation_suggestion(
+    project_id: str,
+    segment_id: str,
+    payload: ApplyTranslationRequest,
+    db: Session = Depends(get_db),
+) -> TranslationSegmentResponse:
+    """Apply an AI suggestion or alternative to a translation segment."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.id == segment_id,
+            TranslationSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Translation segment not found")
+
+    clean_text = payload.khmer_text.strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Translation text cannot be empty")
+
+    segment.khmer_text = clean_text
+    if payload.style:
+        segment.style = payload.style
+    if payload.explanation is not None:
+        segment.explanation = payload.explanation
+    segment.is_manually_edited = True
+    segment.is_outdated = False
+
+    # Mark generated audio as outdated so user regenerates speech
+    if segment.generated_audio:
+        segment.generated_audio.is_outdated = True
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
+
     db.commit()
     db.refresh(segment)
 

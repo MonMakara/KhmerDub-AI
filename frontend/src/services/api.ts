@@ -11,6 +11,14 @@ import {
   GeneratedAudioListResponse,
   ExportStatusResponse,
   VoiceListResponse,
+  TranslationProviderListResponse,
+  TestConnectionRequest,
+  TestConnectionResponse,
+  AIImproveRequest,
+  AIImproveResponse,
+  AlternativesResponse,
+  ApplyTranslationRequest,
+  ProjectTranslationSettingsUpdate,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -351,5 +359,139 @@ export const api = {
 
   getExportDownloadUrl(projectId: string): string {
     return `${API_BASE}/projects/${projectId}/export/download`;
+  },
+
+  async getTranslationProviders(): Promise<TranslationProviderListResponse> {
+    const res = await fetch(`${API_BASE}/translation/providers`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch translation providers: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async testTranslationConnection(
+    data: TestConnectionRequest
+  ): Promise<TestConnectionResponse> {
+    const res = await fetch(`${API_BASE}/translation/test-connection`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Connection test failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async saveTranslationCredentials(
+    provider: string,
+    apiKey: string
+  ): Promise<{ success: boolean; message: string }> {
+    const res = await fetch(`${API_BASE}/translation/credentials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, api_key: apiKey }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to save credentials: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async deleteTranslationCredentials(
+    provider: string
+  ): Promise<{ success: boolean; message: string }> {
+    const res = await fetch(`${API_BASE}/translation/credentials/${provider}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to delete credentials: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateProjectTranslationSettings(
+    projectId: string,
+    settings: ProjectTranslationSettingsUpdate
+  ): Promise<ProjectDetail> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/translation-settings`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(
+        err.detail || `Failed to update translation settings: ${res.statusText}`
+      );
+    }
+    return res.json();
+  },
+
+  async aiImproveSegment(
+    projectId: string,
+    segmentId: string,
+    req: AIImproveRequest
+  ): Promise<AIImproveResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/translations/${segmentId}/ai-improve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `AI improvement failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getTranslationAlternatives(
+    projectId: string,
+    segmentId: string
+  ): Promise<AlternativesResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/translations/${segmentId}/alternatives`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(
+        err.detail || `Failed to fetch translation alternatives: ${res.statusText}`
+      );
+    }
+    return res.json();
+  },
+
+  async applyTranslationSuggestion(
+    projectId: string,
+    segmentId: string,
+    req: ApplyTranslationRequest
+  ): Promise<TranslationSegment> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/translations/${segmentId}/apply`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(
+        err.detail || `Failed to apply translation: ${res.statusText}`
+      );
+    }
+    return res.json();
   },
 };

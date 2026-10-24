@@ -128,6 +128,8 @@ class NLLBTranslationProvider(TranslationProvider):
         source_lang: str = "eng_Latn",
         target_lang: str = "khm_Khmr",
         contexts: Optional[List[str]] = None,
+        style: str = "standard",
+        **kwargs,
     ) -> List[str]:
         """Translate a list of English texts into natural Khmer Unicode text."""
         if not texts:

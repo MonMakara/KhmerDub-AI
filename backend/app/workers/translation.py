@@ -11,6 +11,7 @@ from app.models.project import (
     JobStatus,
 )
 from app.services.translation.nllb import NLLBTranslationProvider
+from app.services.translation.registry import get_translation_provider
 from app.services.translation.exceptions import TranslationError
 
 logger = logging.getLogger(__name__)
@@ -93,19 +94,25 @@ def process_translation(project_id: str, job_id: str, db: Optional[Session] = No
             contexts_to_translate.append(context_str)
 
         translated_texts = []
+        provider_name = getattr(project, "translation_provider", "nllb") or "nllb"
+        style = getattr(project, "translation_style", "natural") or "natural"
+
         if segments_to_translate:
             job.progress_percentage = 30
             db.commit()
 
-            provider = NLLBTranslationProvider()
+            if provider_name == "nllb":
+                provider = NLLBTranslationProvider()
+            else:
+                provider = get_translation_provider(provider_name)
             job.progress_percentage = 50
             db.commit()
 
             translated_texts = provider.translate(
                 texts=segments_to_translate,
-                source_lang=project.original_language or "eng_Latn",
-                target_lang=project.target_language or "khm_Khmr",
-                contexts=contexts_to_translate,
+                source_lang=project.original_language or "en",
+                target_lang=project.target_language or "km",
+                style=style,
             )
             job.progress_percentage = 85
             db.commit()
@@ -125,6 +132,7 @@ def process_translation(project_id: str, job_id: str, db: Optional[Session] = No
             if existing:
                 existing.khmer_text = translated_str
                 existing.segment_order = t_seg.segment_order
+                existing.style = style
                 existing.is_outdated = False
                 existing.is_manually_edited = False
             else:
@@ -133,6 +141,7 @@ def process_translation(project_id: str, job_id: str, db: Optional[Session] = No
                     transcript_segment_id=t_seg.id,
                     segment_order=t_seg.segment_order,
                     khmer_text=translated_str,
+                    style=style,
                     is_manually_edited=False,
                     is_outdated=False,
                 )

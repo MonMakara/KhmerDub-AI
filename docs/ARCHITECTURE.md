@@ -43,6 +43,7 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
 
 ### 2.1 Backend (`backend/app`)
 - **`core/config.py`**: Centralized configuration management using Pydantic Settings.
+- **`core/credentials.py`**: Fernet-encrypted symmetric credential storage (AES-128-CBC + HMAC-SHA256) at `/app/data/.secrets/credentials.enc` with automatic key generation, permission restriction (0o600), masked API keys, and environment variable overrides.
 - **`core/ai_guard.py`**: Unified concurrency slot manager serializing memory-intensive AI inference (Whisper & NLLB).
 - **`core/recovery.py`**: Interrupted job recovery hook self-healing orphan jobs on startup without deleting records.
 - **`core/storage.py`**: Project file storage manager organizing project assets (`data/projects/{project_id}/`) with paths for uploads, extracted audio, voice segments, audio timelines, and exported videos with backward compatibility resolution.
@@ -60,7 +61,14 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `POST /api/projects/{id}/translate`: Asynchronous English-to-Khmer translation inference with NLLB-200.
   - `GET /api/projects/{id}/translations`: Retrieve ordered translated segments with original English text and timestamps.
   - `PATCH /api/projects/{id}/translations/{segment_id}`: Inline manual editing of Khmer translation text (`is_manually_edited=True`, `is_outdated=False`).
-  - `POST /api/projects/{id}/translations/{segment_id}/retranslate`: Single segment retranslation from English transcript.
+  - `POST /api/projects/{id}/translations/{segment_id}/retranslate`: Single segment retranslation from English transcript using project's active provider and style.
+  - `PATCH /api/projects/{id}/translation-settings`: Update project translation provider (NLLB, Gemini) and style mode (natural, short, simple, formal, standard).
+  - `POST /api/projects/{id}/translations/{segment_id}/ai-improve`: Context-, style-, and speech-duration-aware translation improvement via Gemini.
+  - `POST /api/projects/{id}/translations/{segment_id}/alternatives`: Generate 3 structured translation alternatives (Natural, Simple, Short) via Gemini.
+  - `POST /api/projects/{id}/translations/{segment_id}/apply`: Apply AI improvement or alternative to segment with automated speech invalidation.
+  - `GET /api/translation/providers`: List translation providers with status and available styles.
+  - `POST /api/translation/test-connection`: Verify provider API key and connectivity.
+  - `POST /api/translation/credentials` & `DELETE /api/translation/credentials/{provider}`: Securely store and purge encrypted API credentials.
   - `POST /api/projects/{id}/tts`: Asynchronous text-to-speech synthesis generating Khmer MP3 audio files via Google gTTS.
   - `GET /api/projects/{id}/generated-audio`: Retrieve all synthesized audio records with playback URLs and outdated flags.
   - `POST /api/projects/{id}/tts/{segment_id}/regenerate`: Single segment audio regeneration.
@@ -76,6 +84,9 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `FasterWhisperTranscriptionProvider`: Concretely implements `TranscriptionProvider`. Features thread-safe lazy model loading, CTranslate2 INT8 quantization, Voice Activity Detection, and generator consumption returning timestamped `TranscriptionSegment` instances.
 - **`services/translation/`**:
   - `NLLBTranslationProvider`: Concretely implements `TranslationProvider`. Uses Meta's `facebook/nllb-200-distilled-600M` (`eng_Latn` → `khm_Khmr`) with thread-safe lazy loading (`_cache_lock`), beam search decoding, RSS RAM monitoring via `psutil`, and persistent caching in Docker volume `model_cache` (`/root/.cache`).
+  - `GeminiTranslationProvider`: Implements `TranslationProvider` using the official `google-genai` SDK. Supports batch and per-segment translation, exponential backoff retries, JSON structured outputs, 5 distinct translation styles, prompt injection defense, and automated terminology alignment with `KhmerGlossary`.
+  - `prompts.py`: Prompt engineering templates for translation, AI refinement, and structured alternatives with technical glossary injection and user input sanitization.
+  - `registry.py`: Provider factory, model catalog (`gemini-2.5-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`), and dynamic connection tester.
 - **`services/tts/`**:
   - `GoogleTTSProvider`: Concretely implements `TTSProvider`. Streams speech MP3 from Google gTTS (`km`) with exponential backoff retries, text validation, and duration measurement using `FFmpegVideoProcessor.get_audio_duration`.
   - `EdgeTTSProvider`: Concretely implements `TTSProvider` using `edge-tts` to stream natural Microsoft Neural Khmer speech (`km-KH-PisethNeural` Male, `km-KH-SreymomNeural` Female) with exponential backoff retry logic.
