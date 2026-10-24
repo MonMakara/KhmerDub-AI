@@ -1,15 +1,31 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.database.session import init_db
+from app.core.recovery import recover_interrupted_jobs
+from app.database.session import init_db, SessionLocal
 from app.api.router import api_router
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    startup_time = datetime.now(timezone.utc)
     # Startup: Ensure directories and database tables exist
     init_db()
+
+    # Safely recover any interrupted jobs from previous server session
+    db = SessionLocal()
+    try:
+        recover_interrupted_jobs(db, process_start_time=startup_time)
+    except Exception as e:
+        logger.error("Failed to run startup job recovery: %s", e)
+    finally:
+        db.close()
+
     yield
     # Shutdown logic if needed
 

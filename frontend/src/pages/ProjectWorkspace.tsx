@@ -1759,6 +1759,10 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                        <span>
+                          Window: <strong className="text-slate-800">{c.available_window ?? c.original_duration}s raw</strong> ({c.effective_window ?? c.available_window}s effective with {Math.round((c.safety_margin_seconds ?? 0.05) * 1000)}ms safety margin)
+                        </span>
+                        <span>•</span>
                         <span>Speed needed: <strong className="text-amber-900">{c.required_tempo}x</strong></span>
                         <span>•</span>
                         <span>Max allowed: <strong className="text-slate-800">{c.max_tempo_factor}x</strong></span>

@@ -119,6 +119,9 @@ class TimingConflictResponse(BaseModel):
     end_time: float
     original_duration: float
     khmer_duration: float
+    available_window: float
+    effective_window: float
+    safety_margin_seconds: float = 0.05
     required_tempo: float
     max_tempo_factor: float = 1.25
     tempo_factor: float

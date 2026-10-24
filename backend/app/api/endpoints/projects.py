@@ -252,6 +252,19 @@ def trigger_audio_extraction(
             status_code=400, detail="No uploaded video found for this project"
         )
 
+    # Check for existing active audio extraction job
+    active_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.job_type == "extract_audio",
+            ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+        )
+        .first()
+    )
+    if active_job:
+        return active_job
+
     job = ProcessingJob(
         project_id=project_id,
         job_type="extract_audio",
@@ -984,11 +997,12 @@ def get_export_status(
                 raw_dur = float(audio_rec.duration_seconds)
 
                 if raw_dur > avail_window:
-                    effective_window = max(0.1, avail_window - 0.05)
+                    safety_margin = 0.05
+                    effective_window = max(0.05, round(avail_window - safety_margin, 3))
                     required_tempo = round(raw_dur / effective_window, 2)
                     if required_tempo > 1.25:
                         adjusted_est = raw_dur / 1.25
-                        overflow = round(adjusted_est - avail_window, 2)
+                        overflow = round(adjusted_est - effective_window, 2)
                         if overflow > 0.05:
                             est_words = max(1, math.ceil(overflow / 0.35))
                             action = (
@@ -1003,6 +1017,9 @@ def get_export_status(
                                     end_time=round(end_time, 2),
                                     original_duration=round(orig_dur, 2),
                                     khmer_duration=round(raw_dur, 2),
+                                    available_window=round(avail_window, 2),
+                                    effective_window=round(effective_window, 2),
+                                    safety_margin_seconds=safety_margin,
                                     required_tempo=required_tempo,
                                     max_tempo_factor=1.25,
                                     tempo_factor=1.25,
@@ -1010,7 +1027,8 @@ def get_export_status(
                                     suggested_action=action,
                                     message=(
                                         f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
-                                        f"({avail_window:.1f}s) by {overflow:.1f}s even at 1.25x speed. "
+                                        f"({avail_window:.2f}s raw, {effective_window:.2f}s effective with {int(safety_margin * 1000)}ms safety margin) "
+                                        f"by {overflow:.1f}s even at 1.25x speed. "
                                         f"{action}"
                                     ),
                                 )

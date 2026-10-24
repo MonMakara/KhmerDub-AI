@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 import psutil
+from app.core.ai_guard import acquire_ai_inference_slot
 from app.core.config import settings
 from app.services.translation.base import TranslationProvider
 from app.services.translation.formatter import KhmerTextFormatter
@@ -166,59 +167,60 @@ class NLLBTranslationProvider(TranslationProvider):
         batch_size = max(1, self.batch_size)
 
         try:
-            with torch.inference_mode():
-                for i in range(0, len(texts), batch_size):
-                    batch_raw = texts[i : i + batch_size]
-                    batch_cleaned = [t.strip() for t in batch_raw]
+            with acquire_ai_inference_slot("NLLB_600M"):
+                with torch.inference_mode():
+                    for i in range(0, len(texts), batch_size):
+                        batch_raw = texts[i : i + batch_size]
+                        batch_cleaned = [t.strip() for t in batch_raw]
 
-                    # Filter out indices that are purely empty
-                    non_empty_indices = [idx for idx, t in enumerate(batch_cleaned) if t]
+                        # Filter out indices that are purely empty
+                        non_empty_indices = [idx for idx, t in enumerate(batch_cleaned) if t]
 
-                    if not non_empty_indices:
-                        results.extend(["" for _ in batch_raw])
-                        continue
+                        if not non_empty_indices:
+                            results.extend(["" for _ in batch_raw])
+                            continue
 
-                    sub_batch = [batch_cleaned[idx] for idx in non_empty_indices]
+                        sub_batch = [batch_cleaned[idx] for idx in non_empty_indices]
 
-                    inputs = tokenizer(
-                        sub_batch,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=self.max_input_tokens,
-                    ).to(self.device)
+                        inputs = tokenizer(
+                            sub_batch,
+                            return_tensors="pt",
+                            padding=True,
+                            truncation=True,
+                            max_length=self.max_input_tokens,
+                        ).to(self.device)
 
-                    generated_tokens = model.generate(
-                        **inputs,
-                        forced_bos_token_id=forced_bos_token_id,
-                        max_length=self.max_input_tokens,
-                        num_beams=self.num_beams,
-                        early_stopping=True,
-                    )
+                        generated_tokens = model.generate(
+                            **inputs,
+                            forced_bos_token_id=forced_bos_token_id,
+                            max_length=self.max_input_tokens,
+                            num_beams=self.num_beams,
+                            early_stopping=True,
+                        )
 
-                    decoded_batch = tokenizer.batch_decode(
-                        generated_tokens,
-                        skip_special_tokens=True,
-                    )
+                        decoded_batch = tokenizer.batch_decode(
+                            generated_tokens,
+                            skip_special_tokens=True,
+                        )
 
-                    # Reassemble original batch ordering, apply terminology alignment & natural Khmer formatting
-                    sub_idx = 0
-                    for rel_idx in range(len(batch_raw)):
-                        global_idx = i + rel_idx
-                        if rel_idx in non_empty_indices:
-                            raw_khmer = decoded_batch[sub_idx].strip()
-                            source_en = batch_raw[rel_idx]
-                            context_en = (
-                                contexts[global_idx]
-                                if contexts and global_idx < len(contexts) and contexts[global_idx]
-                                else source_en
-                            )
-                            aligned_khmer = KhmerGlossary.align_terminology(context_en, raw_khmer)
-                            formatted_khmer = KhmerTextFormatter.format(aligned_khmer)
-                            results.append(formatted_khmer)
-                            sub_idx += 1
-                        else:
-                            results.append("")
+                        # Reassemble original batch ordering, apply terminology alignment & natural Khmer formatting
+                        sub_idx = 0
+                        for rel_idx in range(len(batch_raw)):
+                            global_idx = i + rel_idx
+                            if rel_idx in non_empty_indices:
+                                raw_khmer = decoded_batch[sub_idx].strip()
+                                source_en = batch_raw[rel_idx]
+                                context_en = (
+                                    contexts[global_idx]
+                                    if contexts and global_idx < len(contexts) and contexts[global_idx]
+                                    else source_en
+                                )
+                                aligned_khmer = KhmerGlossary.align_terminology(context_en, raw_khmer)
+                                formatted_khmer = KhmerTextFormatter.format(aligned_khmer)
+                                results.append(formatted_khmer)
+                                sub_idx += 1
+                            else:
+                                results.append("")
 
             logger.info(
                 "Translated %d text segment(s) (%s -> %s) successfully.",

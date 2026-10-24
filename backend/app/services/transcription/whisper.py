@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core.ai_guard import acquire_ai_inference_slot
 from app.core.config import settings
 from app.services.transcription.base import TranscriptionProvider, TranscriptionSegment
 from app.services.transcription.exceptions import (
@@ -93,25 +94,26 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
         model = self.get_model()
 
         try:
-            segments_generator, info = model.transcribe(
-                str(audio_path),
-                language=language or settings.WHISPER_LANGUAGE or "en",
-                vad_filter=self.vad_filter,
-            )
+            with acquire_ai_inference_slot(f"Whisper_{self.model_size}"):
+                segments_generator, info = model.transcribe(
+                    str(audio_path),
+                    language=language or settings.WHISPER_LANGUAGE or "en",
+                    vad_filter=self.vad_filter,
+                )
 
-            results: List[TranscriptionSegment] = []
-            # Fully consume the generator
-            for order, segment in enumerate(segments_generator, start=1):
-                clean_text = segment.text.strip()
-                if clean_text:
-                    results.append(
-                        TranscriptionSegment(
-                            segment_order=order,
-                            start_time=round(float(segment.start), 2),
-                            end_time=round(float(segment.end), 2),
-                            text=clean_text,
+                results: List[TranscriptionSegment] = []
+                # Fully consume the generator inside the guard
+                for order, segment in enumerate(segments_generator, start=1):
+                    clean_text = segment.text.strip()
+                    if clean_text:
+                        results.append(
+                            TranscriptionSegment(
+                                segment_order=order,
+                                start_time=round(float(segment.start), 2),
+                                end_time=round(float(segment.end), 2),
+                                text=clean_text,
+                            )
                         )
-                    )
 
             logger.info(
                 "Transcribed audio %s: generated %d segments (detected language=%s, prob=%.2f)",

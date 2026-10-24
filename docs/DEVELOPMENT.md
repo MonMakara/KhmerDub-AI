@@ -213,3 +213,34 @@ To enable NVIDIA GPU acceleration with your RTX 4060 GPU:
    ```
 3. Set `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE_TYPE=float16` in `.env`.
 4. Restart containers: `docker compose up -d`.
+
+---
+
+## 5. Manual End-to-End Browser Testing Checklist
+
+Follow this checklist to verify the full platform in your browser at [http://localhost:5173](http://localhost:5173):
+
+1. **Create Project**:
+   - Navigate to the **Projects** tab. Click **"New Project"**, enter title (e.g. `Browser Test 1`), and click **"Create Project"**.
+2. **Step 1: Upload Video**:
+   - Drag and drop or browse for an English `.mp4` video (< 500 MB).
+   - Verify upload progress bar displays smoothly.
+   - Verify video preview player appears and audio extraction automatically triggers and completes (`Status: Audio Extracted`).
+3. **Step 2: English Transcription**:
+   - Click **"Transcribe English Audio"**.
+   - Verify progress bar and segment listing.
+   - Click the inline edit button on a segment, change a word, and save. Verify the update persists.
+4. **Step 3: English-to-Khmer Translation**:
+   - Click **"Translate to Khmer"**.
+   - Review side-by-side English vs. Khmer text with terminology glossary alignment.
+   - Edit a Khmer sentence manually. Verify the **[Manually Edited]** badge appears.
+5. **Step 4: Khmer Speech Synthesis**:
+   - Click **"Generate Khmer Audio"**.
+   - Listen to synthesized audio segments using the embedded audio players.
+   - Edit a translation segment in Step 3; observe that the corresponding audio segment in Step 4 displays the amber **[Text Modified (Outdated)]** warning.
+   - Click **"Regenerate"** on that specific segment to update its voice track.
+6. **Step 5: Dubbed Video Export**:
+   - Click **"Generate Dubbed Video"**.
+   - If speech fits within the timing window, export completes, and the dubbed video preview player renders with synchronized Khmer speech.
+   - If speech is too long, the **Export Guard** prevents corruption, displaying the Timing Conflict alert with exact speedup needed and word trimming advice.
+   - Click **"Download Dubbed Video (MP4)"** to download the final video file.

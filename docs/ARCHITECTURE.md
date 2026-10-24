@@ -43,6 +43,8 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
 
 ### 2.1 Backend (`backend/app`)
 - **`core/config.py`**: Centralized configuration management using Pydantic Settings.
+- **`core/ai_guard.py`**: Unified concurrency slot manager serializing memory-intensive AI inference (Whisper & NLLB).
+- **`core/recovery.py`**: Interrupted job recovery hook self-healing orphan jobs on startup without deleting records.
 - **`core/storage.py`**: Project file storage manager organizing project assets (`data/projects/{project_id}/`) with paths for uploads, extracted audio, voice segments, audio timelines, and exported videos with backward compatibility resolution.
 - **`database/`**: SQLAlchemy SQLite session manager and table initialization with automated schema column upgrades.
 - **`models/`**: Relational models for `Project`, `Video` (with export metadata & `is_export_outdated` flag), `TranscriptSegment`, `TranslationSegment`, `ProcessingJob`, and `GeneratedAudio`.

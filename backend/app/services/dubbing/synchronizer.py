@@ -21,6 +21,9 @@ class TimingConflict:
     end_time: float
     original_duration: float
     khmer_duration: float
+    available_window: float
+    effective_window: float
+    safety_margin_seconds: float
     required_tempo: float
     max_tempo_factor: float
     tempo_factor: float
@@ -60,12 +63,14 @@ class AudioSynchronizationService:
     def __init__(
         self,
         max_tempo_factor: float = 1.25,
+        safety_margin_seconds: float = 0.05,
         sample_rate: int = 44100,
         channels: int = 2,
         ffmpeg_bin: str = "ffmpeg",
         video_processor: Optional[FFmpegVideoProcessor] = None,
     ):
         self.max_tempo_factor = max_tempo_factor
+        self.safety_margin_seconds = max(0.0, float(safety_margin_seconds))
         self.sample_rate = sample_rate
         self.channels = channels
         self.ffmpeg_bin = ffmpeg_bin
@@ -201,7 +206,7 @@ class AudioSynchronizationService:
                     required_tempo = 1.0
                 else:
                     # raw_dur > avail_window: exceeds available interval
-                    effective_window = max(0.1, avail_window - 0.05)
+                    effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
                     required_tempo = round(raw_dur / effective_window, 2)
 
                     if required_tempo <= self.max_tempo_factor:
@@ -209,7 +214,7 @@ class AudioSynchronizationService:
                     else:
                         tempo = self.max_tempo_factor
                         adjusted_est = raw_dur / tempo
-                        overflow = round(adjusted_est - avail_window, 2)
+                        overflow = round(adjusted_est - effective_window, 2)
                         if overflow > 0.05:
                             est_words = max(1, math.ceil(overflow / 0.35))
                             action = (
@@ -224,6 +229,9 @@ class AudioSynchronizationService:
                                     end_time=round(end_time, 2),
                                     original_duration=round(orig_dur, 2),
                                     khmer_duration=round(raw_dur, 2),
+                                    available_window=round(avail_window, 2),
+                                    effective_window=round(effective_window, 2),
+                                    safety_margin_seconds=round(self.safety_margin_seconds, 3),
                                     required_tempo=required_tempo,
                                     max_tempo_factor=self.max_tempo_factor,
                                     tempo_factor=tempo,
@@ -231,7 +239,8 @@ class AudioSynchronizationService:
                                     suggested_action=action,
                                     message=(
                                         f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
-                                        f"({avail_window:.1f}s) by {overflow:.1f}s even at {tempo}x speed. "
+                                        f"({avail_window:.2f}s raw, {effective_window:.2f}s effective with {int(self.safety_margin_seconds * 1000)}ms safety margin) "
+                                        f"by {overflow:.1f}s even at {tempo}x speed. "
                                         f"{action}"
                                     ),
                                 )

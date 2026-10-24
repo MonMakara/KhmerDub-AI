@@ -134,6 +134,9 @@ export interface TimingConflict {
   end_time: number;
   original_duration: number;
   khmer_duration: number;
+  available_window: number;
+  effective_window: number;
+  safety_margin_seconds: number;
   required_tempo: number;
   max_tempo_factor: number;
   tempo_factor: number;

@@ -2,6 +2,36 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.7.0] - Phase 7 Complete (2026-10-24)
+
+### Added
+- **AI Model Concurrency & Memory Guard (`app/core/ai_guard.py`)**:
+  - Implemented a unified global inference slot manager (`acquire_ai_inference_slot`).
+  - Serializes heavy CPU/RAM inference tasks between `faster-whisper` and Meta's `NLLB-200` to prevent memory exhaustion and 100% CPU core contention on 16GB host machines.
+  - Active model tracking via `get_active_ai_model()`.
+- **Interrupted Job Startup Recovery (`app/core/recovery.py`)**:
+  - Automated startup hook executing during FastAPI `lifespan`.
+  - Safely detects orphan background jobs interrupted by container restarts or shutdowns.
+  - Transitions orphan jobs to `FAILED` with an informative recovery message (*"Job was interrupted by a server restart or shutdown. No completed files or records were removed; please retry."*).
+  - Resets project status back to the last completed pipeline milestone.
+  - Never deletes any generated audio, video, or database records.
+- **Configurable Timing Safety Margins**:
+  - Made `safety_margin_seconds: float = 0.05` configurable in `AudioSynchronizationService`.
+  - Added distinct `available_window` (raw interval) and `effective_window` (after safety margin) fields in `TimingConflict` and `TimingConflictResponse`.
+  - Resolved timing discrepancies between mathematical ratios and padded windows.
+- **Active Job Deduplication**:
+  - Added running job check to `POST /api/projects/{project_id}/extract-audio`.
+- **End-to-End Pipeline Testing Suite (`tests/test_e2e_pipeline.py`)**:
+  - Verified 5 distinct real video cases:
+    - Case A: Short video (12s) with single speech segment.
+    - Case B: Medium video (35s) with multiple spaced segments.
+    - Case C: Multiple segments with distinct silence pauses (20s).
+    - Case D: Speech segment near video end boundary (10s).
+    - Case E: Speech segment with longer Khmer translation, verifying strict block and subsequent successful re-export after text correction.
+- **Testing**:
+  - 10 new unit, integration, and E2E tests added (81 tests total, 100% pass rate in Docker).
+  - Frontend TypeScript strict check and Vite production build passed with 0 errors.
+
 ## [0.6.1] - Phase 6.1 Complete (2026-10-24)
 
 ### Added

@@ -13,6 +13,7 @@
 5. **Khmer Text-to-Speech** *(Phase 5 Complete)*: Speech synthesis using Google gTTS for Khmer audio segments with exponential backoff retries, duration measurement, audio preview players, individual segment regeneration, and automatic invalidation when translations are edited.
 6. **Audio Synchronization** *(Phase 6 Complete)*: Transcript-timed audio synchronization that aligns synthesized Khmer speech segments onto original English timestamps, standardizes audio pieces (44.1kHz stereo 16-bit PCM WAV), inserts silence padding, applies conservative tempo adjustment (max 1.25x via `atempo`), and detects timing conflicts without silent speech truncation.
 7. **Video Export** *(Phase 6 Complete)*: Clean remuxing via FFmpeg replacing the original audio with the synchronized Khmer speech track using explicit stream mapping (`-map 0:v:0 -map 1:a:0`), AAC audio, faststart MP4 container optimization for web streaming, atomic publishing, in-browser video preview player, and instant download.
+8. **Stabilization & Reliability** *(Phase 7 Complete)*: Shared AI model concurrency guard serializing Whisper and NLLB to prevent memory spikes on 16GB laptops, automated interrupted-job recovery on startup, active job deduplication, configurable 50ms timing safety margins, and 81 passing automated tests across real English video pipelines.
 
 ---
 
