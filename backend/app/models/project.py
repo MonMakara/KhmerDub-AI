@@ -47,6 +47,8 @@ class Project(Base):
     original_video_path = Column(String(1024), nullable=True)
     original_language = Column(String(10), default="en", nullable=False)
     target_language = Column(String(10), default="km", nullable=False)
+    tts_provider = Column(String(50), default="gtts", nullable=False)
+    tts_voice = Column(String(100), default="default", nullable=False)
     status = Column(
         SQLEnum(ProjectStatus),
         default=ProjectStatus.CREATED,

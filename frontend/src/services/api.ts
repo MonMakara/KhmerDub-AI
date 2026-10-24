@@ -10,6 +10,7 @@ import {
   GeneratedAudio,
   GeneratedAudioListResponse,
   ExportStatusResponse,
+  VoiceListResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -228,6 +229,59 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Failed to retranslate segment: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getVoices(): Promise<VoiceListResponse> {
+    const res = await fetch(`${API_BASE}/tts/voices`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch voices: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async previewVoice(
+    provider: string,
+    voice: string,
+    text?: string
+  ): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/tts/preview`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        provider,
+        voice,
+        text,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Voice preview failed: ${res.statusText}`);
+    }
+    return res.blob();
+  },
+
+  async updateProjectVoice(
+    projectId: string,
+    tts_provider: string,
+    tts_voice: string
+  ): Promise<ProjectDetail> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/voice`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        tts_provider,
+        tts_voice,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update project voice: ${res.statusText}`);
     }
     return res.json();
   },

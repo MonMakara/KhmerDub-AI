@@ -99,18 +99,32 @@ curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLA
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/retranslate"
 ```
 
-### Testing Khmer Text-to-Speech via cURL (Phase 5)
+### Testing Khmer Text-to-Speech & Voice Selection via cURL (Phase 5 & Phase 8)
 ```bash
-# 1. Trigger background speech synthesis for all Khmer translation segments
+# 1. List all available Khmer voices (Google Khmer, Microsoft Piseth, Microsoft Sreymom)
+curl -s "http://localhost:8000/api/tts/voices" | jq .
+
+# 2. Preview voice speech audio before generating
+curl -X POST "http://localhost:8000/api/tts/preview" \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "edge", "voice": "km-KH-PisethNeural", "text": "សួស្តី KhmerDub AI"}' \
+  --output preview_piseth.mp3
+
+# 3. Update project voice selection (Microsoft Piseth Male)
+curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/voice" \
+  -H "Content-Type: application/json" \
+  -d '{"tts_provider": "edge", "tts_voice": "km-KH-PisethNeural"}'
+
+# 4. Trigger background speech synthesis using the project's selected voice
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/tts"
 
-# 2. View generated audio records with durations and URLs
+# 5. View generated audio records with durations and voice metadata
 curl -s "http://localhost:8000/api/projects/$PROJ_ID/generated-audio" | jq .
 
-# 3. Regenerate speech audio for a single segment
+# 6. Regenerate speech audio for a single segment
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/tts/$TRANSLATION_SEGMENT_ID/regenerate"
 
-# 4. Stream or download synthesized MP3 segment
+# 7. Stream or download synthesized MP3 segment
 curl -o segment.mp3 "http://localhost:8000/api/projects/$PROJ_ID/tts/$TRANSLATION_SEGMENT_ID/audio"
 ```
 
@@ -129,16 +143,15 @@ curl -i -r 0-1023 "http://localhost:8000/api/projects/$PROJ_ID/export/video"
 curl -O -J "http://localhost:8000/api/projects/$PROJ_ID/export/download"
 ```
 
-### Text-to-Speech Configuration (gTTS)
-The following variables in `.env` control Khmer speech synthesis:
-- `TTS_PROVIDER`: Text-to-speech engine (`gtts`).
-- `TTS_LANGUAGE`: Target speech language (`km`).
-- `TTS_SLOW`: Speech rate (`false` for standard speed, `true` for slow).
-- `TTS_MAX_RETRIES`: Number of retry attempts on network error with exponential backoff (default `3`).
-- `TTS_TIMEOUT`: Network timeout in seconds (default `30.0`).
+### Text-to-Speech Providers (Google gTTS & Microsoft Edge TTS)
+KhmerDub AI supports multiple speech providers behind the abstract `TTSProvider` interface:
+- **Google gTTS** (`provider="gtts"`, `voice="default"`): Cloud synthesis via Google Translate endpoint (`https://translate.google.com/translate_tts`). Normal speed, clear neutral tone.
+- **Microsoft Edge TTS** (`provider="edge"`): Neural speech synthesis via `edge-tts` calling Microsoft Speech Services. Voices:
+  - `km-KH-PisethNeural` (Male, friendly & positive)
+  - `km-KH-SreymomNeural` (Female, friendly & positive)
 
 > [!NOTE]
-> **Internet Dependency**: Google gTTS uses Google Translate's online voice service endpoint (`https://translate.google.com/translate_tts`). It requires active internet access and is not an offline local model. Voice output uses Google's standard default Khmer voice model.
+> **Online Service Notice**: Both Google gTTS and Microsoft Edge TTS require active internet access. Neither provider executes as an offline local neural model on CPU/GPU. Edge TTS interfaces with Microsoft's cloud speech endpoints and is subject to service availability.
 
 
 ### Translation Model Configuration (NLLB-200)

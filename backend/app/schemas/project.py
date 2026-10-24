@@ -147,10 +147,38 @@ class ExportStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class VoiceOptionResponse(BaseModel):
+    provider: str
+    voice: str
+    label: str
+    gender: str
+    description: str
+    sample_rate: Optional[int] = 24000
+
+
+class VoiceListResponse(BaseModel):
+    voices: List[VoiceOptionResponse]
+    default_provider: str
+    default_voice: str
+
+
+class VoicePreviewRequest(BaseModel):
+    provider: str = "gtts"
+    voice: str = "default"
+    text: Optional[str] = None
+
+
+class ProjectVoiceUpdate(BaseModel):
+    tts_provider: str
+    tts_voice: str
+
+
 class ProjectCreate(BaseModel):
     title: str
     original_language: str = "en"
     target_language: str = "km"
+    tts_provider: Optional[str] = "gtts"
+    tts_voice: Optional[str] = "default"
 
 
 class ProjectSummaryResponse(BaseModel):
@@ -158,6 +186,8 @@ class ProjectSummaryResponse(BaseModel):
     title: str
     original_language: str
     target_language: str
+    tts_provider: str = "gtts"
+    tts_voice: str = "default"
     status: ProjectStatus
     created_at: datetime
     updated_at: datetime

@@ -2,6 +2,49 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.8.0] - Phase 8 Complete (2026-10-24)
+
+### Added
+- **Multiple Khmer Speech Providers & Microsoft Edge TTS Integration**:
+  - Installed `edge-tts>=6.1.10` inside the Docker development environment without global system dependencies.
+  - Implemented `EdgeTTSProvider` (`backend/app/services/tts/edge.py`) supporting official Microsoft Neural voices:
+    - `km-KH-PisethNeural`: Male, friendly & positive tone.
+    - `km-KH-SreymomNeural`: Female, expressive & natural tone.
+  - Implemented safe asynchronous coroutine execution handling both running and non-running event loop environments.
+  - Exponential backoff retry logic for Edge TTS network resilience.
+- **Provider & Voice Registry (`backend/app/services/tts/registry.py`)**:
+  - `list_supported_voices()`: Returns all available Khmer voices with metadata (label, gender, sample rate, description).
+  - `is_valid_voice_combination(provider, voice)`: Validates allowable provider and voice pairings.
+  - `get_tts_provider(provider_name)`: Factory returning configured `GoogleTTSProvider` or `EdgeTTSProvider`.
+- **Database Schema Migration (`c1f72a4d9e01`)**:
+  - Added `tts_provider` (default `'gtts'`) and `tts_voice` (default `'default'`) columns to `projects` table.
+  - Safe SQLite column introspection preventing duplicate column migration errors.
+- **API Endpoints**:
+  - `GET /api/tts/voices`: Returns supported voices list, default provider, and default voice.
+  - `POST /api/tts/preview`: Generates temporary voice preview audio stream (`audio/mpeg`) with text hashing and a 200-character maximum text limit.
+  - `PATCH /api/projects/{project_id}/voice`: Updates project voice configuration and automatically marks existing `GeneratedAudio` as `is_outdated = True` and `Video` as `is_export_outdated = True`.
+- **Worker & Regeneration Updates**:
+  - Updated `backend/app/workers/tts.py` to synthesize all segments according to the project's selected `tts_provider` and `tts_voice`.
+  - Updated `POST /api/projects/{project_id}/tts/{segment_id}/regenerate` to respect the project's selected voice.
+- **Frontend Step 4 Voice Workspace (`ProjectWorkspace.tsx`)**:
+  - Voice selection card deck featuring Google Khmer, Microsoft Piseth, and Microsoft Sreymom with colored gender and provider badges.
+  - In-browser interactive "Preview Voice" player with stop/play toggle and audio stream playback.
+  - Automatic voice selection update via `PATCH /api/projects/{id}/voice`.
+  - Visual alert when voice selection changes, advising users to regenerate all speech segments.
+  - Segment cards display voice metadata labels (`Microsoft Piseth (Male)`, `Microsoft Sreymom (Female)`, or `Google Khmer (Default)`).
+- **Testing**:
+  - 11 new automated test cases in `backend/tests/test_voice_selection.py` (92 tests total passing, 100% pass rate):
+    - Voice registry metadata and validation.
+    - Input validation and exception handling for Edge TTS.
+    - Edge TTS retry logic on transient network failure.
+    - API voice listing and validation tests.
+    - API voice preview streaming test.
+    - Project voice selection update and audio/export invalidation.
+    - Background worker synthesis with Edge TTS voice.
+    - Real Edge TTS synthesis for both Piseth and Sreymom.
+    - Full dubbing pipeline compatibility with Edge TTS audio.
+  - Frontend typecheck and production build verified with 0 errors.
+
 ## [0.7.0] - Phase 7 Complete (2026-10-24)
 
 ### Added

@@ -78,6 +78,8 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `NLLBTranslationProvider`: Concretely implements `TranslationProvider`. Uses Meta's `facebook/nllb-200-distilled-600M` (`eng_Latn` → `khm_Khmr`) with thread-safe lazy loading (`_cache_lock`), beam search decoding, RSS RAM monitoring via `psutil`, and persistent caching in Docker volume `model_cache` (`/root/.cache`).
 - **`services/tts/`**:
   - `GoogleTTSProvider`: Concretely implements `TTSProvider`. Streams speech MP3 from Google gTTS (`km`) with exponential backoff retries, text validation, and duration measurement using `FFmpegVideoProcessor.get_audio_duration`.
+  - `EdgeTTSProvider`: Concretely implements `TTSProvider` using `edge-tts` to stream natural Microsoft Neural Khmer speech (`km-KH-PisethNeural` Male, `km-KH-SreymomNeural` Female) with exponential backoff retry logic.
+  - `registry`: Provider factory (`get_tts_provider`) and voice validator (`is_valid_voice_combination`) supporting multi-voice selection across Google and Microsoft Edge.
 - **`services/video/`**:
   - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, measures audio duration, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
 - **`services/dubbing/`**:
@@ -110,8 +112,9 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
    - `faster-whisper` transcribes audio into timestamped segments (`TranscriptSegment`).
 3. **Step 3: English-to-Khmer Translation**:
    - English transcript segments are translated to Khmer using an open-source model (e.g. NLLB-200), preserving segment timings in `TranslationSegment`. User can review and edit in UI.
-4. **Step 4: Khmer Speech Synthesis**:
-   - Google gTTS generates audio segments for each Khmer sentence into `data/temp/`.
+4. **Step 4: Khmer Speech Synthesis & Voice Selection**:
+   - User selects preferred Khmer voice (Google Khmer Neutral, Microsoft Piseth Male, Microsoft Sreymom Female) and can audition samples via interactive voice preview.
+   - Selected provider (Google gTTS or Microsoft Edge TTS) synthesizes audio segments for each Khmer sentence into `data/projects/{project_id}/audio/`.
 5. **Step 5: Audio Synchronization & Video Remux**:
    - Synthesized Khmer speech audio segments are fetched and validated against original segment timestamps.
    - `AudioSynchronizationService` calculates offsets, inserts silence gaps via `anullsrc`, standardizes sample rates, applies conservative tempo scaling (max 1.25x), and generates a master timeline WAV (`khmer_timeline.wav`).

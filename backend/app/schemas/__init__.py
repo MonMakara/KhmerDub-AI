@@ -15,6 +15,10 @@ from app.schemas.project import (
     GeneratedAudioListResponse,
     TimingConflictResponse,
     ExportStatusResponse,
+    VoiceOptionResponse,
+    VoiceListResponse,
+    VoicePreviewRequest,
+    ProjectVoiceUpdate,
 )
 
 __all__ = [
@@ -34,4 +38,8 @@ __all__ = [
     "GeneratedAudioListResponse",
     "TimingConflictResponse",
     "ExportStatusResponse",
+    "VoiceOptionResponse",
+    "VoiceListResponse",
+    "VoicePreviewRequest",
+    "ProjectVoiceUpdate",
 ]

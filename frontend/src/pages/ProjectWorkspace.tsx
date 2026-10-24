@@ -22,6 +22,9 @@ import {
   Headphones,
   Film,
   Download,
+  Play,
+  Square,
+  Check,
 } from 'lucide-react';
 import {
   ProjectDetail,
@@ -29,6 +32,7 @@ import {
   TranslationSegment,
   GeneratedAudio,
   ExportStatusResponse,
+  VoiceOption,
 } from '../types';
 import { api } from '../services/api';
 
@@ -69,11 +73,19 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [savingTransId, setSavingTransId] = useState<string | null>(null);
   const [retranslatingTransId, setRetranslatingTransId] = useState<string | null>(null);
 
-  // Text-to-Speech (gTTS) state
+  // Text-to-Speech (gTTS & Edge TTS) state
+  const [availableVoices, setAvailableVoices] = useState<VoiceOption[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState<{ provider: string; voice: string }>({
+    provider: 'gtts',
+    voice: 'default',
+  });
+  const [updatingVoice, setUpdatingVoice] = useState<boolean>(false);
+  const [previewingVoiceKey, setPreviewingVoiceKey] = useState<string | null>(null);
   const [generatedAudios, setGeneratedAudios] = useState<GeneratedAudio[]>([]);
   const [generatingVoice, setGeneratingVoice] = useState<boolean>(false);
   const [ttsError, setTtsError] = useState<string | null>(null);
   const [regeneratingAudioId, setRegeneratingAudioId] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Dubbing & Export state
   const [exportStatus, setExportStatus] = useState<ExportStatusResponse | null>(null);
@@ -118,10 +130,25 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   }, [projectId]);
 
+  const fetchVoices = useCallback(async () => {
+    try {
+      const data = await api.getVoices();
+      setAvailableVoices(data.voices);
+    } catch (err: any) {
+      console.error('Failed to load available voices:', err);
+    }
+  }, []);
+
   const fetchProjectData = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
       setProject(data);
+      if (data.tts_provider && data.tts_voice) {
+        setSelectedVoice({
+          provider: data.tts_provider,
+          voice: data.tts_voice,
+        });
+      }
       if (
         data.status === 'transcribed' ||
         data.status === 'translating' ||
@@ -169,8 +196,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   }, [projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, fetchExportData]);
 
   useEffect(() => {
+    fetchVoices();
     fetchProjectData();
-  }, [fetchProjectData]);
+    return () => {
+      if (previewAudioRef.current) {
+        previewAudioRef.current.pause();
+        previewAudioRef.current = null;
+      }
+    };
+  }, [fetchVoices, fetchProjectData]);
 
   // Polling for background audio extraction, transcription, translation, TTS, or dubbing jobs
   useEffect(() => {
@@ -465,7 +499,55 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   };
 
-  // Text-to-Speech (gTTS) Handlers
+  // Voice Selection & Preview Handlers
+  const handleSelectVoice = async (provider: string, voice: string) => {
+    if (selectedVoice.provider === provider && selectedVoice.voice === voice) return;
+    try {
+      setUpdatingVoice(true);
+      setSelectedVoice({ provider, voice });
+      const updatedProject = await api.updateProjectVoice(projectId, provider, voice);
+      setProject(updatedProject);
+      await fetchAudioData();
+      await fetchExportData();
+      if (onProjectUpdated) onProjectUpdated();
+    } catch (err: any) {
+      alert(`Failed to update voice: ${err.message}`);
+    } finally {
+      setUpdatingVoice(false);
+    }
+  };
+
+  const handlePreviewVoice = async (provider: string, voice: string) => {
+    const key = `${provider}:${voice}`;
+    try {
+      if (previewingVoiceKey === key && previewAudioRef.current) {
+        previewAudioRef.current.pause();
+        previewAudioRef.current = null;
+        setPreviewingVoiceKey(null);
+        return;
+      }
+      setPreviewingVoiceKey(key);
+      const audioBlob = await api.previewVoice(provider, voice);
+      const audioUrl = URL.createObjectURL(audioBlob);
+      if (previewAudioRef.current) {
+        previewAudioRef.current.pause();
+      }
+      const audio = new Audio(audioUrl);
+      previewAudioRef.current = audio;
+      audio.onended = () => {
+        setPreviewingVoiceKey(null);
+      };
+      audio.onerror = () => {
+        setPreviewingVoiceKey(null);
+      };
+      await audio.play();
+    } catch (err: any) {
+      alert(`Preview failed: ${err.message}`);
+      setPreviewingVoiceKey(null);
+    }
+  };
+
+  // Text-to-Speech (gTTS & Edge TTS) Handlers
   const handleStartTTS = async () => {
     try {
       setGeneratingVoice(true);
@@ -557,6 +639,36 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const latestTransJob = project.jobs?.find((j) => j.job_type === 'translate');
   const latestTtsJob = project.jobs?.find((j) => j.job_type === 'tts');
   const latestDubJob = project.jobs?.find((j) => j.job_type === 'dub');
+
+  const defaultVoices: VoiceOption[] = [
+    {
+      provider: 'gtts',
+      voice: 'default',
+      label: 'Google Khmer (Default)',
+      gender: 'neutral',
+      description: 'Standard Google Translate Khmer online voice (Neutral tone)',
+    },
+    {
+      provider: 'edge',
+      voice: 'km-KH-PisethNeural',
+      label: 'Microsoft Piseth (Male)',
+      gender: 'male',
+      description: 'Microsoft Edge Neural Voice (Male, friendly & natural)',
+    },
+    {
+      provider: 'edge',
+      voice: 'km-KH-SreymomNeural',
+      label: 'Microsoft Sreymom (Female)',
+      gender: 'female',
+      description: 'Microsoft Edge Neural Voice (Female, expressive & natural)',
+    },
+  ];
+
+  const activeVoiceList = availableVoices.length > 0 ? availableVoices : defaultVoices;
+  const currentVoiceOption =
+    activeVoiceList.find(
+      (v) => v.provider === selectedVoice.provider && v.voice === selectedVoice.voice
+    ) || activeVoiceList[0];
 
   const isAudioReady = project.status === 'audio_extracted' || !!project.video?.extracted_audio_path;
   const isExtractionFailed = latestExtractJob?.status === 'failed' && !project.video?.extracted_audio_path;
@@ -1363,7 +1475,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Section 4: Khmer Text-to-Speech (Google gTTS) */}
+      {/* Section 4: Khmer Text-to-Speech (Multiple Voices) */}
       {project.video && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           {/* Header */}
@@ -1373,22 +1485,22 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 <Volume2 className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-bold text-slate-800">
-                    4. Khmer Text-to-Speech
+                    4. Khmer Voice & Speech Synthesis
                   </h3>
                   <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200">
-                    Google gTTS
+                    Multiple Providers
                   </span>
                   <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
                     Khmer (km)
                   </span>
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                    Voice: Default Khmer Voice
+                  <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-800 border border-violet-200">
+                    Active: {currentVoiceOption.label}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Online speech synthesis powered by Google gTTS. High clarity, native Khmer pronunciation.
+                  Choose from Google or Microsoft Neural voices and synthesize speech for your Khmer translated segments.
                 </p>
               </div>
             </div>
@@ -1418,14 +1530,131 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           </div>
 
           {/* Body */}
-          <div className="p-6 space-y-4">
+          <div className="p-6 space-y-5">
+            {/* Voice Selection Cards */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
+                  <Volume2 className="w-3.5 h-3.5 text-violet-600" />
+                  Select Khmer Voice
+                </h4>
+                <span className="text-[11px] text-slate-400">
+                  Select a voice to apply to speech generation
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {activeVoiceList.map((v) => {
+                  const isSelected =
+                    selectedVoice.provider === v.provider && selectedVoice.voice === v.voice;
+                  const isPreviewing = previewingVoiceKey === `${v.provider}:${v.voice}`;
+
+                  return (
+                    <div
+                      key={`${v.provider}-${v.voice}`}
+                      onClick={() => handleSelectVoice(v.provider, v.voice)}
+                      className={`relative p-3.5 rounded-xl border cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-violet-50/70 border-violet-500 ring-2 ring-violet-500/20 shadow-sm'
+                          : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-1.5">
+                        <div>
+                          <span className="text-xs font-bold text-slate-800 block">
+                            {v.label}
+                          </span>
+                          <span className="text-[11px] text-slate-500 block mt-0.5">
+                            {v.provider === 'edge' ? 'Microsoft Edge Neural' : 'Google Translate gTTS'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                              v.gender === 'male'
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : v.gender === 'female'
+                                ? 'bg-pink-50 text-pink-700 border-pink-200'
+                                : 'bg-slate-100 text-slate-700 border-slate-200'
+                            }`}
+                          >
+                            {v.gender.toUpperCase()}
+                          </span>
+                          {isSelected && (
+                            <span className="w-5 h-5 rounded-full bg-violet-600 text-white flex items-center justify-center">
+                              <Check className="w-3 h-3" />
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-slate-600 mb-3 min-h-[30px] leading-relaxed">
+                        {v.description}
+                      </p>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePreviewVoice(v.provider, v.voice);
+                          }}
+                          disabled={generatingVoice || updatingVoice}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-violet-700 hover:bg-violet-100 border border-violet-200 transition-colors"
+                          title="Listen to voice sample"
+                        >
+                          {isPreviewing ? (
+                            <>
+                              <Square className="w-3 h-3 fill-current text-violet-700" />
+                              <span>Stop Preview</span>
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-3 h-3 fill-current text-violet-700" />
+                              <span>Preview Voice</span>
+                            </>
+                          )}
+                        </button>
+
+                        <span className="text-[11px] font-medium text-slate-400">
+                          {updatingVoice && isSelected ? 'Saving...' : isSelected ? 'Active Voice' : 'Click to select'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Online notice */}
             <div className="text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-200/80 flex items-center gap-2">
               <Headphones className="w-4 h-4 text-violet-500 shrink-0" />
               <span>
-                <strong>Online Service:</strong> Google gTTS communicates directly with Google's speech synthesis service over HTTPS. Internet connection is required during audio generation.
+                <strong>Online Speech Services:</strong> Google gTTS and Microsoft Edge TTS stream synthesis online over HTTPS. Active internet connectivity is required.
               </span>
             </div>
+
+            {/* Voice mismatch / outdated warning */}
+            {generatedAudios.length > 0 &&
+              generatedAudios.some(
+                (a) => a.provider !== selectedVoice.provider || a.voice !== selectedVoice.voice
+              ) && (
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Voice selection changed to <strong>{currentVoiceOption.label}</strong>. Previously synthesized audio was generated with another voice.
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleStartTTS}
+                    disabled={generatingVoice}
+                    className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold shrink-0"
+                  >
+                    Regenerate All with {currentVoiceOption.label}
+                  </button>
+                </div>
+              )}
 
             {/* TTS Error Alert */}
             {ttsError && (
@@ -1444,7 +1673,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 <div className="flex items-center justify-between text-xs text-violet-900 font-semibold">
                   <span className="flex items-center gap-2">
                     <RotateCcw className="w-3.5 h-3.5 animate-spin text-violet-600" />
-                    Synthesizing speech segments with Google gTTS...
+                    Synthesizing speech segments with {currentVoiceOption.label}...
                   </span>
                   <span>{latestTtsJob.progress_percentage}%</span>
                 </div>
@@ -1473,7 +1702,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   {generatedAudios.some((a) => a.is_outdated) && (
                     <span className="inline-flex items-center gap-1.5 text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 font-medium">
                       <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                      Some Khmer texts were edited. Marked segments should be regenerated.
+                      Some Khmer texts were edited or voice changed. Marked segments should be regenerated.
                     </span>
                   )}
                 </div>
@@ -1482,6 +1711,13 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 <div className="space-y-3">
                   {generatedAudios.map((audio, idx) => {
                     const isRegenerating = regeneratingAudioId === (audio.translation_segment_id || audio.id);
+                    const voiceLabel =
+                      audio.provider === 'edge'
+                        ? audio.voice?.includes('Piseth')
+                          ? 'Microsoft Piseth (Male)'
+                          : 'Microsoft Sreymom (Female)'
+                        : 'Google Khmer (Default)';
+
                     return (
                       <div
                         key={audio.id || idx}
@@ -1498,6 +1734,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                             </span>
                             <span className="text-xs font-semibold text-slate-700">
                               Segment #{audio.segment_order || idx + 1}
+                            </span>
+                            <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200">
+                              {voiceLabel}
                             </span>
                             {audio.duration_seconds !== null && audio.duration_seconds !== undefined && (
                               <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">

@@ -63,6 +63,8 @@ export interface ProjectSummary {
   title: string;
   original_language: string;
   target_language: string;
+  tts_provider?: string;
+  tts_voice?: string;
   status: ProjectStatus;
   created_at: string;
   updated_at: string;
@@ -167,4 +169,25 @@ export interface ProjectDetail extends ProjectSummary {
   transcript_segments?: TranscriptSegment[];
   translation_segments?: TranslationSegment[];
   generated_audios?: GeneratedAudio[];
+}
+
+export interface VoiceOption {
+  provider: string;
+  voice: string;
+  label: string;
+  gender: 'male' | 'female' | 'neutral' | string;
+  description: string;
+  sample_rate?: number;
+}
+
+export interface VoiceListResponse {
+  voices: VoiceOption[];
+  default_provider: string;
+  default_voice: string;
+}
+
+export interface VoicePreviewRequest {
+  provider: string;
+  voice: string;
+  text?: string;
 }

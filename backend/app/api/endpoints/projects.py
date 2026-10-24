@@ -50,6 +50,7 @@ from app.schemas.project import (
     GeneratedAudioListResponse,
     TimingConflictResponse,
     ExportStatusResponse,
+    ProjectVoiceUpdate,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
@@ -59,6 +60,12 @@ from app.services.video.exceptions import (
 )
 from app.services.translation.nllb import NLLBTranslationProvider
 from app.services.tts.google import GoogleTTSProvider
+from app.services.tts.registry import (
+    get_tts_provider,
+    is_valid_voice_combination,
+    DEFAULT_PROVIDER,
+    DEFAULT_VOICE,
+)
 from app.workers.audio_extraction import process_audio_extraction
 from app.workers.transcription import process_transcription
 from app.workers.translation import process_translation
@@ -88,15 +95,60 @@ def list_projects(db: Session = Depends(get_db)) -> List[ProjectSummaryResponse]
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> ProjectResponse:
     """Create a new dubbing project."""
+    tts_provider = (payload.tts_provider or DEFAULT_PROVIDER).strip().lower()
+    tts_voice = (payload.tts_voice or DEFAULT_VOICE).strip()
+    if not is_valid_voice_combination(tts_provider, tts_voice):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid voice combination: provider='{tts_provider}', voice='{tts_voice}'",
+        )
+
     project = Project(
         title=payload.title,
         original_language=payload.original_language,
         target_language=payload.target_language,
+        tts_provider=tts_provider,
+        tts_voice=tts_voice,
         status=ProjectStatus.CREATED,
     )
     db.add(project)
     db.commit()
     db.refresh(project)
+    return project
+
+
+@router.patch("/{project_id}/voice", response_model=ProjectResponse)
+def update_project_voice(
+    project_id: str,
+    voice_update: ProjectVoiceUpdate,
+    db: Session = Depends(get_db),
+) -> ProjectResponse:
+    """Update selected TTS provider and voice for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    provider = (voice_update.tts_provider or DEFAULT_PROVIDER).strip().lower()
+    voice = (voice_update.tts_voice or DEFAULT_VOICE).strip()
+
+    if not is_valid_voice_combination(provider, voice):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid voice combination: provider='{provider}', voice='{voice}'",
+        )
+
+    if project.tts_provider != provider or project.tts_voice != voice:
+        project.tts_provider = provider
+        project.tts_voice = voice
+        # Mark all existing generated audios as outdated
+        db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).update(
+            {GeneratedAudio.is_outdated: True}
+        )
+        if project.video and project.video.exported_video_path:
+            project.video.is_export_outdated = True
+        db.commit()
+        db.refresh(project)
+
     return project
 
 
@@ -822,8 +874,16 @@ def regenerate_audio_segment(
         raise HTTPException(status_code=400, detail="Cannot synthesize empty Khmer text")
 
     try:
-        provider = GoogleTTSProvider()
-        audio_record = synthesize_segment_audio(project_id, segment, provider, db)
+        provider_name = project.tts_provider or DEFAULT_PROVIDER
+        voice_name = project.tts_voice or DEFAULT_VOICE
+        provider = get_tts_provider(provider_name)
+        audio_record = synthesize_segment_audio(
+            project_id=project_id,
+            segment=segment,
+            provider=provider,
+            db=db,
+            voice=voice_name,
+        )
         if project.video and project.video.exported_video_path:
             project.video.is_export_outdated = True
             db.commit()

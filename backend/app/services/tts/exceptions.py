@@ -8,6 +8,11 @@ class LanguageNotSupportedError(TTSError):
     pass
 
 
+class VoiceNotSupportedError(TTSError):
+    """Raised when the requested voice identifier is not supported by the TTS provider."""
+    pass
+
+
 class EmptyTextError(TTSError):
     """Raised when input text for speech synthesis is empty."""
     pass

@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 7 Complete — Stabilization, Testing & Optimization Verified
+- **Current Phase**: Phase 8 Complete — Multiple Khmer Voice Selection & Edge TTS Integration Verified
 - **Overall Status**: Version 1 Complete & Verified
 
 ---
@@ -104,11 +104,30 @@
 - [x] Live container restart and database persistence verified.
 - [x] Documentation and manual browser testing checklist completed.
 
+### [x] Phase 8: Khmer Voice Selection (Google gTTS & Microsoft Edge TTS)
+- [x] Integration of `edge-tts` inside Docker development environment with zero global Ubuntu packages.
+- [x] Concrete `EdgeTTSProvider` implementation conforming to `TTSProvider` with exponential backoff retries and safe async execution.
+- [x] Multi-voice support for official Microsoft Neural Khmer voices: `km-KH-PisethNeural` (Male) and `km-KH-SreymomNeural` (Female).
+- [x] Factory registry (`get_tts_provider`, `is_valid_voice_combination`, `list_supported_voices`) managing voice metadata and provider instantiation.
+- [x] Database migration (`c1f72a4d9e01`) adding `tts_provider` and `tts_voice` to `projects` table with safe column introspection.
+- [x] API endpoints:
+  - `GET /api/tts/voices`: Returns available providers, voices, descriptions, and gender tags.
+  - `POST /api/tts/preview`: Generates cached preview audio stream (`audio/mpeg`) for any voice with max 200 character limit.
+  - `PATCH /api/projects/{id}/voice`: Updates project voice and automatically invalidates existing audio (`is_outdated=True`) and export (`is_export_outdated=True`).
+- [x] Background worker (`process_tts`) and regenerate endpoint updated to synthesize using the project's selected provider and voice.
+- [x] Full audio format compatibility: Edge TTS MP3 audio tracks seamlessly normalized to 44.1kHz WAV by `AudioSynchronizationService`.
+- [x] Frontend Step 4 workspace updated:
+  - Voice selection card deck (Google Khmer, Microsoft Piseth, Microsoft Sreymom) with gender and provider badges.
+  - Interactive "Preview Voice" button with live audio playback.
+  - Outdated warning banner when voice selection changes.
+  - Voice metadata label displayed on each synthesized segment card.
+- [x] Total automated test suite expanded to 92 passing backend tests (11 new tests in `tests/test_voice_selection.py`).
+- [x] Production frontend build verified with TypeScript strict mode enabled.
+
 ---
 
 ## Future Scope (Post Version 1)
-- Custom Khmer voices (Piseth, Sreymom).
-- Voice cloning from original speakers.
+- Voice cloning from original English speakers.
 - Background music & ambient sound preservation.
 - Multiple speakers and voice emotion control.
 - Subtitle generation and export (.srt / .vtt).

@@ -14,7 +14,8 @@ from app.models.project import (
     ProjectStatus,
     JobStatus,
 )
-from app.services.tts.google import GoogleTTSProvider
+from app.services.tts.base import TTSProvider
+from app.services.tts.registry import get_tts_provider
 from app.services.tts.exceptions import TTSError
 
 logger = logging.getLogger(__name__)
@@ -23,16 +24,27 @@ logger = logging.getLogger(__name__)
 def synthesize_segment_audio(
     project_id: str,
     segment: TranslationSegment,
-    provider: GoogleTTSProvider,
-    db: Session,
+    provider: Optional[TTSProvider] = None,
+    db: Optional[Session] = None,
+    voice: Optional[str] = None,
 ) -> GeneratedAudio:
     """Helper to synthesize audio for a single translation segment and update the database."""
+    if db is None:
+        raise ValueError("Database session required for synthesize_segment_audio")
+
+    project = db.query(Project).filter(Project.id == project_id).first()
+    provider_name = project.tts_provider if project and project.tts_provider else "gtts"
+    chosen_voice = voice or (project.tts_voice if project and project.tts_voice else "default")
+
+    if provider is None:
+        provider = get_tts_provider(provider_name)
+
     output_path = get_audio_segment_path(project_id, segment.id)
     result = provider.synthesize(
         text=segment.khmer_text,
         output_path=output_path,
         language="km",
-        voice="default",
+        voice=chosen_voice,
     )
 
     audio_record = (
@@ -107,12 +119,16 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
         project.status = ProjectStatus.GENERATING_VOICE
         db.commit()
 
-        provider = GoogleTTSProvider()
+        provider_name = project.tts_provider or "gtts"
+        voice_name = project.tts_voice or "default"
+        provider = get_tts_provider(provider_name)
         total_segments = len(translation_segments)
         logger.info(
-            "Starting TTS synthesis for project %s (%d segments)...",
+            "Starting TTS synthesis for project %s (%d segments) [provider=%s, voice=%s]...",
             project_id,
             total_segments,
+            provider_name,
+            voice_name,
         )
 
         for idx, seg in enumerate(translation_segments):
@@ -124,7 +140,13 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
                 continue
 
             try:
-                synthesize_segment_audio(project_id, seg, provider, db)
+                synthesize_segment_audio(
+                    project_id=project_id,
+                    segment=seg,
+                    provider=provider,
+                    db=db,
+                    voice=voice_name,
+                )
             except Exception as e:
                 logger.error(
                     "Failed to synthesize segment %s (order %d): %s",
@@ -138,6 +160,9 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
             progress = 10 + int(85 * ((idx + 1) / total_segments))
             job.progress_percentage = min(progress, 95)
             db.commit()
+
+        if project.video and project.video.exported_video_path:
+            project.video.is_export_outdated = True
 
         job.progress_percentage = 100
         job.status = JobStatus.COMPLETED
