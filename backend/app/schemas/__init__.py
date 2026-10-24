@@ -9,6 +9,10 @@ from app.schemas.project import (
     TranscriptSegmentUpdate,
     TranscriptResponse,
     TranslationSegmentResponse,
+    TranslationSegmentUpdate,
+    TranslationListResponse,
+    GeneratedAudioResponse,
+    GeneratedAudioListResponse,
 )
 
 __all__ = [
@@ -22,4 +26,8 @@ __all__ = [
     "TranscriptSegmentUpdate",
     "TranscriptResponse",
     "TranslationSegmentResponse",
+    "TranslationSegmentUpdate",
+    "TranslationListResponse",
+    "GeneratedAudioResponse",
+    "GeneratedAudioListResponse",
 ]

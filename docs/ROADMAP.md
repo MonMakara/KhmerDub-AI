@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 4.1 Complete — Translation Quality & Natural Khmer Formatting Verified
+- **Current Phase**: Phase 5 Complete — Google Khmer Text-to-Speech (gTTS) Integrated & Verified
 - **Overall Status**: In Progress
 
 ---
@@ -57,10 +57,16 @@
 - [x] Comprehensive 20-sentence benchmark evaluation dataset tested on real CPU inference.
 - [x] 38 automated unit and integration tests passing in Docker.
 
-### [ ] Phase 5: Google Khmer TTS
-- [ ] Verification of Google gTTS Khmer (`km`) support with sample audio generation.
-- [ ] Segment-level Khmer MP3 speech synthesis with retry mechanisms.
-- [ ] Audio preview player in frontend.
+### [x] Phase 5: Google Khmer TTS (gTTS)
+- [x] Verification of Google gTTS Khmer (`km`) support with sample audio generation.
+- [x] Concrete `GoogleTTSProvider` implementation conforming to `TTSProvider` with exponential backoff retries.
+- [x] Accurate duration measurement of synthesized audio segments via `FFmpegVideoProcessor.get_audio_duration`.
+- [x] Background worker (`process_tts`) orchestrating segment-level speech synthesis.
+- [x] Database migration for `voice`, `is_outdated`, and `updated_at` fields in `GeneratedAudio`.
+- [x] Automatic invalidation (`is_outdated=True`) when Khmer translation segments are updated or retranslated.
+- [x] API endpoints: `POST /tts`, `GET /generated-audio`, `POST /tts/{segment_id}/regenerate`, `GET /tts/{segment_id}/audio`.
+- [x] Frontend Step 4 workspace: audio players, duration readouts, outdated warnings, individual segment regeneration.
+- [x] 51 automated unit, integration, and real TTS tests passing in Docker.
 
 ### [ ] Phase 6: Audio Synchronization & Video Export
 - [ ] Transcript-timed audio synchronization with conservative speed adjustment.

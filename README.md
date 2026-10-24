@@ -9,8 +9,8 @@
 1. **Video Upload** *(Phase 2 Complete)*: Safe MP4 video uploads with streaming chunk processing (< 500 MB limit), FFprobe container inspection, filename sanitization, and video metadata extraction.
 2. **Audio Extraction** *(Phase 2 Complete)*: FFmpeg extraction converting video audio track to 16,000 Hz mono 16-bit PCM WAV in a non-blocking background job. Includes audio preview player and retry support.
 3. **English Transcription** *(Phase 3 Complete)*: Accurate timestamped English transcription using `faster-whisper` (CTranslate2 INT8 on CPU) with Voice Activity Detection, background execution, and inline transcript editing in the web UI.
-4. **English-to-Khmer Translation** *(Phase 4 Complete)*: Free, locally runnable neural machine translation using Meta's NLLB-200 (`eng_Latn` → `khm_Khmr`) with thread-safe lazy caching, background execution, side-by-side comparative review, manual editing preservation, and single-segment retranslation.
-5. **Khmer Text-to-Speech** *(Phase 5)*: Speech synthesis using Google gTTS for Khmer audio segments.
+4. **English-to-Khmer Translation** *(Phase 4 & 4.1 Complete)*: Free, locally runnable neural machine translation using Meta's NLLB-200 (`eng_Latn` → `khm_Khmr`) with thread-safe lazy caching, natural Khmer text compaction (`KhmerTextFormatter`), terminology glossary (`KhmerGlossary`), context-aware translation, side-by-side comparative review, manual editing preservation, and single-segment retranslation.
+5. **Khmer Text-to-Speech** *(Phase 5 Complete)*: Speech synthesis using Google gTTS for Khmer audio segments with exponential backoff retries, duration measurement, audio preview players, individual segment regeneration, and automatic invalidation when translations are edited.
 6. **Audio Synchronization** *(Phase 6)*: Dynamic audio alignment matching original segment timestamps with conservative speed adjustment.
 7. **Video Export** *(Phase 6)*: Clean remuxing via FFmpeg to export a final dubbed MP4 video.
 

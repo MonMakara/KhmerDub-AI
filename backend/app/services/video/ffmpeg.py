@@ -114,6 +114,26 @@ class FFmpegVideoProcessor(VideoProcessor):
             audio_codec=audio_codec,
         )
 
+    def get_audio_duration(self, audio_path: Path) -> float:
+        """Measure audio duration in seconds using ffprobe."""
+        if not audio_path.exists() or audio_path.stat().st_size == 0:
+            return 0.0
+
+        cmd = [
+            self.ffprobe_bin,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if res.returncode == 0 and res.stdout.strip():
+                return round(float(res.stdout.strip()), 2)
+        except Exception as e:
+            logger.warning("Failed to probe audio duration for %s: %s", audio_path, e)
+        return 0.0
+
     def extract_audio(self, video_path: Path, output_audio_path: Path) -> Path:
         """Extract audio track from video as 16kHz mono 16-bit PCM WAV."""
         metadata = self.get_metadata(video_path)

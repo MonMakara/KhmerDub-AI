@@ -82,6 +82,31 @@ class TranslationListResponse(BaseModel):
     segments: List[TranslationSegmentResponse]
 
 
+class GeneratedAudioResponse(BaseModel):
+    id: str
+    project_id: str
+    translation_segment_id: Optional[str] = None
+    segment_order: Optional[int] = None
+    khmer_text: Optional[str] = None
+    audio_path: str
+    duration_seconds: Optional[float] = None
+    provider: str
+    voice: str
+    is_outdated: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    audio_url: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GeneratedAudioListResponse(BaseModel):
+    project_id: str
+    status: ProjectStatus
+    audios: List[GeneratedAudioResponse]
+    total_duration_seconds: float = 0.0
+
+
 class ProjectCreate(BaseModel):
     title: str
     original_language: str = "en"
@@ -106,5 +131,6 @@ class ProjectResponse(ProjectSummaryResponse):
     jobs: List[ProcessingJobResponse] = []
     transcript_segments: List[TranscriptSegmentResponse] = []
     translation_segments: List[TranslationSegmentResponse] = []
+    generated_audios: List[GeneratedAudioResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

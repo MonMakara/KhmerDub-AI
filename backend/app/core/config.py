@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     TRANSLATION_NUM_BEAMS: int = 2
     TRANSLATION_MAX_INPUT_TOKENS: int = 512
 
+    # Text-to-Speech (gTTS)
+    TTS_PROVIDER: str = "gtts"
+    TTS_LANGUAGE: str = "km"
+    TTS_SLOW: bool = False
+    TTS_MAX_RETRIES: int = 3
+    TTS_TIMEOUT: float = 30.0
+
     # Limits
     MAX_UPLOAD_SIZE_MB: int = 500
 

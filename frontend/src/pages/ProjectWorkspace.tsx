@@ -18,8 +18,10 @@ import {
   RotateCcw,
   Languages,
   AlertTriangle,
+  Volume2,
+  Headphones,
 } from 'lucide-react';
-import { ProjectDetail, TranscriptSegment, TranslationSegment } from '../types';
+import { ProjectDetail, TranscriptSegment, TranslationSegment, GeneratedAudio } from '../types';
 import { api } from '../services/api';
 
 interface ProjectWorkspaceProps {
@@ -59,6 +61,12 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [savingTransId, setSavingTransId] = useState<string | null>(null);
   const [retranslatingTransId, setRetranslatingTransId] = useState<string | null>(null);
 
+  // Text-to-Speech (gTTS) state
+  const [generatedAudios, setGeneratedAudios] = useState<GeneratedAudio[]>([]);
+  const [generatingVoice, setGeneratingVoice] = useState<boolean>(false);
+  const [ttsError, setTtsError] = useState<string | null>(null);
+  const [regeneratingAudioId, setRegeneratingAudioId] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchTranscriptData = useCallback(async () => {
@@ -79,6 +87,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   }, [projectId]);
 
+  const fetchAudioData = useCallback(async () => {
+    try {
+      const data = await api.getGeneratedAudios(projectId);
+      setGeneratedAudios(data.audios);
+    } catch (err: any) {
+      console.error('Failed to load generated audios:', err);
+    }
+  }, [projectId]);
+
   const fetchProjectData = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
@@ -87,28 +104,41 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         data.status === 'transcribed' ||
         data.status === 'translating' ||
         data.status === 'translated' ||
+        data.status === 'generating_voice' ||
+        data.status === 'voice_generated' ||
         (data.transcript_segments && data.transcript_segments.length > 0)
       ) {
         await fetchTranscriptData();
       }
       if (
         data.status === 'translated' ||
+        data.status === 'generating_voice' ||
+        data.status === 'voice_generated' ||
         (data.translation_segments && data.translation_segments.length > 0)
       ) {
         await fetchTranslationData();
+      }
+      if (
+        data.status === 'voice_generated' ||
+        data.status === 'generating_voice' ||
+        data.status === 'synchronizing' ||
+        data.status === 'completed' ||
+        (data.generated_audios && data.generated_audios.length > 0)
+      ) {
+        await fetchAudioData();
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load project details');
     } finally {
       setLoading(false);
     }
-  }, [projectId, fetchTranscriptData, fetchTranslationData]);
+  }, [projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData]);
 
   useEffect(() => {
     fetchProjectData();
   }, [fetchProjectData]);
 
-  // Polling for background audio extraction, transcription, or translation jobs
+  // Polling for background audio extraction, transcription, translation, or TTS jobs
   useEffect(() => {
     if (!project) return;
     const isExtracting =
@@ -123,14 +153,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       project.status === 'translating' ||
       project.jobs?.some((j) => j.job_type === 'translate' && (j.status === 'pending' || j.status === 'running'));
 
+    const isTtsRunning =
+      project.status === 'generating_voice' ||
+      project.jobs?.some((j) => j.job_type === 'tts' && (j.status === 'pending' || j.status === 'running'));
+
     if (isSttRunning) {
       setTranscribing(true);
     }
     if (isTransRunning) {
       setTranslating(true);
     }
+    if (isTtsRunning) {
+      setGeneratingVoice(true);
+    }
 
-    if (!isExtracting && !isSttRunning && !isTransRunning) return;
+    if (!isExtracting && !isSttRunning && !isTransRunning && !isTtsRunning) return;
 
     const interval = setInterval(async () => {
       try {
@@ -167,6 +204,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           }
         }
 
+        // Check if TTS just finished
+        if (isTtsRunning) {
+          const ttsJob = data.jobs?.find((j) => j.job_type === 'tts');
+          if (ttsJob?.status === 'completed' || data.status === 'voice_generated') {
+            setGeneratingVoice(false);
+            setTtsError(null);
+            await fetchAudioData();
+            if (onProjectUpdated) onProjectUpdated();
+          } else if (ttsJob?.status === 'failed' || data.status === 'failed') {
+            setGeneratingVoice(false);
+            setTtsError(ttsJob?.error_message || 'TTS speech synthesis failed.');
+            if (onProjectUpdated) onProjectUpdated();
+          }
+        }
+
         if (isExtracting && (data.status === 'audio_extracted' || data.status === 'failed')) {
           if (onProjectUpdated) onProjectUpdated();
         }
@@ -176,7 +228,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [project, projectId, fetchTranscriptData, fetchTranslationData, onProjectUpdated]);
+  }, [project, projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, onProjectUpdated]);
 
   const handleFileSelect = async (file: File) => {
     setError(null);
@@ -332,6 +384,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       );
       setEditingTransId(null);
       setEditingTransText('');
+      // Invalidate audio record on frontend to reflect outdated status immediately
+      await fetchAudioData();
     } catch (err: any) {
       alert(`Error saving translation: ${err.message}`);
     } finally {
@@ -346,10 +400,45 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       setTranslationSegments((prev) =>
         prev.map((s) => (s.id === segmentId ? updated : s))
       );
+      // Invalidate audio record on frontend
+      await fetchAudioData();
     } catch (err: any) {
       alert(`Error retranslating segment: ${err.message}`);
     } finally {
       setRetranslatingTransId(null);
+    }
+  };
+
+  // Text-to-Speech (gTTS) Handlers
+  const handleStartTTS = async () => {
+    try {
+      setGeneratingVoice(true);
+      setTtsError(null);
+      await api.startTTS(projectId);
+      await fetchProjectData();
+    } catch (err: any) {
+      setGeneratingVoice(false);
+      setTtsError(err.message || 'Failed to start Khmer speech synthesis');
+    }
+  };
+
+  const handleRegenerateSegmentAudio = async (segmentId: string) => {
+    try {
+      setRegeneratingAudioId(segmentId);
+      setTtsError(null);
+      const updatedAudio = await api.regenerateAudioSegment(projectId, segmentId);
+      setGeneratedAudios((prev) => {
+        const exists = prev.some((a) => a.translation_segment_id === segmentId || a.id === updatedAudio.id);
+        if (exists) {
+          return prev.map((a) => (a.translation_segment_id === segmentId ? updatedAudio : a));
+        }
+        return [...prev, updatedAudio];
+      });
+      await fetchProjectData();
+    } catch (err: any) {
+      setTtsError(err.message || 'Failed to regenerate audio segment');
+    } finally {
+      setRegeneratingAudioId(null);
     }
   };
 
@@ -395,6 +484,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const latestExtractJob = project.jobs?.find((j) => j.job_type === 'extract_audio');
   const latestSttJob = project.jobs?.find((j) => j.job_type === 'transcribe');
   const latestTransJob = project.jobs?.find((j) => j.job_type === 'translate');
+  const latestTtsJob = project.jobs?.find((j) => j.job_type === 'tts');
 
   const isAudioReady = project.status === 'audio_extracted' || !!project.video?.extracted_audio_path;
   const isExtractionFailed = latestExtractJob?.status === 'failed' && !project.video?.extracted_audio_path;
@@ -407,13 +497,24 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     project.status === 'transcribed' ||
     project.status === 'translating' ||
     project.status === 'translated' ||
+    project.status === 'generating_voice' ||
+    project.status === 'voice_generated' ||
     transcriptSegments.length > 0 ||
     latestSttJob?.status === 'completed';
 
   const isTranslated =
     project.status === 'translated' ||
+    project.status === 'generating_voice' ||
+    project.status === 'voice_generated' ||
     translationSegments.length > 0 ||
     latestTransJob?.status === 'completed';
+
+  const isVoiceGenerated =
+    project.status === 'voice_generated' ||
+    project.status === 'synchronizing' ||
+    project.status === 'completed' ||
+    (generatedAudios.length > 0 && latestTtsJob?.status === 'completed') ||
+    (generatedAudios.length > 0 && generatedAudios.length === translationSegments.length);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -486,8 +587,16 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           >
             3. Khmer Translation {isTranslated && '✓'}
           </div>
-          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
-            4. Khmer Voice (P5)
+          <div
+            className={`p-2.5 rounded-lg border font-semibold ${
+              isVoiceGenerated
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : isTranslated
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                : 'bg-slate-50 border-slate-200 text-slate-400'
+            }`}
+          >
+            4. Khmer Voice {isVoiceGenerated && '✓'}
           </div>
           <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-400">
             5. Export Dub (P6)
@@ -1154,6 +1263,210 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   {isTranscribed
                     ? 'Click the "Translate to Khmer" button above to translate the English transcript into Khmer using Meta NLLB-200.'
                     : 'Complete Step 2 (English Transcription) before translating text.'}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Section 4: Khmer Text-to-Speech (Google gTTS) */}
+      {project.video && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          {/* Header */}
+          <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-violet-100 text-violet-600 flex items-center justify-center shrink-0">
+                <Volume2 className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-800">
+                    4. Khmer Text-to-Speech
+                  </h3>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200">
+                    Google gTTS
+                  </span>
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                    Khmer (km)
+                  </span>
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                    Voice: Default Khmer Voice
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Online speech synthesis powered by Google gTTS. High clarity, native Khmer pronunciation.
+                </p>
+              </div>
+            </div>
+
+            {/* Action Button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleStartTTS}
+                disabled={generatingVoice || translating || !isTranslated || translationSegments.length === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all shadow-violet-200"
+              >
+                {generatingVoice ? (
+                  <>
+                    <RotateCcw className="w-4 h-4 animate-spin" />
+                    <span>Synthesizing Voice... ({latestTtsJob?.progress_percentage || 0}%)</span>
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="w-4 h-4" />
+                    <span>
+                      {generatedAudios.length > 0 ? 'Regenerate All Audio' : 'Generate Khmer Audio'}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="p-6 space-y-4">
+            {/* Online notice */}
+            <div className="text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-200/80 flex items-center gap-2">
+              <Headphones className="w-4 h-4 text-violet-500 shrink-0" />
+              <span>
+                <strong>Online Service:</strong> Google gTTS communicates directly with Google's speech synthesis service over HTTPS. Internet connection is required during audio generation.
+              </span>
+            </div>
+
+            {/* TTS Error Alert */}
+            {ttsError && (
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-semibold block mb-0.5">Speech Synthesis Error</span>
+                  <span>{ttsError}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Active Generation Progress Bar */}
+            {generatingVoice && latestTtsJob && (
+              <div className="p-4 rounded-xl bg-violet-50/70 border border-violet-200 space-y-2">
+                <div className="flex items-center justify-between text-xs text-violet-900 font-semibold">
+                  <span className="flex items-center gap-2">
+                    <RotateCcw className="w-3.5 h-3.5 animate-spin text-violet-600" />
+                    Synthesizing speech segments with Google gTTS...
+                  </span>
+                  <span>{latestTtsJob.progress_percentage}%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-violet-200 overflow-hidden">
+                  <div
+                    className="h-full bg-violet-600 transition-all duration-300 rounded-full"
+                    style={{ width: `${latestTtsJob.progress_percentage}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Audio Segments View */}
+            {generatedAudios.length > 0 ? (
+              <div className="space-y-4">
+                {/* Stats summary */}
+                <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
+                  <div className="flex items-center gap-4">
+                    <span>
+                      Generated Segments: <strong className="text-slate-800 font-bold">{generatedAudios.length}</strong> / {translationSegments.length}
+                    </span>
+                    <span>
+                      Total Audio Duration: <strong className="text-slate-800 font-bold">{generatedAudios.reduce((acc, a) => acc + (a.duration_seconds || 0), 0).toFixed(1)}s</strong>
+                    </span>
+                  </div>
+                  {generatedAudios.some((a) => a.is_outdated) && (
+                    <span className="inline-flex items-center gap-1.5 text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 font-medium">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                      Some Khmer texts were edited. Marked segments should be regenerated.
+                    </span>
+                  )}
+                </div>
+
+                {/* Segment cards */}
+                <div className="space-y-3">
+                  {generatedAudios.map((audio, idx) => {
+                    const isRegenerating = regeneratingAudioId === (audio.translation_segment_id || audio.id);
+                    return (
+                      <div
+                        key={audio.id || idx}
+                        className={`p-4 rounded-xl border transition-all ${
+                          audio.is_outdated
+                            ? 'bg-amber-50/40 border-amber-200'
+                            : 'bg-white border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <span className="w-6 h-6 rounded-md bg-violet-100 text-violet-700 text-xs font-bold flex items-center justify-center">
+                              {audio.segment_order || idx + 1}
+                            </span>
+                            <span className="text-xs font-semibold text-slate-700">
+                              Segment #{audio.segment_order || idx + 1}
+                            </span>
+                            {audio.duration_seconds !== null && audio.duration_seconds !== undefined && (
+                              <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                                {audio.duration_seconds.toFixed(2)}s
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {audio.is_outdated ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
+                                <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                Text Modified (Outdated)
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                Ready
+                              </span>
+                            )}
+                            <button
+                              onClick={() => handleRegenerateSegmentAudio(audio.translation_segment_id || audio.id)}
+                              disabled={isRegenerating || generatingVoice}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-medium disabled:opacity-50 transition-colors"
+                              title="Regenerate this speech segment"
+                            >
+                              <RotateCcw className={`w-3 h-3 ${isRegenerating ? 'animate-spin text-violet-600' : ''}`} />
+                              <span>{isRegenerating ? 'Regenerating...' : 'Regenerate'}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Khmer Text */}
+                        <p className="text-sm text-slate-800 font-normal leading-relaxed mb-3">
+                          {audio.khmer_text || '(Khmer text)'}
+                        </p>
+
+                        {/* HTML Audio Player */}
+                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200/70">
+                          <audio
+                            controls
+                            className="w-full h-8"
+                            src={api.getAudioSegmentUrl(projectId, audio.translation_segment_id || audio.id)}
+                            preload="metadata"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* Prompt to generate Khmer Voice */
+              <div className="p-8 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                <Headphones className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                <h4 className="text-sm font-semibold text-slate-700">
+                  {isTranslated ? 'Ready for Khmer Voice Synthesis' : 'Awaiting Khmer Translation'}
+                </h4>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  {isTranslated
+                    ? 'Click "Generate Khmer Audio" above to convert all translated Khmer segments into natural speech.'
+                    : 'Complete Step 3 (Khmer Translation) before synthesizing voice.'}
                 </p>
               </div>
             )}

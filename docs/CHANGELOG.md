@@ -2,6 +2,41 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.5.0] - Phase 5 Complete (2026-10-24)
+
+### Added
+- **Google Khmer Text-to-Speech (`GoogleTTSProvider`)**:
+  - Implemented concrete TTS provider conforming to `TTSProvider` using `gTTS>=2.5.0`.
+  - Supports Khmer language code (`km`) with clear labeling: `Provider: Google gTTS`, `Language: Khmer (km)`, `Voice: Default Khmer Voice`.
+  - Exponential backoff retry mechanism (configurable `TTS_MAX_RETRIES=3`) handling transient network and HTTP errors.
+  - Duration measurement using `FFmpegVideoProcessor.get_audio_duration` via `ffprobe`.
+  - Audio files saved as MP3 segments into `data/temp/tts_{project_id}_{segment_id}.mp3`.
+  - Clean error handling with custom exceptions (`EmptyTextError`, `LanguageNotSupportedError`, `TTSNetworkError`, `TTSGenerationError`).
+- **Database Tracking & Migration**:
+  - Extended `GeneratedAudio` entity with `voice`, `is_outdated`, and `updated_at` columns.
+  - Alembic migration `0cff7668ac18_add_audio_voice_and_outdated_flags.py` generated and applied.
+  - Automatic audio invalidation: modifying or retranslating any Khmer translation segment automatically marks linked `GeneratedAudio.is_outdated = True`.
+- **TTS API Endpoints**:
+  - `POST /api/projects/{project_id}/tts`: Dispatches non-blocking background speech synthesis for all translated Khmer segments.
+  - `GET /api/projects/{project_id}/generated-audio`: Retrieves list of generated audio records with playback URLs, durations, and outdated flags.
+  - `POST /api/projects/{project_id}/tts/{segment_id}/regenerate`: Regenerates speech audio for an individual segment.
+  - `GET /api/projects/{project_id}/tts/{segment_id}/audio`: Streams synthesized MP3 audio for browser playback with `audio/mpeg` content type.
+- **Background Worker (`process_tts`)**:
+  - Asynchronous background worker updating `ProcessingJob` progress (10% -> 95% -> 100%).
+  - Transitions `Project.status` to `GENERATING_VOICE` and then `VOICE_GENERATED`.
+- **Frontend Step 4 Workspace**:
+  - Active Step 4 indicator in the dubbing pipeline stepper (`4. Khmer Voice ✓`).
+  - Section 4 UI with provider badges, online service disclaimer, and "Generate Khmer Audio" action button.
+  - Real-time generation progress bar.
+  - Audio summary bar displaying total duration and segment count.
+  - Segment cards featuring Khmer text, HTML `<audio controls>` player, duration readout, and single-segment `[Regenerate]` button.
+  - Prominent amber alert badge on outdated segments where translation text was modified after audio generation.
+- **Testing**:
+  - 13 new unit, integration, and real TTS tests in `backend/tests/test_tts.py`.
+  - Verified live Khmer speech generation with FFprobe audio stream and duration analysis.
+  - 100% test pass rate across 51 backend tests.
+  - Frontend TypeScript compilation and Vite production build verified with 0 errors.
+
 ## [0.4.1] - Phase 4.1 Complete (2026-10-24)
 
 ### Added

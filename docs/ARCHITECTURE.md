@@ -58,6 +58,10 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `GET /api/projects/{id}/translations`: Retrieve ordered translated segments with original English text and timestamps.
   - `PATCH /api/projects/{id}/translations/{segment_id}`: Inline manual editing of Khmer translation text (`is_manually_edited=True`, `is_outdated=False`).
   - `POST /api/projects/{id}/translations/{segment_id}/retranslate`: Single segment retranslation from English transcript.
+  - `POST /api/projects/{id}/tts`: Asynchronous text-to-speech synthesis generating Khmer MP3 audio files via Google gTTS.
+  - `GET /api/projects/{id}/generated-audio`: Retrieve all synthesized audio records with playback URLs and outdated flags.
+  - `POST /api/projects/{id}/tts/{segment_id}/regenerate`: Single segment audio regeneration.
+  - `GET /api/projects/{id}/tts/{segment_id}/audio`: Stream synthesized MP3 audio for browser playback.
   - `GET /api/projects/{id}/jobs`: Processing jobs and progress tracking.
   - `GET /api/projects/{id}/video`: Stream uploaded MP4 for browser video preview.
   - `GET /api/projects/{id}/audio`: Stream extracted 16kHz WAV audio for browser playback.
@@ -65,12 +69,15 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
   - `FasterWhisperTranscriptionProvider`: Concretely implements `TranscriptionProvider`. Features thread-safe lazy model loading, CTranslate2 INT8 quantization, Voice Activity Detection, and generator consumption returning timestamped `TranscriptionSegment` instances.
 - **`services/translation/`**:
   - `NLLBTranslationProvider`: Concretely implements `TranslationProvider`. Uses Meta's `facebook/nllb-200-distilled-600M` (`eng_Latn` → `khm_Khmr`) with thread-safe lazy loading (`_cache_lock`), beam search decoding, RSS RAM monitoring via `psutil`, and persistent caching in Docker volume `model_cache` (`/root/.cache`).
+- **`services/tts/`**:
+  - `GoogleTTSProvider`: Concretely implements `TTSProvider`. Streams speech MP3 from Google gTTS (`km`) with exponential backoff retries, text validation, and duration measurement using `FFmpegVideoProcessor.get_audio_duration`.
 - **`services/video/`**:
-  - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
+  - `FFmpegVideoProcessor`: Concretely implements `VideoProcessor` using safe subprocess execution. Validates MP4 containers, extracts stream metadata, measures audio duration, and converts audio to 16,000 Hz mono 16-bit PCM WAV.
 - **`workers/`**:
   - `process_audio_extraction`: Non-blocking background worker updating audio extraction job status.
   - `process_transcription`: Background STT worker populating `TranscriptSegment` database records.
   - `process_translation`: Background translation worker processing English segments, respecting and preserving manually edited translations (`is_manually_edited`), and populating `TranslationSegment` records.
+  - `process_tts`: Background TTS worker orchestrating segment-level speech synthesis, updating `GeneratedAudio` records and tracking invalidation (`is_outdated`).
 
 ### 2.2 Frontend (`frontend/src`)
 - **Layout**: Clean left sidebar with Dashboard, Projects, and Settings tabs; top header with live backend connectivity status.

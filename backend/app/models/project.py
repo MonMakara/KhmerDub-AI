@@ -148,7 +148,10 @@ class GeneratedAudio(Base):
     audio_path = Column(String(1024), nullable=False)
     duration_seconds = Column(Float, nullable=True)
     provider = Column(String(50), default="gtts", nullable=False)
+    voice = Column(String(50), default="default", nullable=False)
+    is_outdated = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="generated_audios")
     translation_segment = relationship("TranslationSegment", back_populates="generated_audio")

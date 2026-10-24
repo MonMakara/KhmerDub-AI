@@ -7,6 +7,8 @@ import {
   TranscriptSegment,
   TranslationSegment,
   TranslationListResponse,
+  GeneratedAudio,
+  GeneratedAudioListResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -227,5 +229,45 @@ export const api = {
       throw new Error(err.detail || `Failed to retranslate segment: ${res.statusText}`);
     }
     return res.json();
+  },
+
+  async startTTS(projectId: string): Promise<ProcessingJob> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/tts`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `TTS synthesis request failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getGeneratedAudios(projectId: string): Promise<GeneratedAudioListResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/generated-audio`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch generated audios: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async regenerateAudioSegment(
+    projectId: string,
+    segmentId: string
+  ): Promise<GeneratedAudio> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/tts/${segmentId}/regenerate`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to regenerate audio segment: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getAudioSegmentUrl(projectId: string, segmentId: string): string {
+    return `${API_BASE}/projects/${projectId}/tts/${segmentId}/audio`;
   },
 };

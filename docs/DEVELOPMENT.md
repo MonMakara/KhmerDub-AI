@@ -99,6 +99,33 @@ curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLA
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/retranslate"
 ```
 
+### Testing Khmer Text-to-Speech via cURL (Phase 5)
+```bash
+# 1. Trigger background speech synthesis for all Khmer translation segments
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/tts"
+
+# 2. View generated audio records with durations and URLs
+curl -s "http://localhost:8000/api/projects/$PROJ_ID/generated-audio" | jq .
+
+# 3. Regenerate speech audio for a single segment
+curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/tts/$TRANSLATION_SEGMENT_ID/regenerate"
+
+# 4. Stream or download synthesized MP3 segment
+curl -o segment.mp3 "http://localhost:8000/api/projects/$PROJ_ID/tts/$TRANSLATION_SEGMENT_ID/audio"
+```
+
+### Text-to-Speech Configuration (gTTS)
+The following variables in `.env` control Khmer speech synthesis:
+- `TTS_PROVIDER`: Text-to-speech engine (`gtts`).
+- `TTS_LANGUAGE`: Target speech language (`km`).
+- `TTS_SLOW`: Speech rate (`false` for standard speed, `true` for slow).
+- `TTS_MAX_RETRIES`: Number of retry attempts on network error with exponential backoff (default `3`).
+- `TTS_TIMEOUT`: Network timeout in seconds (default `30.0`).
+
+> [!NOTE]
+> **Internet Dependency**: Google gTTS uses Google Translate's online voice service endpoint (`https://translate.google.com/translate_tts`). It requires active internet access and is not an offline local model. Voice output uses Google's standard default Khmer voice model.
+
+
 ### Translation Model Configuration (NLLB-200)
 The following variables in `.env` control English-to-Khmer translation:
 - `TRANSLATION_PROVIDER`: Translation service provider (`nllb`). Defaults to `nllb`.

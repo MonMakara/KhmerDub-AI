@@ -100,10 +100,34 @@ export interface TranslationListResponse {
   segments: TranslationSegment[];
 }
 
+export interface GeneratedAudio {
+  id: string;
+  project_id: string;
+  translation_segment_id?: string | null;
+  segment_order?: number | null;
+  khmer_text?: string | null;
+  audio_path: string;
+  duration_seconds?: number | null;
+  provider: string;
+  voice: string;
+  is_outdated: boolean;
+  created_at: string;
+  updated_at?: string | null;
+  audio_url?: string | null;
+}
+
+export interface GeneratedAudioListResponse {
+  project_id: string;
+  status: ProjectStatus;
+  audios: GeneratedAudio[];
+  total_duration_seconds: number;
+}
+
 export interface ProjectDetail extends ProjectSummary {
   original_video_path?: string | null;
   video?: VideoInfo | null;
   jobs?: ProcessingJob[];
   transcript_segments?: TranscriptSegment[];
   translation_segments?: TranslationSegment[];
+  generated_audios?: GeneratedAudio[];
 }

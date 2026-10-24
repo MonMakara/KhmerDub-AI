@@ -24,6 +24,7 @@ from app.models.project import (
     Video,
     TranscriptSegment,
     TranslationSegment,
+    GeneratedAudio,
     ProcessingJob,
     ProjectStatus,
     JobStatus,
@@ -39,6 +40,8 @@ from app.schemas.project import (
     TranslationSegmentResponse,
     TranslationSegmentUpdate,
     TranslationListResponse,
+    GeneratedAudioResponse,
+    GeneratedAudioListResponse,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
@@ -47,9 +50,11 @@ from app.services.video.exceptions import (
     VideoProcessingError,
 )
 from app.services.translation.nllb import NLLBTranslationProvider
+from app.services.tts.google import GoogleTTSProvider
 from app.workers.audio_extraction import process_audio_extraction
 from app.workers.transcription import process_transcription
 from app.workers.translation import process_translation
+from app.workers.tts import process_tts, synthesize_segment_audio
 
 logger = logging.getLogger(__name__)
 
@@ -561,11 +566,14 @@ def update_translation_segment(
     if not clean_text:
         raise HTTPException(status_code=400, detail="Translation text cannot be empty")
 
-    segment.khmer_text = clean_text
-    segment.is_manually_edited = True
-    segment.is_outdated = False
-    db.commit()
-    db.refresh(segment)
+    if clean_text != segment.khmer_text:
+        segment.khmer_text = clean_text
+        segment.is_manually_edited = True
+        segment.is_outdated = False
+        if segment.generated_audio:
+            segment.generated_audio.is_outdated = True
+        db.commit()
+        db.refresh(segment)
 
     return _enrich_translation_segment(segment)
 
@@ -636,7 +644,188 @@ def retranslate_segment(
     segment.khmer_text = translated_texts[0]
     segment.is_manually_edited = False
     segment.is_outdated = False
+    if segment.generated_audio:
+        segment.generated_audio.is_outdated = True
     db.commit()
     db.refresh(segment)
 
     return _enrich_translation_segment(segment)
+
+
+def _enrich_generated_audio(
+    audio: GeneratedAudio, project_id: str
+) -> GeneratedAudioResponse:
+    """Enrich GeneratedAudio with segment order, khmer text, and streaming URL."""
+    segment_order = (
+        audio.translation_segment.segment_order if audio.translation_segment else None
+    )
+    khmer_text = (
+        audio.translation_segment.khmer_text if audio.translation_segment else None
+    )
+    audio_url = (
+        f"/api/projects/{project_id}/tts/{audio.translation_segment_id}/audio"
+        if audio.translation_segment_id
+        else None
+    )
+    return GeneratedAudioResponse(
+        id=audio.id,
+        project_id=audio.project_id,
+        translation_segment_id=audio.translation_segment_id,
+        segment_order=segment_order,
+        khmer_text=khmer_text,
+        audio_path=audio.audio_path,
+        duration_seconds=audio.duration_seconds,
+        provider=audio.provider,
+        voice=audio.voice,
+        is_outdated=audio.is_outdated,
+        created_at=audio.created_at,
+        updated_at=audio.updated_at,
+        audio_url=audio_url,
+    )
+
+
+@router.post("/{project_id}/tts", response_model=ProcessingJobResponse)
+def start_tts(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ProcessingJobResponse:
+    """Trigger background text-to-speech generation for all translated Khmer segments."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    translation_count = (
+        db.query(TranslationSegment)
+        .filter(TranslationSegment.project_id == project_id)
+        .count()
+    )
+    if translation_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No Khmer translation segments found. Please translate transcript first.",
+        )
+
+    # Check for existing pending/running job
+    active_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.job_type == "tts",
+            ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+        )
+        .first()
+    )
+    if active_job:
+        return active_job
+
+    job = ProcessingJob(
+        project_id=project_id,
+        job_type="tts",
+        status=JobStatus.PENDING,
+        progress_percentage=0,
+    )
+    db.add(job)
+    project.status = ProjectStatus.GENERATING_VOICE
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(process_tts, project_id, job.id)
+    return job
+
+
+@router.get("/{project_id}/generated-audio", response_model=GeneratedAudioListResponse)
+def get_generated_audio(
+    project_id: str,
+    db: Session = Depends(get_db),
+) -> GeneratedAudioListResponse:
+    """Retrieve all generated audio records for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    audios = (
+        db.query(GeneratedAudio)
+        .join(TranslationSegment, GeneratedAudio.translation_segment_id == TranslationSegment.id)
+        .filter(GeneratedAudio.project_id == project_id)
+        .order_by(TranslationSegment.segment_order.asc())
+        .all()
+    )
+
+    enriched = [_enrich_generated_audio(a, project_id) for a in audios]
+    total_duration = sum(a.duration_seconds or 0.0 for a in enriched)
+
+    return GeneratedAudioListResponse(
+        project_id=project_id,
+        status=project.status,
+        audios=enriched,
+        total_duration_seconds=round(total_duration, 2),
+    )
+
+
+@router.post(
+    "/{project_id}/tts/{segment_id}/regenerate",
+    response_model=GeneratedAudioResponse,
+)
+def regenerate_audio_segment(
+    project_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+) -> GeneratedAudioResponse:
+    """Regenerate Khmer speech audio for a specific segment."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segment = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.id == segment_id,
+            TranslationSegment.project_id == project_id,
+        )
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Translation segment not found")
+
+    if not segment.khmer_text or not segment.khmer_text.strip():
+        raise HTTPException(status_code=400, detail="Cannot synthesize empty Khmer text")
+
+    try:
+        provider = GoogleTTSProvider()
+        audio_record = synthesize_segment_audio(project_id, segment, provider, db)
+    except Exception as e:
+        logger.error("Failed to regenerate audio segment %s: %s", segment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to generate speech: {e}")
+
+    return _enrich_generated_audio(audio_record, project_id)
+
+
+@router.get("/{project_id}/tts/{segment_id}/audio")
+def stream_audio_segment(
+    project_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+):
+    """Stream synthesized MP3 audio for browser playback."""
+    audio_record = (
+        db.query(GeneratedAudio)
+        .filter(
+            GeneratedAudio.project_id == project_id,
+            GeneratedAudio.translation_segment_id == segment_id,
+        )
+        .first()
+    )
+    if not audio_record:
+        raise HTTPException(status_code=404, detail="Generated audio record not found")
+
+    file_path = Path(audio_record.audio_path)
+    if not file_path.exists() or file_path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="Audio file not found on disk")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="audio/mpeg",
+        filename=f"tts_{project_id}_{segment_id}.mp3",
+    )
+

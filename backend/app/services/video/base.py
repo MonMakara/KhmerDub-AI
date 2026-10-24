@@ -27,6 +27,11 @@ class VideoProcessor(ABC):
         pass
 
     @abstractmethod
+    def get_audio_duration(self, audio_path: Path) -> float:
+        """Measure audio duration in seconds using ffprobe."""
+        pass
+
+    @abstractmethod
     def merge_audio_video(
         self, video_path: Path, audio_path: Path, output_video_path: Path
     ) -> Path:
