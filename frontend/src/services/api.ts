@@ -386,12 +386,19 @@ export const api = {
 
   async saveTranslationCredentials(
     provider: string,
-    apiKey: string
-  ): Promise<{ success: boolean; message: string }> {
+    apiKey: string,
+    baseUrl?: string,
+    model?: string
+  ): Promise<{ success: boolean; message?: string }> {
     const res = await fetch(`${API_BASE}/translation/credentials`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, api_key: apiKey }),
+      body: JSON.stringify({
+        provider,
+        api_key: apiKey,
+        base_url: baseUrl || undefined,
+        model: model || undefined,
+      }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

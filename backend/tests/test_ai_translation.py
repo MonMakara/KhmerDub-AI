@@ -27,6 +27,8 @@ from app.services.translation.registry import (
     get_translation_provider,
 )
 from app.services.translation.gemini import GeminiTranslationProvider
+from app.services.translation.openai_compat import OpenAITranslationProvider
+from app.services.translation.claude import ClaudeTranslationProvider
 from app.models.project import (
     Project,
     TranscriptSegment,
@@ -189,13 +191,37 @@ def test_translation_registry():
     ids = [p["id"] for p in providers]
     assert "nllb" in ids
     assert "gemini" in ids
+    assert "openai" in ids
+    assert "claude" in ids
+    assert "custom" in ids
 
     assert validate_translation_provider("nllb") is True
     assert validate_translation_provider("gemini") is True
+    assert validate_translation_provider("openai") is True
+    assert validate_translation_provider("claude") is True
+    assert validate_translation_provider("custom") is True
     assert validate_translation_provider("unsupported-provider") is False
 
     nllb = get_translation_provider("nllb")
     assert nllb is not None
+
+    openai_p = get_translation_provider("openai", api_key="test-key")
+    assert isinstance(openai_p, OpenAITranslationProvider)
+    assert openai_p.provider_id == "openai"
+
+    claude_p = get_translation_provider("claude", api_key="test-key")
+    assert isinstance(claude_p, ClaudeTranslationProvider)
+
+    custom_p = get_translation_provider(
+        "custom",
+        api_key="custom-key",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+    )
+    assert isinstance(custom_p, OpenAITranslationProvider)
+    assert custom_p.provider_id == "custom"
+    assert custom_p.base_url == "https://api.deepseek.com/v1"
+    assert custom_p.model == "deepseek-chat"
 
 
 def test_translation_api_provider_list_and_credentials(client: TestClient):
@@ -206,6 +232,9 @@ def test_translation_api_provider_list_and_credentials(client: TestClient):
     assert "providers" in data
     assert any(p["id"] == "gemini" for p in data["providers"])
     assert any(p["id"] == "nllb" for p in data["providers"])
+    assert any(p["id"] == "openai" for p in data["providers"])
+    assert any(p["id"] == "claude" for p in data["providers"])
+    assert any(p["id"] == "custom" for p in data["providers"])
     assert len(data["styles"]) >= 5
 
     # 2. Test connection with unconfigured key
@@ -240,9 +269,28 @@ def test_translation_api_provider_list_and_credentials(client: TestClient):
             json={"provider": "gemini", "api_key": "AIzaSyTest12345"},
         )
         assert save_res.status_code == 200
-        mock_save.assert_called_once_with("gemini", "AIzaSyTest12345")
+        mock_save.assert_called_once_with("gemini", "AIzaSyTest12345", base_url=None, model=None)
 
-    # 6. Delete credentials
+    # 6. Save custom credentials with base_url and model
+    with patch("app.api.endpoints.translation.save_api_key") as mock_save_custom:
+        save_custom = client.post(
+            "/api/translation/credentials",
+            json={
+                "provider": "custom",
+                "api_key": "sk-deepseek-123",
+                "base_url": "https://api.deepseek.com/v1",
+                "model": "deepseek-chat",
+            },
+        )
+        assert save_custom.status_code == 200
+        mock_save_custom.assert_called_once_with(
+            "custom",
+            "sk-deepseek-123",
+            base_url="https://api.deepseek.com/v1",
+            model="deepseek-chat",
+        )
+
+    # 7. Delete credentials
     with patch("app.api.endpoints.translation.remove_api_key", return_value=True) as mock_del:
         del_res = client.delete("/api/translation/credentials/gemini")
         assert del_res.status_code == 200
@@ -355,3 +403,130 @@ def test_project_translation_settings_and_ai_workflow(client: TestClient, db_ses
     # 5. Verify audio was invalidated
     db_session.refresh(audio1)
     assert audio1.is_outdated is True
+
+
+def test_openai_compat_provider_translate_mocked():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": '["វីដេអូនេះពន្យល់អំពីរបៀបដែលបញ្ញាសិប្បនិម្មិតដំណើរការ។"]'
+                }
+            }
+        ]
+    }
+
+    provider = OpenAITranslationProvider(
+        provider_id="openai",
+        api_key="test-openai-key",
+        model="gpt-4o-mini",
+    )
+    with patch("httpx.Client.post", return_value=mock_resp) as mock_post:
+        results = provider.translate(["This video explains how artificial intelligence works."])
+        assert len(results) == 1
+        assert "បញ្ញាសិប្បនិម្មិត" in results[0]
+
+        # Verify call headers and URL
+        call_args = mock_post.call_args
+        assert "https://api.openai.com/v1/chat/completions" in call_args[0][0]
+        assert call_args[1]["headers"]["Authorization"] == "Bearer test-openai-key"
+
+
+def test_custom_openai_compat_provider_custom_url_and_model():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"improved_khmer": "វីដេអូនេះពន្យល់ពីរបៀបដែលបញ្ញាសិប្បនិម្មិតដំណើរការ។", "explanation": "DeepSeek improved natural phrasing"}'
+                }
+            }
+        ]
+    }
+
+    provider = OpenAITranslationProvider(
+        provider_id="custom",
+        api_key="sk-deepseek-test",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+    )
+    with patch("httpx.Client.post", return_value=mock_resp) as mock_post:
+        res = provider.improve_translation(
+            english_text="This video explains how artificial intelligence works.",
+            current_khmer="វីដេអូនេះពន្យល់អំពី",
+            style="natural",
+        )
+        assert isinstance(res, AIImprovementResult)
+        assert "បញ្ញាសិប្បនិម្មិត" in res.improved_khmer_text
+        assert res.provider == "custom"
+        assert res.model == "deepseek-chat"
+
+        call_args = mock_post.call_args
+        assert "https://api.deepseek.com/v1/chat/completions" in call_args[0][0]
+        assert call_args[1]["headers"]["Authorization"] == "Bearer sk-deepseek-test"
+
+
+def test_claude_provider_translate_mocked():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "content": [
+            {
+                "type": "text",
+                "text": '["អរុណសួស្តី! តើថ្ងៃនេះអ្នកសុខសប្បាយជាទេ?"]'
+            }
+        ]
+    }
+
+    provider = ClaudeTranslationProvider(
+        api_key="sk-ant-test-key",
+        model="claude-3-5-sonnet-20241022",
+    )
+    with patch("httpx.Client.post", return_value=mock_resp) as mock_post:
+        results = provider.translate(["Good morning, how are you today?"])
+        assert len(results) == 1
+        assert "អរុណសួស្តី" in results[0]
+
+        call_args = mock_post.call_args
+        assert "https://api.anthropic.com/v1/messages" in call_args[0][0]
+        assert call_args[1]["headers"]["x-api-key"] == "sk-ant-test-key"
+        assert call_args[1]["headers"]["anthropic-version"] == "2023-06-01"
+
+
+def test_provider_connection_tests_all_providers():
+    # OpenAI connection test
+    mock_resp_openai = MagicMock()
+    mock_resp_openai.status_code = 200
+    with patch("httpx.Client.post", return_value=mock_resp_openai):
+        provider_openai = OpenAITranslationProvider(api_key="valid-openai-key")
+        ok, msg = provider_openai.test_connection()
+        assert ok is True
+        assert "successful" in msg.lower()
+
+    # Claude connection test
+    mock_resp_claude = MagicMock()
+    mock_resp_claude.status_code = 200
+    mock_resp_claude.json.return_value = {"content": [{"type": "text", "text": "OK"}]}
+    with patch("httpx.Client.post", return_value=mock_resp_claude):
+        provider_claude = ClaudeTranslationProvider(api_key="valid-claude-key")
+        ok, msg = provider_claude.test_connection()
+        assert ok is True
+        assert "successful" in msg.lower()
+
+    # Custom provider connection test failure
+    mock_resp_err = MagicMock()
+    mock_resp_err.status_code = 401
+    mock_resp_err.text = "Unauthorized: Invalid API key"
+    with patch("httpx.Client.post", return_value=mock_resp_err):
+        provider_custom = OpenAITranslationProvider(
+            provider_id="custom",
+            api_key="invalid-key",
+            base_url="https://api.groq.com/openai/v1",
+        )
+        ok, msg = provider_custom.test_connection()
+        assert ok is False
+        assert "unauthorized" in msg.lower()
+

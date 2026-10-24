@@ -208,6 +208,9 @@ export interface TranslationProviderInfo {
   supports_alternatives: boolean;
   default_model: string;
   available_models: string[];
+  base_url?: string | null;
+  configured_model?: string | null;
+  requires_base_url?: boolean;
 }
 
 export interface TranslationStyleOption {
@@ -227,6 +230,7 @@ export interface TestConnectionRequest {
   provider?: string;
   api_key?: string;
   model?: string;
+  base_url?: string;
 }
 
 export interface TestConnectionResponse {
@@ -238,6 +242,8 @@ export interface TestConnectionResponse {
 export interface SaveCredentialsRequest {
   provider: string;
   api_key: string;
+  base_url?: string;
+  model?: string;
 }
 
 export interface AIImproveRequest {

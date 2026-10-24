@@ -14,6 +14,18 @@ from app.services.translation.gemini import (
     DEFAULT_GEMINI_MODEL,
     SUPPORTED_GEMINI_MODELS,
 )
+from app.services.translation.openai_compat import (
+    OpenAITranslationProvider,
+    DEFAULT_OPENAI_MODEL,
+    SUPPORTED_OPENAI_MODELS,
+    DEFAULT_CUSTOM_MODEL,
+    SUPPORTED_CUSTOM_MODELS,
+)
+from app.services.translation.claude import (
+    ClaudeTranslationProvider,
+    DEFAULT_CLAUDE_MODEL,
+    SUPPORTED_CLAUDE_MODELS,
+)
 from app.services.translation.registry import (
     get_translation_provider,
     list_translation_providers,
@@ -47,6 +59,8 @@ __all__ = [
     "AIImprovementResult",
     "NLLBTranslationProvider",
     "GeminiTranslationProvider",
+    "OpenAITranslationProvider",
+    "ClaudeTranslationProvider",
     "get_translation_provider",
     "list_translation_providers",
     "validate_translation_provider",

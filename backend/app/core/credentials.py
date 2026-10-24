@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 from cryptography.fernet import Fernet
 
@@ -18,6 +18,7 @@ ENV_VAR_MAPPING = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
     "claude": "ANTHROPIC_API_KEY",
+    "custom": "CUSTOM_AI_API_KEY",
 }
 
 
@@ -36,7 +37,7 @@ def _get_or_create_cipher() -> Fernet:
     return Fernet(key)
 
 
-def _load_stored_credentials() -> Dict[str, str]:
+def _load_stored_credentials() -> Dict[str, Any]:
     """Load and decrypt saved credentials dictionary."""
     if not CREDENTIALS_FILE.exists() or CREDENTIALS_FILE.stat().st_size == 0:
         return {}
@@ -50,7 +51,7 @@ def _load_stored_credentials() -> Dict[str, str]:
         return {}
 
 
-def _save_stored_credentials(data: Dict[str, str]) -> None:
+def _save_stored_credentials(data: Dict[str, Any]) -> None:
     """Encrypt and write credentials dictionary to disk."""
     SECRETS_DIR.mkdir(parents=True, exist_ok=True)
     cipher = _get_or_create_cipher()
@@ -79,14 +80,50 @@ def get_api_key(provider: str) -> Optional[str]:
     # 2. Check encrypted store
     creds = _load_stored_credentials()
     val = creds.get(p_norm)
-    if val and val.strip():
+    if isinstance(val, dict):
+        return val.get("api_key")
+    if isinstance(val, str) and val.strip():
         return val.strip()
 
     return None
 
 
-def save_api_key(provider: str, api_key: str) -> None:
-    """Securely encrypt and store an API key."""
+def get_provider_credentials(provider: str) -> Dict[str, Any]:
+    """Retrieve configuration dictionary for a provider (api_key, base_url, model)."""
+    p_norm = (provider or "").strip().lower()
+    creds = _load_stored_credentials()
+    stored = creds.get(p_norm, {})
+    if isinstance(stored, str):
+        stored = {"api_key": stored}
+    elif not isinstance(stored, dict):
+        stored = {}
+
+    api_key = get_api_key(p_norm)
+    base_url = (
+        os.getenv(f"{p_norm.upper()}_BASE_URL")
+        or getattr(settings, f"{p_norm.upper()}_BASE_URL", None)
+        or stored.get("base_url")
+    )
+    model = (
+        os.getenv(f"{p_norm.upper()}_MODEL")
+        or getattr(settings, f"{p_norm.upper()}_MODEL", None)
+        or stored.get("model")
+    )
+
+    return {
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+    }
+
+
+def save_api_key(
+    provider: str,
+    api_key: str,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+) -> None:
+    """Securely encrypt and store an API key and optional configuration."""
     p_norm = (provider or "").strip().lower()
     clean_key = (api_key or "").strip()
     if not clean_key:
@@ -94,9 +131,26 @@ def save_api_key(provider: str, api_key: str) -> None:
         return
 
     creds = _load_stored_credentials()
-    creds[p_norm] = clean_key
+    existing = creds.get(p_norm)
+    if isinstance(existing, dict):
+        record = dict(existing)
+        record["api_key"] = clean_key
+        if base_url is not None:
+            record["base_url"] = base_url.strip() if base_url else None
+        if model is not None:
+            record["model"] = model.strip() if model else None
+        creds[p_norm] = record
+    elif base_url or model:
+        creds[p_norm] = {
+            "api_key": clean_key,
+            "base_url": base_url.strip() if base_url else None,
+            "model": model.strip() if model else None,
+        }
+    else:
+        creds[p_norm] = clean_key
+
     _save_stored_credentials(creds)
-    logger.info("Saved encrypted API key for provider '%s'", p_norm)
+    logger.info("Saved encrypted credentials for provider '%s'", p_norm)
 
 
 def remove_api_key(provider: str) -> bool:

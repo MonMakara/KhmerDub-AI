@@ -1376,9 +1376,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
                     <span className="px-2 py-0.5 rounded bg-slate-100 font-medium text-slate-700 border border-slate-200">
-                      {selectedTransProvider === 'gemini'
-                        ? 'Provider: Google Gemini (AI LLM)'
-                        : 'Provider: Meta NLLB-200 (Offline)'}
+                      Provider: {translationProviders.find((p) => p.id === selectedTransProvider)?.name || (selectedTransProvider === 'gemini' ? 'Google Gemini' : 'Meta NLLB-200')}
                     </span>
                     <span>•</span>
                     <span>
@@ -1406,9 +1404,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                         <>
                           <RefreshCw className="w-4 h-4 animate-spin" />
                           <span>
-                            {selectedTransProvider === 'gemini'
-                              ? 'Translating with Gemini...'
-                              : 'Translating with NLLB...'}
+                            Translating with {translationProviders.find((p) => p.id === selectedTransProvider)?.name || 'AI'}...
                           </span>
                         </>
                       ) : (
@@ -1447,8 +1443,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                       disabled={updatingTransSettings || translating}
                       className="bg-white border border-slate-300 rounded-lg px-2.5 py-1 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     >
-                      <option value="nllb">Meta NLLB-200 (Local Free)</option>
-                      <option value="gemini">Google Gemini (AI LLM)</option>
+                      {translationProviders.length > 0 ? (
+                        translationProviders.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} {p.type === 'local' ? '(Local Free)' : p.is_configured ? '(Configured)' : '(Key Required)'}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="nllb">Meta NLLB-200 (Local Free)</option>
+                          <option value="gemini">Google Gemini (AI LLM)</option>
+                          <option value="openai">OpenAI (GPT-4o)</option>
+                          <option value="claude">Anthropic Claude</option>
+                          <option value="custom">Custom AI API</option>
+                        </>
+                      )}
                     </select>
                   </div>
 
@@ -1474,22 +1483,25 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                   </div>
                 </div>
 
-                {/* Gemini configuration status reminder */}
-                {selectedTransProvider === 'gemini' && (
-                  <div className="flex items-center gap-2 text-[11px]">
-                    {translationProviders.find((p) => p.id === 'gemini')?.is_configured ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-medium">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                        Gemini Configured
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium">
-                        <AlertTriangle className="w-3 h-3 text-amber-600" />
-                        Gemini key not configured (Set in Settings)
-                      </span>
-                    )}
-                  </div>
-                )}
+                {/* Configuration status reminder */}
+                {selectedTransProvider !== 'nllb' && (() => {
+                  const currentP = translationProviders.find((p) => p.id === selectedTransProvider);
+                  return (
+                    <div className="flex items-center gap-2 text-[11px]">
+                      {currentP?.is_configured ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-medium">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          {currentP.name} Configured
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium">
+                          <AlertTriangle className="w-3 h-3 text-amber-600" />
+                          {currentP?.name || selectedTransProvider} key not configured (Set in Settings)
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -1517,7 +1529,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
               <div className="p-12 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-3">
                 <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
                 <h4 className="text-sm font-bold text-slate-800">
-                  Translating English Transcript into Khmer with NLLB-200...
+                  Translating English Transcript into Khmer with{' '}
+                  {translationProviders.find((p) => p.id === selectedTransProvider)?.name || 'AI Translation'}...
                 </h4>
                 <p className="text-xs text-slate-500 max-w-md mx-auto">
                   Running Seq2Seq neural machine translation with beam search. Preserves manually edited translations and aligns timing segments.

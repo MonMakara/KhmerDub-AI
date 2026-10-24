@@ -18,11 +18,12 @@
 6. **Audio Synchronization** *(Phase 6 Complete)*: Transcript-timed audio synchronization that aligns synthesized Khmer speech segments onto original English timestamps, standardizes audio pieces (44.1kHz stereo 16-bit PCM WAV), inserts silence padding, applies conservative tempo adjustment (max 1.25x via `atempo`), and detects timing conflicts without silent speech truncation.
 7. **Video Export** *(Phase 6 Complete)*: Clean remuxing via FFmpeg replacing the original audio with the synchronized Khmer speech track using explicit stream mapping (`-map 0:v:0 -map 1:a:0`), AAC audio, faststart MP4 container optimization for web streaming, atomic publishing, in-browser video preview player, and instant download.
 8. **Stabilization & Reliability** *(Phase 7 Complete)*: Shared AI model concurrency guard serializing Whisper and NLLB to prevent memory spikes on 16GB laptops, automated interrupted-job recovery on startup, active job deduplication, configurable 50ms timing safety margins, and 92 passing automated tests across real English video pipelines.
-9. **AI Translation API Integration** *(Phase 9 Complete)*: Cloud AI language model integration using Google Gemini (`gemini-2.5-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`) via the official `google-genai` SDK:
+9. **Flexible Multi-Provider AI Translation API** *(Phase 9 Complete)*: Cloud AI language model integration supporting Google Gemini (`gemini-2.5-flash`), OpenAI (`gpt-4o-mini`, `gpt-4o`), Anthropic Claude (`claude-3-5-sonnet`), and any Custom OpenAI-Compatible endpoint (DeepSeek, Groq, OpenRouter, Mistral, Ollama, vLLM):
+   - **Custom OpenAI-Compatible API Support**: Configure arbitrary `base_url` and custom model names with quick-fill presets for DeepSeek, Groq, OpenRouter, Mistral, and Ollama.
    - **5 Translation Modes/Styles**: Natural Spoken Khmer, Short for Video Dubbing (fitted timing slots), Simple & Clear, Formal / Professional, and Standard.
    - **AI Improve**: One-click context- and timing-aware translation refinement per segment.
    - **Structured Alternatives**: Instant generation of 3 distinct translation styles (Natural, Simple, Short) with 1-click apply and automated audio invalidation.
-   - **Secure Key Storage**: Client keys encrypted with Fernet (AES-128-CBC + HMAC-SHA256) at `/app/data/.secrets/credentials.enc`, never exposed to the browser or committed to Git.
+   - **Secure Key Storage**: Client credentials encrypted with Fernet (AES-128-CBC + HMAC-SHA256) at `/app/data/.secrets/credentials.enc`, never exposed to the browser or committed to Git.
    - **Meta NLLB-200**: Preserved as the default free local offline translation provider.
 
 ---

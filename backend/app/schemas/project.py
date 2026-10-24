@@ -182,6 +182,9 @@ class TranslationProviderResponse(BaseModel):
     supports_alternatives: bool
     default_model: str
     available_models: List[str]
+    base_url: Optional[str] = None
+    configured_model: Optional[str] = None
+    requires_base_url: Optional[bool] = False
 
 
 class TranslationStyleOption(BaseModel):
@@ -201,6 +204,7 @@ class TestConnectionRequest(BaseModel):
     provider: str = "gemini"
     api_key: Optional[str] = None
     model: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 class TestConnectionResponse(BaseModel):
@@ -212,6 +216,8 @@ class TestConnectionResponse(BaseModel):
 class SaveCredentialsRequest(BaseModel):
     provider: str
     api_key: str
+    base_url: Optional[str] = None
+    model: Optional[str] = None
 
 
 class AIImproveRequest(BaseModel):

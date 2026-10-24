@@ -2,9 +2,15 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
-## [0.9.0] - Phase 9 Complete (2026-10-25)
+## [0.9.0] - Phase 9 Complete: Flexible Multi-Provider AI Translation (2026-10-25)
 
 ### Added
+- **Flexible Multi-Provider AI Translation Architecture**:
+  - Implemented `OpenAITranslationProvider` (`backend/app/services/translation/openai_compat.py`) for official OpenAI models (`gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`) and any custom OpenAI-compatible endpoint.
+  - Implemented Custom AI API support (`custom`) supporting arbitrary `base_url` (e.g. DeepSeek, Groq, OpenRouter, Together AI, Mistral, Ollama, local vLLM) and custom model names.
+  - Implemented `ClaudeTranslationProvider` (`backend/app/services/translation/claude.py`) supporting Anthropic Claude 3.5 Sonnet, Haiku, and Opus models.
+  - Extended provider registry (`backend/app/services/translation/registry.py`) to catalog, validate, instantiate, and test connections across all 5 providers: Meta NLLB-200 (local offline), Google Gemini, OpenAI, Claude, and Custom OpenAI-Compatible.
+  - Seamless fallback resolution to active AI provider when project is set to NLLB.
 - **AI Translation API Integration (Google Gemini)**:
   - Installed official `google-genai>=2.33.0` and `cryptography>=46.0.0` inside Docker environment without global dependencies.
   - Implemented `GeminiTranslationProvider` (`backend/app/services/translation/gemini.py`) supporting `gemini-2.5-flash` (default), `gemini-1.5-flash`, and `gemini-1.5-pro`.
@@ -16,34 +22,14 @@ All notable changes to the KhmerDub AI project will be documented in this file.
   - Strict system prompt with technical terminology glossary injection and prompt injection defense.
 - **Symmetric Credential Encryption (`backend/app/core/credentials.py`)**:
   - Fernet encryption (AES-128-CBC + HMAC-SHA256) storing client API keys in `/app/data/.secrets/credentials.enc` with 0o600 key permissions.
-  - Precedence for `GEMINI_API_KEY` environment variable.
-  - Masked API key representation (`AIzaSy...4aB8`), preventing plaintext exposure to logs or browser clients.
-- **Database Schema Migration (`d2a83b5e1f02`)**:
-  - Added `translation_provider` (default `'nllb'`) and `translation_style` (default `'natural'`) to `projects` table.
-  - Added `style` (default `'natural'`) and `explanation` (Text) to `translation_segments` table.
-  - Safe SQLite column introspection preventing duplicate column migration errors.
-- **API Endpoints**:
-  - `GET /api/translation/providers`: Returns provider catalog, supported models, and styles.
-  - `POST /api/translation/test-connection`: Non-blocking API key and model connectivity test.
-  - `POST /api/translation/credentials` & `DELETE /api/translation/credentials/{provider}`: Encrypted credential storage and deletion.
-  - `PATCH /api/projects/{id}/translation-settings`: Update project translation provider and style mode.
-  - `POST /api/projects/{id}/translations/{segment_id}/ai-improve`: Context- and speech-duration-aware translation improvement via Gemini.
-  - `POST /api/projects/{id}/translations/{segment_id}/alternatives`: Generate 3 structured alternatives (Natural, Simple, Short) side-by-side.
-  - `POST /api/projects/{id}/translations/{segment_id}/apply`: 1-click apply of AI suggestion/alternative, setting `is_manually_edited=True`, and invalidating `GeneratedAudio` and `Video.is_export_outdated=True`.
-- **Frontend Step 3 & Settings Updates**:
-  - `Settings.tsx`: New "AI Translation Providers & API Keys" configuration card with key input (show/hide toggle), masked representation display, connection test status indicator, and security notice.
-  - `ProjectWorkspace.tsx`: Step 3 header toolbar with Provider toggle (NLLB vs Gemini) and Style dropdown. Segment cards enhanced with "AI Improve" (Sparkles) and "Alternatives" (Layers) buttons, style badge, and AI reasoning note.
-  - Interactive AI Modal: Side-by-side comparative inspection, fine-tuning prompt input, and 1-click apply for improvements and alternatives.
+  - Supports credential dictionary storage per provider, preserving custom `base_url` and `model` configurations.
+  - Precedence for environment variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `CUSTOM_AI_API_KEY`).
+  - Masked API key representation (`AIzaSy...4aB8`, `sk-deep...2345`), preventing plaintext exposure to logs or browser clients.
+- **Frontend Settings & Workspace Enhancements**:
+  - `Settings.tsx`: Multi-provider tabbed configuration interface (Google Gemini, OpenAI, Claude, Custom AI API) with Base URL configuration, quick-fill preset buttons (DeepSeek, Groq, OpenRouter, Mistral, Ollama), model selector/text input, connection testing, and secure credential storage.
+  - `ProjectWorkspace.tsx`: Dynamic provider dropdown supporting all registered providers with live configuration badges.
 - **Testing**:
-  - 10 new automated test cases in `backend/tests/test_ai_translation.py` (102 tests total passing, 100% pass rate):
-    - Fernet credential encryption, decryption, and masking.
-    - Environment variable precedence.
-    - Glossary and style prompt injection.
-    - Unconfigured API key exception handling.
-    - Mocked Gemini translation, AI improve, and alternatives generation.
-    - Translation provider registry and validation.
-    - API provider listing, connection test, and credential management.
-    - Project translation settings updates and audio invalidation on apply.
+  - 14 automated test cases in `backend/tests/test_ai_translation.py` (106 tests total passing across entire suite, 100% pass rate).
   - Frontend typecheck and production build verified with 0 errors.
 
 ## [0.8.0] - Phase 8 Complete (2026-10-24)

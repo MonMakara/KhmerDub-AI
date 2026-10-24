@@ -68,6 +68,7 @@ from app.services.translation.nllb import NLLBTranslationProvider
 from app.services.translation.registry import (
     get_translation_provider,
     validate_translation_provider,
+    get_active_ai_provider_name,
 )
 from app.services.translation.exceptions import (
     TranslationError,
@@ -875,7 +876,11 @@ def ai_improve_segment(
         context_parts.append(f"Next English: {next_seg.text}")
     context_str = " | ".join(context_parts)
 
-    provider_id = project.translation_provider if project.translation_provider != "nllb" else "gemini"
+    provider_id = (
+        project.translation_provider
+        if project.translation_provider and project.translation_provider != "nllb"
+        else get_active_ai_provider_name()
+    )
     try:
         provider = get_translation_provider(provider_id)
         result = provider.improve_translation(
@@ -967,7 +972,11 @@ def get_translation_alternatives(
         context_parts.append(f"Next: {next_seg.text}")
     context_str = " | ".join(context_parts)
 
-    provider_id = project.translation_provider if project.translation_provider != "nllb" else "gemini"
+    provider_id = (
+        project.translation_provider
+        if project.translation_provider and project.translation_provider != "nllb"
+        else get_active_ai_provider_name()
+    )
     try:
         provider = get_translation_provider(provider_id)
         alts = provider.generate_alternatives(

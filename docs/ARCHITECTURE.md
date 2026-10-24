@@ -85,8 +85,10 @@ KhmerDub AI is structured as a **modular monolith** running inside Docker Compos
 - **`services/translation/`**:
   - `NLLBTranslationProvider`: Concretely implements `TranslationProvider`. Uses Meta's `facebook/nllb-200-distilled-600M` (`eng_Latn` → `khm_Khmr`) with thread-safe lazy loading (`_cache_lock`), beam search decoding, RSS RAM monitoring via `psutil`, and persistent caching in Docker volume `model_cache` (`/root/.cache`).
   - `GeminiTranslationProvider`: Implements `TranslationProvider` using the official `google-genai` SDK. Supports batch and per-segment translation, exponential backoff retries, JSON structured outputs, 5 distinct translation styles, prompt injection defense, and automated terminology alignment with `KhmerGlossary`.
+  - `OpenAITranslationProvider`: Concretely implements `TranslationProvider` for official OpenAI (`gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`) and any custom OpenAI-compatible endpoint (`DeepSeek`, `Groq`, `OpenRouter`, `Together AI`, `Mistral`, `Ollama`, `vLLM`, `LMStudio`). Supports configurable `base_url`, custom model names, HTTP retry backoff, and JSON response parsing.
+  - `ClaudeTranslationProvider`: Concretely implements `TranslationProvider` for Anthropic Claude (`claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022`, `claude-3-opus-20240229`) with streaming HTTP retry backoff, glossary alignment, and style constraints.
   - `prompts.py`: Prompt engineering templates for translation, AI refinement, and structured alternatives with technical glossary injection and user input sanitization.
-  - `registry.py`: Provider factory, model catalog (`gemini-2.5-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`), and dynamic connection tester.
+  - `registry.py`: Provider factory, model catalog, and connection verification supporting `nllb`, `gemini`, `openai`, `claude`, and `custom`.
 - **`services/tts/`**:
   - `GoogleTTSProvider`: Concretely implements `TTSProvider`. Streams speech MP3 from Google gTTS (`km`) with exponential backoff retries, text validation, and duration measurement using `FFmpegVideoProcessor.get_audio_duration`.
   - `EdgeTTSProvider`: Concretely implements `TTSProvider` using `edge-tts` to stream natural Microsoft Neural Khmer speech (`km-KH-PisethNeural` Male, `km-KH-SreymomNeural` Female) with exponential backoff retry logic.

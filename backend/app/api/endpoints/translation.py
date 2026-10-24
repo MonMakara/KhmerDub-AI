@@ -62,6 +62,7 @@ def test_connection(payload: TestConnectionRequest) -> TestConnectionResponse:
         provider_name=provider,
         api_key=payload.api_key,
         model=payload.model,
+        base_url=payload.base_url,
     )
 
     return TestConnectionResponse(
@@ -81,12 +82,19 @@ def set_credentials(payload: SaveCredentialsRequest):
             detail=f"Unsupported translation provider '{provider}'",
         )
 
-    save_api_key(provider, payload.api_key)
+    save_api_key(
+        provider,
+        payload.api_key,
+        base_url=payload.base_url,
+        model=payload.model,
+    )
     return {
         "success": True,
         "provider": provider,
         "is_configured": is_api_key_configured(provider),
         "masked_key": get_masked_api_key(provider),
+        "base_url": payload.base_url,
+        "configured_model": payload.model,
     }
 
 

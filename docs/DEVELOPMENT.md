@@ -101,30 +101,35 @@ curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLAT
 
 ### Testing AI Translation API & LLM Features via cURL (Phase 9)
 ```bash
-# 1. List translation providers and styles
+# 1. List translation providers (NLLB, Gemini, OpenAI, Claude, Custom) and styles
 curl -s "http://localhost:8000/api/translation/providers" | jq .
 
-# 2. Test Gemini API connection
+# 2. Test AI provider connection (Gemini, OpenAI, Claude, or Custom)
 curl -X POST "http://localhost:8000/api/translation/test-connection" \
   -H "Content-Type: application/json" \
   -d '{"provider": "gemini", "api_key": "YOUR_GEMINI_KEY"}'
 
-# 3. Securely save Gemini API key
+# Test Custom OpenAI-compatible endpoint (e.g. DeepSeek / Groq / OpenRouter / Ollama)
+curl -X POST "http://localhost:8000/api/translation/test-connection" \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "custom", "api_key": "YOUR_DEEPSEEK_KEY", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"}'
+
+# 3. Securely save AI provider credentials (encrypted at /app/data/.secrets/credentials.enc)
 curl -X POST "http://localhost:8000/api/translation/credentials" \
   -H "Content-Type: application/json" \
-  -d '{"provider": "gemini", "api_key": "YOUR_GEMINI_KEY"}'
+  -d '{"provider": "custom", "api_key": "YOUR_KEY", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"}'
 
-# 4. Update project translation settings (Google Gemini with 'short' dubbing mode)
+# 4. Update project translation settings (Custom AI, Gemini, OpenAI, or Claude with 'short' dubbing mode)
 curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translation-settings" \
   -H "Content-Type: application/json" \
-  -d '{"translation_provider": "gemini", "translation_style": "short"}'
+  -d '{"translation_provider": "custom", "translation_style": "short"}'
 
 # 5. AI improve an individual translation segment with timing awareness
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/ai-improve" \
   -H "Content-Type: application/json" \
   -d '{"style": "short", "custom_prompt": "Make concise to fit under 2.5s"}'
 
-# 6. Generate 3 structured alternatives (Natural, Simple, Short)
+# 6. Generate structured alternatives (Natural, Simple, Short)
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/alternatives"
 
 # 7. Apply chosen translation alternative
