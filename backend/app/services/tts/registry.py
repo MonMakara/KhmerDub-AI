@@ -150,12 +150,19 @@ def is_valid_voice_combination(provider: str, voice: str, db: Optional[Any] = No
 
     # Custom VoxCPM2 voices
     if p_norm in ("voxcpm", "voxcpm2", "custom"):
+        # Strip common prefixes like 'custom:' or 'voxcpm:' if passed by UI
+        target_v = v_norm
+        for prefix in ("custom:", "voxcpm:", "voxcpm2:"):
+            if target_v.lower().startswith(prefix):
+                target_v = target_v[len(prefix):].strip()
+                break
+
         try:
             if db is not None:
                 profile = (
                     db.query(VoiceProfile)
                     .filter(
-                        (VoiceProfile.id == v_norm) | (VoiceProfile.name == v_norm),
+                        (VoiceProfile.id == target_v) | (VoiceProfile.name == target_v),
                         VoiceProfile.is_active == 1,
                     )
                     .first()
@@ -172,7 +179,7 @@ def is_valid_voice_combination(provider: str, voice: str, db: Optional[Any] = No
                     profile = (
                         session.query(VoiceProfile)
                         .filter(
-                            (VoiceProfile.id == v_norm) | (VoiceProfile.name == v_norm),
+                            (VoiceProfile.id == target_v) | (VoiceProfile.name == target_v),
                             VoiceProfile.is_active == 1,
                         )
                         .first()

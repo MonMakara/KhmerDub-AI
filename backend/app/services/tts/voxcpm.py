@@ -116,6 +116,10 @@ class VoxCPM2TTSProvider(TTSProvider):
             )
 
         target_voice = voice.strip()
+        for prefix in ("custom:", "voxcpm:", "voxcpm2:"):
+            if target_voice.lower().startswith(prefix):
+                target_voice = target_voice[len(prefix):].strip()
+                break
 
         # Step 1: Database Verification of Profile & Legal Authorization
         with SessionLocal() as db:

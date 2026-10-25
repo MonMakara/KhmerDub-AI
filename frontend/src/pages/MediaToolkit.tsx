@@ -131,6 +131,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [ttaEditingCueProvider, setTtaEditingCueProvider] = useState<string>('');
   const [ttaSourceFilename, setTtaSourceFilename] = useState<string>('transcript.srt');
   const [ttaSourceTaskId, setTtaSourceTaskId] = useState<string | null>(null);
+  const [acknowledgedConflictsTaskId, setAcknowledgedConflictsTaskId] = useState<string | null>(null);
   const ttaFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Translation Studio State (Phase 13E.5)
@@ -659,7 +660,12 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   };
 
   const handleDeleteTask = async (taskId: string) => {
-    if (!window.confirm('Delete this toolkit task and all associated transcript files?')) return;
+    const dependentCount = tasks.filter((t) => t.source_task_id === taskId).length;
+    let confirmMsg = 'Delete this toolkit task and all associated files?';
+    if (dependentCount > 0) {
+      confirmMsg = `This task has ${dependentCount} downstream derived task(s) (e.g. translations or audio tracks). Deleting this source task will preserve your derived tasks, but disconnect the lineage. Do you wish to proceed?`;
+    }
+    if (!window.confirm(confirmMsg)) return;
     try {
       if (playingTaskId === taskId && audioPlayerRef.current) {
         audioPlayerRef.current.pause();
@@ -3203,6 +3209,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                     <a
                       href={api.getToolkitTTSExportUrl(activeTask.id, 'mp3')}
                       download={`narration_${activeTask.id.slice(0, 8)}.mp3`}
+                      onClick={(e) => {
+                        const conflictsCount = activeTask.output_media_metadata?.conflicts?.length || 0;
+                        if (conflictsCount > 0 && acknowledgedConflictsTaskId !== activeTask.id) {
+                          if (!window.confirm(`Speech timing conflicts detected (${conflictsCount} segment(s) overflow window). Do you acknowledge this timing overflow and wish to export anyway?`)) {
+                            e.preventDefault();
+                          }
+                        }
+                      }}
                       className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 transition-colors shadow-xs"
                     >
                       <Download className="w-3.5 h-3.5" />
@@ -3211,6 +3225,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                     <a
                       href={api.getToolkitTTSExportUrl(activeTask.id, 'wav')}
                       download={`narration_${activeTask.id.slice(0, 8)}.wav`}
+                      onClick={(e) => {
+                        const conflictsCount = activeTask.output_media_metadata?.conflicts?.length || 0;
+                        if (conflictsCount > 0 && acknowledgedConflictsTaskId !== activeTask.id) {
+                          if (!window.confirm(`Speech timing conflicts detected (${conflictsCount} segment(s) overflow window). Do you acknowledge this timing overflow and wish to export anyway?`)) {
+                            e.preventDefault();
+                          }
+                        }
+                      }}
                       className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs"
                     >
                       <Download className="w-3.5 h-3.5" />
@@ -3239,7 +3261,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                         </h4>
                         <p className="text-xs text-amber-800 leading-relaxed">
                           The following speech segments take longer to pronounce in Khmer than the original transcript window.
-                          Per project architecture, silent truncation is prevented. You may shorten the text or switch to Narration Mode.
+                          Per project architecture, silent truncation is prevented. You may shorten the text, acknowledge the overflow, or switch to Narration Mode.
                         </p>
                       </div>
                     </div>
@@ -3259,6 +3281,20 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                           <p className="text-slate-600 text-[11px]">{c.suggested_action}</p>
                         </div>
                       ))}
+                    </div>
+
+                    {/* Explicit user acknowledgement checkbox per Section 7 */}
+                    <div className="p-2.5 rounded-lg bg-white/90 border border-amber-300 flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id={`ack-conflicts-${activeTask.id}`}
+                        checked={acknowledgedConflictsTaskId === activeTask.id}
+                        onChange={(e) => setAcknowledgedConflictsTaskId(e.target.checked ? activeTask.id : null)}
+                        className="rounded border-amber-400 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <label htmlFor={`ack-conflicts-${activeTask.id}`} className="text-xs font-semibold text-amber-900 cursor-pointer">
+                        I acknowledge the {activeTask.output_media_metadata.conflicts.length} timing conflict(s) and authorize export with adjusted duration.
+                      </label>
                     </div>
 
                     <div className="flex justify-end pt-1">
@@ -3799,12 +3835,29 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                 onChange={(e) => setTransProvider(e.target.value)}
                 className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
               >
-                {transProviders.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} {p.type === 'local' ? '(Local CPU · Zero Cost)' : '(Cloud Neural)'}
-                  </option>
-                ))}
+                {transProviders.map((p) => {
+                  const isUnavailable = p.requires_api_key && !p.is_configured;
+                  let badge = p.type === 'local' ? '(Local CPU · Zero Cost)' : '(Cloud Neural)';
+                  if (isUnavailable) {
+                    badge = '(Cloud · API Key Required)';
+                  }
+                  return (
+                    <option key={p.id} value={p.id} disabled={isUnavailable}>
+                      {p.name} {badge}
+                    </option>
+                  );
+                })}
               </select>
+
+              {/* Cloud Privacy Notice per Phase 13E.6 Section 4 */}
+              {transProviders.find((p) => p.id === transProvider)?.type !== 'local' && (
+                <div className="p-3 rounded-xl bg-blue-50/80 border border-blue-200 text-xs text-blue-800 flex items-start gap-2">
+                  <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                  <div className="leading-relaxed">
+                    <span className="font-semibold">Privacy Notice:</span> Selected source text will be transmitted securely to the third-party AI provider ({transProviders.find((p) => p.id === transProvider)?.name}) for neural inference. Do not transmit unmasked credentials or private keys.
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mode Specific Inputs */}

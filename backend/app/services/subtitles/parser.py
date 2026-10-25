@@ -27,18 +27,19 @@ class ParsedTranscriptResult:
 
 
 TIMESTAMP_REGEX = re.compile(
-    r'(?:(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3}))\s*-->\s*(?:(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3}))[^\n]*\n?'
+    r'(-?)(?:(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3}))\s*-->\s*(-?)(?:(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3}))[^\n]*\n?'
 )
 HTML_TAG_REGEX = re.compile(r'<[^>]+>')
 
 
-def parse_timestamp_components(h: Optional[str], m: str, s: str, ms: str) -> float:
-    """Convert timestamp components into floating point seconds."""
+def parse_timestamp_components(sign: str, h: Optional[str], m: str, s: str, ms: str) -> float:
+    """Convert timestamp components into floating point seconds, preserving sign."""
     hours = int(h) if h is not None else 0
     mins = int(m)
     secs = int(s)
     millis = int(ms.ljust(3, '0')[:3])
-    return round(hours * 3600.0 + mins * 60.0 + secs + millis / 1000.0, 3)
+    val = round(hours * 3600.0 + mins * 60.0 + secs + millis / 1000.0, 3)
+    return -val if sign == '-' else val
 
 
 def clean_cue_text(text: str) -> str:
@@ -110,19 +111,18 @@ def parse_transcript_content(content: str, filename: Optional[str] = None) -> Pa
 
     for idx, match in enumerate(matches, start=1):
         g = match.groups()
-        start = parse_timestamp_components(g[0], g[1], g[2], g[3])
-        end = parse_timestamp_components(g[4], g[5], g[6], g[7])
+        start = parse_timestamp_components(g[0], g[1], g[2], g[3], g[4])
+        end = parse_timestamp_components(g[5], g[6], g[7], g[8], g[9])
 
         if start < 0:
-            start = 0.0
+            raise TranscriptParseError(
+                f"Segment #{idx}: Negative timestamp ({start:.3f}s) is invalid. Negative timestamps are rejected."
+            )
 
         if end <= start:
-            # End time must be greater than start time
-            adjusted_end = round(start + 1.0, 3)
-            warnings.append(
-                f"Segment #{idx}: End time ({end:.3f}s) was <= start time ({start:.3f}s); automatically adjusted to {adjusted_end:.3f}s."
+            raise TranscriptParseError(
+                f"Segment #{idx}: End time ({end:.3f}s) must exceed start time ({start:.3f}s). Invalid interval."
             )
-            end = adjusted_end
 
         if start < prev_end:
             warnings.append(

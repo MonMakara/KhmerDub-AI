@@ -32,6 +32,7 @@ from app.core.storage import (
     get_toolkit_task_output_dir,
     sanitize_toolkit_task_id,
 )
+from app.core.credentials import is_api_key_configured
 from app.database.session import get_db
 from app.models.project import Project
 from app.models.toolkit import (
@@ -1483,7 +1484,15 @@ def delete_toolkit_task(task_id: str, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
 
-    # Remove task database record (cascade deletes segments)
+    # Section 8: Deleting a source task must not unexpectedly destroy valuable derived content.
+    # Disconnect downstream derived tasks and flag them as detached/outdated while preserving their files.
+    derived_tasks = db.query(ToolkitTask).filter(ToolkitTask.source_task_id == safe_id).all()
+    for dt in derived_tasks:
+        dt.source_task_id = None
+        dt.is_outdated = True
+    db.flush()
+
+    # Remove task database record (cascade deletes segments belonging to this task)
     db.delete(task)
     db.commit()
 
@@ -1498,9 +1507,31 @@ def delete_toolkit_task(task_id: str, db: Session = Depends(get_db)):
     }
 
 
+def _split_oversized_grapheme_string(s: str, max_chars: int) -> List[str]:
+    """Break oversized string into chunks of at most max_chars without
+    breaking Khmer combining diacritics, vowels, or Coeng subscript consonants (\u17D2).
+    """
+    import unicodedata
+    chunks = []
+    rem = s
+    while len(rem) > max_chars:
+        cut = max_chars
+        # Don't cut right before a combining mark or right after a Khmer Coeng subscript joiner
+        while cut > 0 and (unicodedata.combining(rem[cut]) != 0 or rem[cut - 1] == '\u17d2'):
+            cut -= 1
+        if cut == 0:
+            cut = max_chars
+        chunks.append(rem[:cut])
+        rem = rem[cut:]
+    if rem:
+        chunks.append(rem)
+    return chunks
+
+
 def split_tts_text(text: str, language: str = "km", max_chars: int = 150) -> List[str]:
     """Split text into natural segments suitable for speech synthesis.
     Respects Khmer sentence terminators (។, ៕), punctuation, newlines, and length constraints.
+    Guarantees Unicode grapheme clusters and combining diacritics are preserved.
     """
     cleaned = (text or "").strip()
     if not cleaned:
@@ -1527,7 +1558,14 @@ def split_tts_text(text: str, language: str = "km", max_chars: int = 150) -> Lis
                     else:
                         if current.strip():
                             segments.append(current.strip())
-                        current = part
+                        if len(part) > max_chars:
+                            part_splits = _split_oversized_grapheme_string(part, max_chars)
+                            for ps in part_splits[:-1]:
+                                if ps.strip():
+                                    segments.append(ps.strip())
+                            current = part_splits[-1]
+                        else:
+                            current = part
                 if current.strip():
                     segments.append(current.strip())
 
@@ -2189,6 +2227,21 @@ def generate_transcript_to_audio(
                 status_code=400,
                 detail=f"Timed Mode requires timestamps on all segments. {len(missing_timing)} segment(s) lack start/end times. Please supply timestamps or use Narration Mode.",
             )
+        negative_timing = [s for s in request.segments if s.start_time is not None and s.start_time < 0]
+        if negative_timing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Negative timestamps are rejected: segment #{negative_timing[0].segment_order} has start time {negative_timing[0].start_time}s.",
+            )
+        invalid_windows = [
+            s for s in request.segments
+            if s.start_time is not None and s.end_time is not None and s.end_time <= s.start_time
+        ]
+        if invalid_windows:
+            raise HTTPException(
+                status_code=400,
+                detail=f"End time must exceed start time: segment #{invalid_windows[0].segment_order} has start {invalid_windows[0].start_time}s and end {invalid_windows[0].end_time}s.",
+            )
 
     provider_name = request.provider.strip().lower()
     voice = request.voice.strip()
@@ -2340,7 +2393,7 @@ def generate_transcript_to_audio(
 
 
 @router.put("/transcript-to-audio/tasks/{task_id}/segments/{segment_id}", response_model=ToolkitTaskResponse)
-def update_transcript_segment(
+def update_transcript_to_audio_segment(
     task_id: str,
     segment_id: str,
     request: TranscriptSegmentUpdateRequest,
@@ -2362,12 +2415,16 @@ def update_transcript_segment(
             raise HTTPException(status_code=400, detail="Segment text cannot be empty.")
         seg.text = clean_text
 
-    if request.start_time is not None:
-        seg.start_time = max(0.0, float(request.start_time))
-    if request.end_time is not None:
-        seg.end_time = max(0.0, float(request.end_time))
-    if seg.start_time is not None and seg.end_time is not None and seg.end_time <= seg.start_time:
-        seg.end_time = seg.start_time + 1.0
+    new_start = float(request.start_time) if request.start_time is not None else seg.start_time
+    new_end = float(request.end_time) if request.end_time is not None else seg.end_time
+
+    if new_start is not None and new_start < 0:
+        raise HTTPException(status_code=400, detail="Negative timestamps are rejected.")
+    if new_start is not None and new_end is not None and new_end <= new_start:
+        raise HTTPException(status_code=400, detail="End time must exceed start time.")
+
+    seg.start_time = new_start
+    seg.end_time = new_end
 
     if request.voice is not None:
         seg.voice = request.voice.strip() if request.voice.strip() else None
@@ -2599,6 +2656,12 @@ def translate_text(request: TranslateTextRequest, db: Session = Depends(get_db))
     provider_name = request.provider.strip().lower()
     validate_translation_provider(provider_name)
 
+    if provider_name != "nllb" and not is_api_key_configured(provider_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Translation provider '{provider_name}' is unavailable because its API key is not configured. Please select Meta NLLB-200 (local) or configure credentials in Settings.",
+        )
+
     if not any(p["source_lang"] == request.source_lang and p["target_lang"] == request.target_lang for p in SUPPORTED_LANGUAGE_PAIRS):
         raise HTTPException(
             status_code=400,
@@ -2696,6 +2759,12 @@ def translate_transcript(request: TranslateTranscriptRequest, db: Session = Depe
     """Translate timestamped transcript cues while strictly preserving start/end timing."""
     provider_name = request.provider.strip().lower()
     validate_translation_provider(provider_name)
+
+    if provider_name != "nllb" and not is_api_key_configured(provider_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Translation provider '{provider_name}' is unavailable because its API key is not configured. Please select Meta NLLB-200 (local) or configure credentials in Settings.",
+        )
 
     if not any(p["source_lang"] == request.source_lang and p["target_lang"] == request.target_lang for p in SUPPORTED_LANGUAGE_PAIRS):
         raise HTTPException(
