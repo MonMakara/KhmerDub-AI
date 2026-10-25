@@ -40,6 +40,7 @@ import {
   ArrowDown,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { DeleteToolkitTaskModal } from '../components/common/DeleteToolkitTaskModal';
 import {
   ProjectSummary,
   ToolkitCapabilities,
@@ -171,11 +172,18 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [activeTask, setActiveTask] = useState<ToolkitTask | null>(null);
   const [tasks, setTasks] = useState<ToolkitTask[]>([]);
   const [tasksLoading, setTasksLoading] = useState<boolean>(false);
+  const [taskToDelete, setTaskToDelete] = useState<ToolkitTask | null>(null);
+  const [isDeletingTask, setIsDeletingTask] = useState<boolean>(false);
 
   // Audio Preview Player
   const [playingTaskId, setPlayingTaskId] = useState<string | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Dependent derived tasks for lineage warning
+  const taskDependentCount = taskToDelete
+    ? tasks.filter((t) => t.source_task_id === taskToDelete.id).length
+    : 0;
 
   const isTranscriptionTool = [
     'video_to_transcript',
@@ -659,26 +667,30 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
   };
 
-  const handleDeleteTask = async (taskId: string) => {
-    const dependentCount = tasks.filter((t) => t.source_task_id === taskId).length;
-    let confirmMsg = 'Delete this toolkit task and all associated files?';
-    if (dependentCount > 0) {
-      confirmMsg = `This task has ${dependentCount} downstream derived task(s) (e.g. translations or audio tracks). Deleting this source task will preserve your derived tasks, but disconnect the lineage. Do you wish to proceed?`;
-    }
-    if (!window.confirm(confirmMsg)) return;
+  const handleDeleteTask = (task: ToolkitTask) => {
+    setTaskToDelete(task);
+  };
+
+  const handleConfirmDeleteTask = async () => {
+    if (!taskToDelete) return;
     try {
-      if (playingTaskId === taskId && audioPlayerRef.current) {
+      setIsDeletingTask(true);
+      setError(null);
+      if (playingTaskId === taskToDelete.id && audioPlayerRef.current) {
         audioPlayerRef.current.pause();
         setPlayingTaskId(null);
       }
-      await api.deleteToolkitTask(taskId);
-      if (activeTask?.id === taskId) {
+      await api.deleteToolkitTask(taskToDelete.id);
+      if (activeTask?.id === taskToDelete.id) {
         setActiveTask(null);
       }
+      setTaskToDelete(null);
       await fetchTasks();
     } catch (err: any) {
-      console.error('Failed to delete task:', err);
-      alert(err.message || 'Failed to delete task');
+      console.error('Failed to delete toolkit task:', err);
+      setError(err.message || 'Failed to delete toolkit task');
+    } finally {
+      setIsDeletingTask(false);
     }
   };
 
@@ -1689,6 +1701,15 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   >
                     <Download className="w-4 h-4" /> Download {activeTask.target_format.toUpperCase()}
                   </a>
+                  <button
+                    type="button"
+                    onClick={() => setTaskToDelete(activeTask)}
+                    className="py-2.5 px-3 rounded-xl text-xs font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    title="Delete this task"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span className="sm:hidden">Delete</span>
+                  </button>
                 </div>
               </div>
             ) : (
@@ -2061,6 +2082,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       <Archive className="w-3.5 h-3.5" />
                       <span>Download All (ZIP)</span>
                     </a>
+                    <button
+                      type="button"
+                      onClick={() => setTaskToDelete(activeTask)}
+                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-rose-50 hover:border-rose-200 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                      title="Delete this task"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
 
@@ -2625,6 +2654,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       <Archive className="w-3.5 h-3.5" />
                       <span>Bundle (ZIP)</span>
                     </a>
+                    <button
+                      type="button"
+                      onClick={() => setTaskToDelete(activeTask)}
+                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-rose-50 hover:border-rose-200 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                      title="Delete this task"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
 
@@ -3224,6 +3261,15 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>New Transcript</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTaskToDelete(activeTask)}
+                    className="px-2.5 py-1.5 rounded-xl border border-slate-200 hover:bg-rose-50 hover:border-rose-200 text-slate-400 hover:text-rose-600 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Delete this task"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Delete Task</span>
                   </button>
                 </div>
 
@@ -4624,7 +4670,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                         )}
 
                         <button
-                          onClick={() => handleDeleteTask(task.id)}
+                          onClick={() => handleDeleteTask(task)}
                           className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                           title="Delete Task"
                         >
@@ -4639,6 +4685,16 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal for Toolkit Task / Project */}
+      <DeleteToolkitTaskModal
+        isOpen={!!taskToDelete}
+        task={taskToDelete}
+        dependentCount={taskDependentCount}
+        loading={isDeletingTask}
+        onClose={() => setTaskToDelete(null)}
+        onConfirm={handleConfirmDeleteTask}
+      />
     </div>
   );
 };
