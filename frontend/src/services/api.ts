@@ -27,6 +27,7 @@ import {
   CreateVoiceProfilePayload,
   UpdateVoiceProfilePayload,
   ToolkitTask,
+  ToolkitTranscriptSegment,
   ToolkitCapabilities,
 } from '../types';
 
@@ -866,5 +867,54 @@ export const api = {
 
   getToolkitAudioDownloadUrl(taskId: string): string {
     return `${API_BASE}/toolkit/tasks/${taskId}/download`;
+  },
+
+  async transcribeMedia(formData: FormData): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/transcribe`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Transcription failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateToolkitSegment(
+    taskId: string,
+    segmentId: string,
+    text: string
+  ): Promise<ToolkitTranscriptSegment> {
+    const res = await fetch(`${API_BASE}/toolkit/tasks/${taskId}/segments/${segmentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update segment: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async resetToolkitEdits(
+    taskId: string,
+    segmentId?: string
+  ): Promise<{ success: boolean; reset_count: number; segments: ToolkitTranscriptSegment[] }> {
+    const res = await fetch(`${API_BASE}/toolkit/tasks/${taskId}/reset-edits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(segmentId ? { segment_id: segmentId } : {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to reset edits: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getToolkitExportUrl(taskId: string, format: string): string {
+    return `${API_BASE}/toolkit/tasks/${taskId}/export/${format}`;
   },
 };

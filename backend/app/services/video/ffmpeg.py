@@ -62,11 +62,14 @@ class FFmpegVideoProcessor(VideoProcessor):
         format_info = probe_data.get("format", {})
         format_name = format_info.get("format_name", "").lower()
 
-        # Validate MP4 / QuickTime format compatibility
-        supported_formats = ["mp4", "mov", "m4a", "3gp", "3g2", "mj2", "isom", "iso2", "mp41", "mp42"]
+        # Validate MP4 / QuickTime / MKV / WebM format compatibility
+        supported_formats = [
+            "mp4", "mov", "m4a", "3gp", "3g2", "mj2", "isom", "iso2", "mp41", "mp42",
+            "matroska", "webm", "mkv", "avi"
+        ]
         if not any(fmt in format_name for fmt in supported_formats):
             raise InvalidVideoFormatError(
-                f"Unsupported format: '{format_name}'. Only MP4 videos are supported."
+                f"Unsupported format: '{format_name}'. Supported formats: MP4, MOV, MKV, WebM."
             )
 
         streams = probe_data.get("streams", [])
@@ -429,3 +432,63 @@ class FFmpegVideoProcessor(VideoProcessor):
             raise VideoProcessingError(f"FFmpeg video merge failed: {err}")
 
         return output_video_path
+
+    def prepare_audio_for_transcription(
+        self, input_media_path: Path, output_wav_path: Path
+    ) -> Path:
+        """Extract or convert any audio or video file to 16kHz mono 16-bit PCM WAV for Whisper.
+
+        - Handles MP4, MOV, MKV, WebM videos by extracting and resampling the audio track.
+        - Handles WAV, MP3, M4A, FLAC, OGG, AAC standalone audio files by converting to standard 16kHz mono WAV.
+        - Verifies that audio track is present and non-empty.
+        """
+        if not input_media_path.exists():
+            raise FileNotFoundError(f"Media file does not exist: {input_media_path}")
+
+        if input_media_path.stat().st_size == 0:
+            raise CorruptedVideoError("Media file is empty (0 bytes)")
+
+        # Verify that file has a valid audio stream
+        audio_meta = self.get_audio_metadata(input_media_path)
+        if not audio_meta:
+            raise NoAudioTrackError("Media file does not contain an audio track.")
+
+        output_wav_path.parent.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            self.ffmpeg_bin,
+            "-y",
+            "-i", str(input_media_path),
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ac", "1",
+            "-ar", "16000",
+            str(output_wav_path),
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception as e:
+            logger.error("Failed to run ffmpeg audio preparation: %s", e)
+            raise VideoProcessingError(f"Error executing ffmpeg audio preparation: {e}") from e
+
+        if result.returncode != 0:
+            err = result.stderr.strip() or "Unknown error"
+            logger.error("FFmpeg audio preparation failed: %s", err)
+            raise VideoProcessingError(f"FFmpeg audio preparation failed: {err}")
+
+        if not output_wav_path.exists() or output_wav_path.stat().st_size == 0:
+            raise VideoProcessingError("Prepared WAV audio file is missing or zero bytes.")
+
+        try:
+            output_wav_path.chmod(0o666)
+        except OSError:
+            pass
+
+        return output_wav_path
+

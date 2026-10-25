@@ -62,3 +62,11 @@ class VideoProcessor(ABC):
     ) -> Path:
         """Replace original audio track with synchronized dubbed audio."""
         pass
+
+    @abstractmethod
+    def prepare_audio_for_transcription(
+        self, input_media_path: Path, output_wav_path: Path
+    ) -> Path:
+        """Extract or convert any audio or video file to 16kHz mono 16-bit PCM WAV for Whisper."""
+        pass
+

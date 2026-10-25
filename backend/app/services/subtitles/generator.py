@@ -179,3 +179,50 @@ def generate_vtt(
         cue_blocks.append(block)
 
     return "WEBVTT\n\n" + "\n\n".join(cue_blocks) + "\n"
+
+
+def generate_txt(
+    cues: Sequence[SubtitleCue],
+    filter_empty: bool = True,
+) -> str:
+    """Generate clean plain text from cues, joining segments into flowing paragraphs."""
+    sorted_cues = sanitize_and_sort_cues(cues, prevent_overlaps=False, filter_empty=filter_empty)
+    if not sorted_cues:
+        return ""
+    lines = [cue.text.strip() for cue in sorted_cues if cue.text.strip()]
+    return "\n\n".join(lines) + "\n"
+
+
+def generate_csv(
+    cues: Sequence[SubtitleCue],
+    filter_empty: bool = True,
+) -> str:
+    """Generate RFC 4180 CSV string with sequence, start, end, duration, and text."""
+    import csv
+    import io
+
+    sorted_cues = sanitize_and_sort_cues(cues, prevent_overlaps=False, filter_empty=filter_empty)
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow([
+        "sequence",
+        "start_time",
+        "end_time",
+        "duration_seconds",
+        "start_timestamp",
+        "end_timestamp",
+        "text",
+    ])
+    for cue in sorted_cues:
+        dur = round(max(0.0, cue.end_time - cue.start_time), 2)
+        writer.writerow([
+            cue.sequence,
+            f"{cue.start_time:.2f}",
+            f"{cue.end_time:.2f}",
+            f"{dur:.2f}",
+            format_timestamp_srt(cue.start_time),
+            format_timestamp_srt(cue.end_time),
+            cue.text,
+        ])
+    return output.getvalue()
+

@@ -9,7 +9,7 @@ from app.models.project import (
     SubtitleSegment,
 )
 from app.models.voice import VoiceConsent, VoiceProfile
-from app.models.toolkit import ToolkitTask
+from app.models.toolkit import ToolkitTask, ToolkitTranscriptSegment
 
 __all__ = [
     "Base",
@@ -23,5 +23,5 @@ __all__ = [
     "VoiceConsent",
     "VoiceProfile",
     "ToolkitTask",
+    "ToolkitTranscriptSegment",
 ]
-

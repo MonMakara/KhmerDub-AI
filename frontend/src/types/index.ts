@@ -393,7 +393,7 @@ export interface UpdateVoiceProfilePayload {
   reference_transcript?: string;
 }
 
-export type ToolkitTargetFormat = 'mp3' | 'wav' | 'm4a';
+export type ToolkitTargetFormat = 'mp3' | 'wav' | 'm4a' | 'srt' | 'vtt' | 'txt' | 'json' | 'csv' | string;
 
 export interface ToolkitAudioMetadata {
   duration_seconds: number;
@@ -416,6 +416,20 @@ export interface ToolkitVideoMetadata {
   file_size_bytes?: number;
 }
 
+export interface ToolkitTranscriptSegment {
+  id: string;
+  task_id: string;
+  segment_order: number;
+  start_time: number;
+  end_time: number;
+  raw_text: string;
+  edited_text?: string | null;
+  text: string;
+  is_edited: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ToolkitTask {
   id: string;
   tool_type: string;
@@ -428,12 +442,15 @@ export interface ToolkitTask {
   output_filename?: string | null;
   output_duration_seconds?: number | null;
   output_file_size_bytes?: number | null;
-  source_media_metadata?: ToolkitVideoMetadata | null;
-  output_media_metadata?: ToolkitAudioMetadata | null;
+  source_media_metadata?: Record<string, any> | null;
+  output_media_metadata?: Record<string, any> | null;
   error_message?: string | null;
   created_at: string;
   updated_at: string;
+  segments?: ToolkitTranscriptSegment[];
+  full_text?: string | null;
 }
+
 
 export interface ToolkitToolItem {
   id: string;
