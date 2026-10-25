@@ -3,7 +3,17 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.models.project import Project, ProcessingJob, JobStatus, ProjectStatus
+from app.models.project import (
+    Project,
+    Video,
+    TranscriptSegment,
+    TranslationSegment,
+    GeneratedAudio,
+    ProcessingJob,
+    JobStatus,
+    ProjectStatus,
+)
+from app.core.storage import delete_project_storage
 
 logger = logging.getLogger(__name__)
 
@@ -78,3 +88,69 @@ def recover_interrupted_jobs(db: Session, process_start_time: Optional[datetime]
         logger.info("Successfully recovered %d interrupted background job(s).", recovered_count)
 
     return recovered_count
+
+
+def recover_interrupted_deletions(db: Session) -> int:
+    """Recover and finalize any projects left in DELETING status due to a server restart.
+
+    Guarantees:
+    - Finds projects left in ProjectStatus.DELETING.
+    - Safely removes project files on disk via delete_project_storage.
+    - Cascade-deletes all associated database entities in foreign-key dependency order.
+    - Idempotent and safe to run on every startup.
+    - Server crashes during deletion never leave projects permanently stuck in DELETING.
+    """
+    stuck_projects = (
+        db.query(Project)
+        .filter(Project.status == ProjectStatus.DELETING)
+        .all()
+    )
+
+    if not stuck_projects:
+        logger.info("Startup check: No interrupted project deletions found.")
+        return 0
+
+    logger.warning("Startup check: Found %d interrupted project deletion(s) to finalize.", len(stuck_projects))
+    recovered_count = 0
+
+    for project in stuck_projects:
+        project_id = project.id
+        project_title = project.title
+        logger.info(
+            "Resuming interrupted deletion for project %s ('%s')",
+            project_id,
+            project_title,
+        )
+
+        # 1. Clean up project files on disk
+        try:
+            storage_info = delete_project_storage(project_id)
+            logger.info(
+                "Cleaned storage for interrupted project %s: %d file(s)/dir(s) removed",
+                project_id,
+                storage_info.get("deleted_count", 0),
+            )
+        except Exception as e:
+            logger.error("Failed to delete storage for stuck project %s during startup: %s", project_id, e)
+
+        # 2. Safely purge database records in foreign-key dependency order
+        try:
+            db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).delete(synchronize_session=False)
+            db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).delete(synchronize_session=False)
+            db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete(synchronize_session=False)
+            db.query(Video).filter(Video.project_id == project_id).delete(synchronize_session=False)
+            db.query(ProcessingJob).filter(ProcessingJob.project_id == project_id).delete(synchronize_session=False)
+            db.delete(project)
+            db.commit()
+            recovered_count += 1
+            logger.info("Successfully completed interrupted deletion for project %s ('%s')", project_id, project_title)
+        except Exception as db_err:
+            db.rollback()
+            logger.error(
+                "Failed to delete database records for stuck project %s on startup: %s",
+                project_id,
+                db_err,
+            )
+
+    return recovered_count
+

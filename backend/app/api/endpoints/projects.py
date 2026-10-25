@@ -110,8 +110,13 @@ def sanitize_filename(filename: str) -> str:
 
 @router.get("", response_model=List[ProjectSummaryResponse])
 def list_projects(db: Session = Depends(get_db)) -> List[ProjectSummaryResponse]:
-    """Retrieve all dubbing projects."""
-    projects = db.query(Project).order_by(Project.created_at.desc()).all()
+    """Retrieve all dubbing projects, excluding any currently undergoing deletion."""
+    projects = (
+        db.query(Project)
+        .filter(Project.status != ProjectStatus.DELETING)
+        .order_by(Project.created_at.desc())
+        .all()
+    )
     return projects
 
 
@@ -279,18 +284,13 @@ def delete_project(
     Safely delete a project and all associated files and database records.
     Precondition: Project must not have active background processing jobs.
     Two-stage deletion:
-      Stage 1: Mark project status as 'deleting' to block new jobs.
+      Stage 1: Mark project status as 'deleting' to block new jobs and mutations.
       Stage 2: Safely remove files and cascade-delete database records.
+    Idempotent and resilient: if deletion was interrupted, safely resumes Stage 2.
     """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-
-    if project.status == ProjectStatus.DELETING:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Project is already in the process of being deleted",
-        )
 
     # 1. Check for active background processing jobs
     active_job = (
@@ -315,9 +315,10 @@ def delete_project(
 
     title = project.title
 
-    # 2. Stage 1: Mark project as deleting to prevent new incoming jobs
-    project.status = ProjectStatus.DELETING
-    db.commit()
+    # 2. Stage 1: Mark project as deleting to prevent new incoming jobs and mutations
+    if project.status != ProjectStatus.DELETING:
+        project.status = ProjectStatus.DELETING
+        db.commit()
 
     # 3. Stage 2: Clean up project files on disk
     deleted_files_count = 0

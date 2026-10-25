@@ -100,6 +100,7 @@ def delete_project_storage(project_id: str) -> Dict[str, Any]:
     Safely delete all file storage belonging to a project.
     Strictly prevents path traversal and ensures only project-owned subdirectories
     under DATA_DIR are removed. Never touches shared volumes, model caches, or .secrets.
+    Handles symlinks, missing files, and partially-deleted states safely and idempotently.
     """
     safe_id = sanitize_project_id(project_id)
     if not safe_id or safe_id in [".", "..", "/", "\\"]:
@@ -109,32 +110,69 @@ def delete_project_storage(project_id: str) -> Dict[str, Any]:
 
     # 1. Project directory: data/projects/{safe_id}
     base_projects_dir = (settings.DATA_DIR / "projects").resolve()
-    project_dir = (base_projects_dir / safe_id).resolve()
-    # Strict validation: project_dir must be an immediate child of base_projects_dir
-    if project_dir.parent == base_projects_dir and project_dir.name == safe_id and project_dir.exists():
-        shutil.rmtree(project_dir, ignore_errors=False)
-        deleted_paths.append(str(project_dir))
-        logger.info(f"Deleted project directory: {project_dir}")
+    project_path = base_projects_dir / safe_id
+
+    # If the project root itself is a symlink, unlink the symlink directly without following it
+    if project_path.is_symlink():
+        try:
+            project_path.unlink()
+            deleted_paths.append(str(project_path))
+            logger.info(f"Unlinked project directory symlink: {project_path}")
+        except Exception as e:
+            logger.warning(f"Failed to unlink project directory symlink {project_path}: {e}")
+    elif project_path.exists() and project_path.is_dir():
+        # Verify strict containment inside base_projects_dir
+        resolved = project_path.resolve()
+        if resolved.parent == base_projects_dir and resolved.name == safe_id:
+            try:
+                shutil.rmtree(project_path, ignore_errors=False)
+                deleted_paths.append(str(project_path))
+                logger.info(f"Deleted project directory: {project_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove project directory {project_path}: {e}")
 
     # 2. Uploads directory: data/uploads/{safe_id}
     base_uploads_dir = settings.UPLOADS_DIR.resolve()
-    upload_dir = (base_uploads_dir / safe_id).resolve()
-    if upload_dir.parent == base_uploads_dir and upload_dir.name == safe_id and upload_dir.exists():
-        shutil.rmtree(upload_dir, ignore_errors=False)
-        deleted_paths.append(str(upload_dir))
-        logger.info(f"Deleted upload directory: {upload_dir}")
+    upload_path = base_uploads_dir / safe_id
+
+    if upload_path.is_symlink():
+        try:
+            upload_path.unlink()
+            deleted_paths.append(str(upload_path))
+            logger.info(f"Unlinked upload directory symlink: {upload_path}")
+        except Exception as e:
+            logger.warning(f"Failed to unlink upload directory symlink {upload_path}: {e}")
+    elif upload_path.exists():
+        if upload_path.is_dir():
+            resolved = upload_path.resolve()
+            if resolved.parent == base_uploads_dir and resolved.name == safe_id:
+                try:
+                    shutil.rmtree(upload_path, ignore_errors=False)
+                    deleted_paths.append(str(upload_path))
+                    logger.info(f"Deleted upload directory: {upload_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove upload directory {upload_path}: {e}")
+        elif upload_path.is_file():
+            try:
+                upload_path.unlink()
+                deleted_paths.append(str(upload_path))
+            except Exception as e:
+                logger.warning(f"Failed to unlink upload file {upload_path}: {e}")
 
     # 3. Legacy temp files: data/temp/tts_{safe_id}_*.mp3
     temp_dir = settings.TEMP_DIR.resolve()
     if temp_dir.exists():
         for temp_file in temp_dir.glob(f"tts_{safe_id}_*"):
-            resolved = temp_file.resolve()
-            if resolved.parent == temp_dir and resolved.is_file():
-                try:
-                    resolved.unlink()
-                    deleted_paths.append(str(resolved))
-                except Exception as e:
-                    logger.warning(f"Failed to delete temp file {resolved}: {e}")
+            try:
+                # If temp_file is a symlink, unlink the symlink itself, NEVER its target!
+                if temp_file.is_symlink():
+                    temp_file.unlink()
+                    deleted_paths.append(str(temp_file))
+                elif temp_file.is_file():
+                    temp_file.unlink()
+                    deleted_paths.append(str(temp_file))
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {temp_file}: {e}")
 
     return {
         "project_id": safe_id,

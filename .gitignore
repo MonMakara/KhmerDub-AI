@@ -37,6 +37,7 @@ data/.secrets/
 *.db
 *.sqlite
 *.sqlite3
+*.backup*
 
 # IDE & OS
 .vscode/
