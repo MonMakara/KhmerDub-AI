@@ -9,13 +9,37 @@ import { api } from './services/api';
 import { HealthResponse, ProjectSummary } from './types';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const parseHash = () => {
+    const hash = window.location.hash.replace(/^#\/?/, '');
+    if (hash.startsWith('project/')) {
+      const pid = hash.replace('project/', '').trim();
+      return { tab: 'projects', projectId: pid || null };
+    }
+    if (hash === 'projects' || hash === 'settings' || hash === 'dashboard') {
+      return { tab: hash, projectId: null };
+    }
+    return { tab: 'dashboard', projectId: null };
+  };
+
+  const initial = parseHash();
+  const [currentTab, setCurrentTab] = useState<string>(initial.tab);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initial.projectId);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [healthLoading, setHealthLoading] = useState<boolean>(true);
   const [projectsLoading, setProjectsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Sync state on hash change (back/forward button or manual URL navigation)
+  useEffect(() => {
+    const onHashChange = () => {
+      const { tab, projectId } = parseHash();
+      setCurrentTab(tab);
+      setSelectedProjectId(projectId);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -55,17 +79,20 @@ export const App: React.FC = () => {
   const handleCreateProject = async (title: string): Promise<string> => {
     const created = await api.createProject(title);
     await fetchProjects();
+    handleSelectProject(created.id);
     return created.id;
   };
 
   const handleTabChange = (tab: string) => {
     setCurrentTab(tab);
     setSelectedProjectId(null);
+    window.location.hash = tab;
   };
 
   const handleSelectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
     setCurrentTab('projects');
+    window.location.hash = `project/${projectId}`;
   };
 
   return (
@@ -96,7 +123,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Scrollable Page Body */}
-        <main className="flex-1 overflow-y-auto p-8">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">
           {currentTab === 'dashboard' && (
             <Dashboard
               health={health}
@@ -120,7 +147,10 @@ export const App: React.FC = () => {
           {currentTab === 'projects' && selectedProjectId && (
             <ProjectWorkspace
               projectId={selectedProjectId}
-              onBack={() => setSelectedProjectId(null)}
+              onBack={() => {
+                setSelectedProjectId(null);
+                window.location.hash = 'projects';
+              }}
               onProjectUpdated={fetchProjects}
             />
           )}

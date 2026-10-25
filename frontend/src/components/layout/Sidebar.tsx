@@ -14,23 +14,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onTabChange }) => 
   ];
 
   return (
-    <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col border-r border-slate-800">
+    <aside className="w-16 md:w-64 bg-slate-900 text-slate-300 flex flex-col border-r border-slate-800 shrink-0 transition-all duration-200">
       {/* Brand Header */}
-      <div className="h-16 flex items-center px-6 gap-3 border-b border-slate-800 bg-slate-950/40">
-        <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold shadow-md shadow-indigo-500/20">
+      <div className="h-16 flex items-center justify-center md:justify-start px-3 md:px-6 gap-3 border-b border-slate-800 bg-slate-950/40">
+        <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold shadow-md shadow-indigo-500/20 shrink-0">
           <Languages className="w-5 h-5" />
         </div>
-        <div>
-          <span className="font-bold text-white text-base tracking-wide flex items-center gap-1.5">
+        <div className="hidden md:block min-w-0">
+          <span className="font-bold text-white text-base tracking-wide flex items-center gap-1.5 truncate">
             KhmerDub <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 font-semibold border border-indigo-500/30">AI</span>
           </span>
-          <p className="text-xs text-slate-400">EN → KM Video Dubbing</p>
+          <p className="text-xs text-slate-400 truncate">EN → KM Video Dubbing</p>
         </div>
       </div>
 
       {/* Navigation Links */}
-      <nav className="flex-1 px-3 py-6 space-y-1.5">
-        <div className="px-3 pb-2 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+      <nav className="flex-1 px-2 md:px-3 py-6 space-y-1.5">
+        <div className="hidden md:block px-3 pb-2 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
           Menu
         </div>
         {navItems.map((item) => {
@@ -40,21 +40,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onTabChange }) => 
             <button
               key={item.id}
               onClick={() => onTabChange(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
+              title={item.label}
+              className={`w-full flex items-center justify-center md:justify-start gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
                 isActive
                   ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
               }`}
             >
-              <Icon className={`w-5 h-5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-              {item.label}
+              <Icon className={`w-5 h-5 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+              <span className="hidden md:inline truncate">{item.label}</span>
             </button>
           );
         })}
       </nav>
 
       {/* Workflow pipeline reminder */}
-      <div className="p-4 mx-3 mb-4 rounded-xl bg-slate-800/60 border border-slate-800">
+      <div className="hidden md:block p-4 mx-3 mb-4 rounded-xl bg-slate-800/60 border border-slate-800">
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-300 mb-2">
           <Video className="w-4 h-4 text-indigo-400" />
           <span>Workflow Pipeline</span>
@@ -69,9 +70,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onTabChange }) => 
       </div>
 
       {/* Version footer */}
-      <div className="px-6 py-4 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-        <span>KhmerDub AI</span>
-        <span className="font-mono">v0.1.0</span>
+      <div className="px-3 md:px-6 py-4 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-center md:justify-between">
+        <span className="hidden md:inline">KhmerDub AI</span>
+        <span className="font-mono text-[10px] md:text-xs">v0.1.0</span>
       </div>
     </aside>
   );

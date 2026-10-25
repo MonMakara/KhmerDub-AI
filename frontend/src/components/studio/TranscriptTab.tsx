@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   FileText,
   Search,
@@ -52,6 +52,18 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
     setEditingId(null);
     setEditText('');
   };
+
+  // Prevent accidental loss of unsaved transcript edits on window/tab close
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (editingId && editText.trim() !== '') {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [editingId, editText]);
 
   const handleSaveEdit = async (segmentId: string) => {
     if (!editText.trim()) return;
@@ -234,9 +246,18 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
                         <textarea
                           value={editText}
                           onChange={(e) => setEditText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                              e.preventDefault();
+                              handleSaveEdit(seg.id);
+                            } else if (e.key === 'Escape') {
+                              handleCancelEdit();
+                            }
+                          }}
                           className="w-full text-xs sm:text-sm p-3 rounded-lg border border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
                           rows={2}
                           autoFocus
+                          placeholder="Edit English transcript..."
                         />
                         <div className="flex justify-end gap-2">
                           <button

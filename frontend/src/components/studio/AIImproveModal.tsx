@@ -57,6 +57,14 @@ export const AIImproveModal: React.FC<AIImproveModalProps> = ({
   const activeProvider = providers.find((p) => p.id === activeProviderId) || {
     id: activeProviderId,
     name: activeProviderId.toUpperCase(),
+    type: 'cloud_llm',
+    description: '',
+    requires_api_key: false,
+    is_configured: true,
+    masked_key: null,
+    supports_styles: true,
+    supports_alternatives: true,
+    available_models: [],
   };
 
   const handleImprove = async () => {
@@ -221,6 +229,16 @@ export const AIImproveModal: React.FC<AIImproveModalProps> = ({
                 </div>
               </div>
 
+              {/* Unconfigured Provider Notice */}
+              {activeProvider.requires_api_key && !activeProvider.is_configured && (
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    <strong>{activeProvider.name}</strong> requires an API key to generate improvements. Please configure it in Settings or switch to an active provider.
+                  </span>
+                </div>
+              )}
+
               {/* Custom Prompt Input */}
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
@@ -232,14 +250,15 @@ export const AIImproveModal: React.FC<AIImproveModalProps> = ({
                   value={customPrompt}
                   onChange={(e) => setCustomPrompt(e.target.value)}
                   placeholder="e.g. Shorten by 3 words to prevent tempo increase..."
-                  className="w-full text-xs px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  disabled={activeProvider.requires_api_key && !activeProvider.is_configured}
+                  className="w-full text-xs px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
                 />
               </div>
 
               {/* Trigger Improve Button */}
               <button
                 onClick={handleImprove}
-                disabled={improving}
+                disabled={improving || (activeProvider.requires_api_key && !activeProvider.is_configured)}
                 className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition flex items-center justify-center gap-2"
               >
                 <Sparkles className={`w-4 h-4 ${improving ? 'animate-spin' : ''}`} />

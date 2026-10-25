@@ -13,7 +13,7 @@ export const Header: React.FC<HeaderProps> = ({ health, loading, onRefreshHealth
   const ffmpegOk = health?.system_info?.ffmpeg_available;
 
   return (
-    <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between">
+    <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 md:px-8 flex items-center justify-between">
       <div className="flex items-center gap-3">
         <h1 className="text-lg font-semibold text-slate-800">KhmerDub AI Workspace</h1>
         <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
@@ -26,7 +26,12 @@ export const Header: React.FC<HeaderProps> = ({ health, loading, onRefreshHealth
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
           <Activity className="w-3.5 h-3.5 text-slate-400" />
           <span className="text-slate-500 font-medium">Backend:</span>
-          {isHealthy ? (
+          {loading && !health ? (
+            <span className="flex items-center gap-1 text-slate-500 font-semibold">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              Connecting...
+            </span>
+          ) : isHealthy ? (
             <span className="flex items-center gap-1 text-emerald-600 font-semibold">
               <CheckCircle2 className="w-3.5 h-3.5" />
               Connected (v{health?.version})
@@ -42,7 +47,11 @@ export const Header: React.FC<HeaderProps> = ({ health, loading, onRefreshHealth
         {/* FFmpeg Status */}
         <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
           <span className="text-slate-500 font-medium">FFmpeg:</span>
-          {ffmpegOk ? (
+          {loading && !health ? (
+            <span className="text-slate-500 font-semibold flex items-center gap-1">
+              Checking...
+            </span>
+          ) : ffmpegOk ? (
             <span className="text-emerald-600 font-semibold flex items-center gap-1">
               <CheckCircle2 className="w-3.5 h-3.5" />
               Ready
