@@ -1,17 +1,19 @@
 import React, { useState } from 'react';
 import {
-  UploadCloud,
-  FileAudio,
+  FolderKanban,
+  CheckCircle2,
+  Clock,
+  AlertCircle,
+  Plus,
+  ArrowRight,
+  Film,
   Languages,
   Mic2,
-  Film,
-  Plus,
-  CheckCircle,
-  Cpu,
-  Layers,
-  ArrowRight,
+  FileAudio,
+  Calendar,
+  Play,
 } from 'lucide-react';
-import { HealthResponse, ProjectSummary } from '../types';
+import { HealthResponse, ProjectSummary, ProjectStatus } from '../types';
 
 interface DashboardProps {
   health: HealthResponse | null;
@@ -22,7 +24,6 @@ interface DashboardProps {
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
-  health,
   projects,
   onCreateProject,
   onNavigateProjects,
@@ -30,7 +31,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
 }) => {
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
-  const [createMsg, setCreateMsg] = useState<string | null>(null);
+  const [showQuickCreate, setShowQuickCreate] = useState(false);
+
+  // Compute real metrics
+  const totalProjects = projects.length;
+  const completedProjects = projects.filter((p) => p.status === 'completed').length;
+  const processingProjects = projects.filter((p) =>
+    ['uploaded', 'audio_extracted', 'transcribing', 'translating', 'generating_voice', 'synchronizing'].includes(p.status)
+  ).length;
+  const attentionProjects = projects.filter((p) => p.status === 'failed' || p.status === 'created').length;
+
+  // Recent 5 projects sorted by updated_at / created_at
+  const recentProjects = [...projects]
+    .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())
+    .slice(0, 5);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,11 +53,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       setCreating(true);
       const newId = await onCreateProject(newTitle.trim());
       setNewTitle('');
-      setCreateMsg('Project created successfully!');
+      setShowQuickCreate(false);
       if (newId) {
         onSelectProject(newId);
-      } else {
-        setTimeout(() => setCreateMsg(null), 3000);
       }
     } catch (err: any) {
       alert(`Error creating project: ${err.message}`);
@@ -52,189 +64,306 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  const steps = [
-    {
-      num: 1,
-      title: 'Video Upload',
-      desc: 'Upload English MP4 video safely into persistent storage.',
-      icon: UploadCloud,
-      color: 'bg-blue-50 text-blue-600 border-blue-200',
-    },
-    {
-      num: 2,
-      title: 'Audio & Transcribe',
-      desc: 'Extract audio with FFmpeg & transcribe using faster-whisper.',
-      icon: FileAudio,
-      color: 'bg-emerald-50 text-emerald-600 border-emerald-200',
-    },
-    {
-      num: 3,
-      title: 'Khmer Translation',
-      desc: 'Translate English segments into Khmer with segment editing.',
-      icon: Languages,
-      color: 'bg-purple-50 text-purple-600 border-purple-200',
-    },
-    {
-      num: 4,
-      title: 'Khmer Voice (gTTS)',
-      desc: 'Synthesize natural Khmer speech segments via Google gTTS.',
-      icon: Mic2,
-      color: 'bg-amber-50 text-amber-600 border-amber-200',
-    },
-    {
-      num: 5,
-      title: 'Sync & Video Export',
-      desc: 'Synchronize audio timeline and export dubbed MP4 video.',
-      icon: Film,
-      color: 'bg-rose-50 text-rose-600 border-rose-200',
-    },
-  ];
+  const getStatusInfo = (status: ProjectStatus) => {
+    switch (status) {
+      case 'completed':
+        return { label: 'Completed', color: 'bg-emerald-50 text-emerald-700 border-emerald-200', percent: 100 };
+      case 'synchronizing':
+        return { label: 'Exporting Video', color: 'bg-cyan-50 text-cyan-700 border-cyan-200 animate-pulse', percent: 90 };
+      case 'voice_generated':
+        return { label: 'Speech Ready', color: 'bg-indigo-50 text-indigo-700 border-indigo-200', percent: 80 };
+      case 'generating_voice':
+        return { label: 'Generating Speech', color: 'bg-indigo-50 text-indigo-700 border-indigo-200 animate-pulse', percent: 70 };
+      case 'translated':
+        return { label: 'Translated', color: 'bg-purple-50 text-purple-700 border-purple-200', percent: 60 };
+      case 'translating':
+        return { label: 'Translating', color: 'bg-purple-50 text-purple-700 border-purple-200 animate-pulse', percent: 50 };
+      case 'transcribed':
+        return { label: 'Transcribed', color: 'bg-amber-50 text-amber-700 border-amber-200', percent: 40 };
+      case 'transcribing':
+        return { label: 'Transcribing', color: 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse', percent: 30 };
+      case 'audio_extracted':
+      case 'uploaded':
+        return { label: 'Media Uploaded', color: 'bg-blue-50 text-blue-700 border-blue-200', percent: 20 };
+      case 'failed':
+        return { label: 'Needs Attention', color: 'bg-rose-50 text-rose-700 border-rose-200', percent: 0 };
+      case 'created':
+      default:
+        return { label: 'Draft', color: 'bg-slate-100 text-slate-700 border-slate-200', percent: 10 };
+    }
+  };
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto">
-      {/* Welcome Banner */}
-      <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-8 text-white shadow-lg border border-slate-800">
-        <div className="max-w-2xl">
-          <span className="text-xs uppercase tracking-wider px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30">
-            Phase 1 • Environment Initialized
-          </span>
-          <h2 className="text-2xl font-bold mt-4 tracking-tight">
-            AI-Powered English-to-Khmer Video Dubbing
-          </h2>
-          <p className="text-slate-300 mt-2 text-sm leading-relaxed">
-            Welcome to KhmerDub AI. This platform automates the complete video dubbing lifecycle
-            from English speech extraction to synchronized Khmer audio dubbing.
-          </p>
-        </div>
-      </div>
-
-      {/* Stats / System Readiness Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
-            <span>Total Projects</span>
-            <Layers className="w-4 h-4 text-slate-400" />
-          </div>
-          <div className="mt-2 text-3xl font-bold text-slate-900">{projects.length}</div>
-          <p className="text-xs text-slate-400 mt-1">Stored in SQLite database</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
-            <span>Backend API</span>
-            <CheckCircle className="w-4 h-4 text-emerald-500" />
-          </div>
-          <div className="mt-2 text-xl font-bold text-slate-900 capitalize">
-            {health?.status || 'Connecting...'}
-          </div>
-          <p className="text-xs text-slate-400 mt-1 font-mono">
-            {health?.app_name} v{health?.version || '0.1.0'}
-          </p>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
-            <span>Media Engine</span>
-            <Film className="w-4 h-4 text-indigo-500" />
-          </div>
-          <div className="mt-2 text-xl font-bold text-slate-900">
-            {health?.system_info?.ffmpeg_available ? 'FFmpeg Ready' : 'Unavailable'}
-          </div>
-          <p className="text-xs text-slate-400 mt-1">Video & Audio Processing</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
-            <span>AI Inference</span>
-            <Cpu className="w-4 h-4 text-purple-500" />
-          </div>
-          <div className="mt-2 text-xl font-bold text-slate-900 uppercase">
-            {health?.system_info?.whisper_device || 'CPU'}
-          </div>
-          <p className="text-xs text-slate-400 mt-1">
-            Whisper model: {health?.system_info?.whisper_model || 'base'}
-          </p>
-        </div>
-      </div>
-
-      {/* Workflow Steps Overview */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-        <h3 className="text-base font-semibold text-slate-800 mb-1">
-          Video Dubbing Workflow Pipeline
-        </h3>
-        <p className="text-xs text-slate-500 mb-6">
-          The 5 core modules designed for complete English to Khmer dubbing
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          {steps.map((st) => {
-            const Icon = st.icon;
-            return (
-              <div
-                key={st.num}
-                className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/50 hover:bg-slate-50 transition-colors flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
-                      0{st.num}
-                    </span>
-                    <div className={`p-2 rounded-lg border ${st.color}`}>
-                      <Icon className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <h4 className="font-semibold text-sm text-slate-800 mb-1">{st.title}</h4>
-                  <p className="text-xs text-slate-500 leading-relaxed">{st.desc}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Quick Action: Create New Project */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-base font-semibold text-slate-800">Quick Test Project</h3>
-            <p className="text-xs text-slate-500">
-              Verify database writes and frontend-to-backend communication
+      {/* Top Banner / Hero */}
+      <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-8 text-white shadow-lg border border-slate-800 relative overflow-hidden">
+        <div className="absolute right-0 top-0 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="max-w-2xl space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30">
+                Studio Dashboard
+              </span>
+              <span className="text-[11px] text-slate-400">• English → Khmer Dubbing Engine</span>
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight text-white">
+              KhmerDub AI Dubbing Studio
+            </h2>
+            <p className="text-slate-300 text-xs sm:text-sm leading-relaxed">
+              Automated end-to-end video localization: FFmpeg audio extraction, Faster-Whisper transcription,
+              AI Khmer translation (Gemini / NLLB / Custom), natural neural speech (Google & Microsoft),
+              and timing-synchronized MP4 export.
             </p>
           </div>
-          <button
-            onClick={onNavigateProjects}
-            className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
-          >
-            View All Projects ({projects.length})
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            <button
+              onClick={() => setShowQuickCreate(!showQuickCreate)}
+              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs sm:text-sm shadow-md shadow-indigo-600/30 transition-all flex items-center justify-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              New Dubbing Project
+            </button>
+            <button
+              onClick={onNavigateProjects}
+              className="px-4 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700 font-medium text-xs sm:text-sm transition-all flex items-center justify-center gap-1.5"
+            >
+              <FolderKanban className="w-4 h-4 text-slate-400" />
+              View All Projects
+            </button>
+          </div>
         </div>
 
-        <form onSubmit={handleCreate} className="flex flex-col sm:flex-row gap-3">
-          <input
-            type="text"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="e.g. English Tech Tutorial Video"
-            className="flex-1 px-4 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-            disabled={creating}
-          />
-          <button
-            type="submit"
-            disabled={creating || !newTitle.trim()}
-            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium transition-colors shadow-sm"
+        {/* Quick Create Drawer / Inline Form */}
+        {showQuickCreate && (
+          <form
+            onSubmit={handleCreate}
+            className="mt-6 pt-6 border-t border-slate-800/80 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 animate-fadeIn"
           >
-            <Plus className="w-4 h-4" />
-            {creating ? 'Creating...' : 'Create Project'}
-          </button>
-        </form>
-
-        {createMsg && (
-          <div className="mt-3 text-xs text-emerald-600 font-semibold flex items-center gap-1.5">
-            <CheckCircle className="w-3.5 h-3.5" />
-            {createMsg}
-          </div>
+            <div className="flex-1 relative">
+              <input
+                type="text"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                placeholder="Enter project name (e.g. AI Technology Documentary, Tech Talk Episode 1)..."
+                className="w-full text-xs sm:text-sm px-4 py-2.5 bg-slate-950/60 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                autoFocus
+                disabled={creating}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={creating || !newTitle.trim()}
+                className="px-5 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition"
+              >
+                {creating ? 'Creating...' : 'Create & Open Studio'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowQuickCreate(false)}
+                className="px-3 py-2.5 text-xs text-slate-400 hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
         )}
+      </div>
+
+      {/* Real Real-Time Metrics Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Total Projects */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
+            <span>Total Projects</span>
+            <FolderKanban className="w-4 h-4 text-indigo-500" />
+          </div>
+          <div className="text-3xl font-bold text-slate-900">{totalProjects}</div>
+          <p className="text-[11px] text-slate-400">Total videos in workspace</p>
+        </div>
+
+        {/* Processing Projects */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
+            <span>In Progress</span>
+            <Clock className="w-4 h-4 text-amber-500" />
+          </div>
+          <div className="text-3xl font-bold text-amber-600">{processingProjects}</div>
+          <p className="text-[11px] text-slate-400">Transcribing, translating, or dubbing</p>
+        </div>
+
+        {/* Completed Projects */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
+            <span>Exported MP4</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+          </div>
+          <div className="text-3xl font-bold text-emerald-600">{completedProjects}</div>
+          <p className="text-[11px] text-slate-400">Fully synchronized Khmer videos</p>
+        </div>
+
+        {/* Attention / Drafts */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
+            <span>Attention / Draft</span>
+            <AlertCircle className="w-4 h-4 text-rose-500" />
+          </div>
+          <div className="text-3xl font-bold text-slate-700">{attentionProjects}</div>
+          <p className="text-[11px] text-slate-400">Awaiting media upload or retry</p>
+        </div>
+      </div>
+
+      {/* Main Two-Column Section: Recent Projects + Pipeline Status */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Recent Projects List (2 columns on lg) */}
+        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Recent Projects</h3>
+              <p className="text-xs text-slate-500">Pick up right where you left off</p>
+            </div>
+            <button
+              onClick={onNavigateProjects}
+              className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+            >
+              <span>View All ({projects.length})</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {recentProjects.length === 0 ? (
+            <div className="p-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-2">
+              <FolderKanban className="w-8 h-8 text-slate-400 mx-auto" />
+              <h4 className="text-sm font-semibold text-slate-700">No projects created yet</h4>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                Click the "New Dubbing Project" button above to upload an English video and start dubbing.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 space-y-2">
+              {recentProjects.map((proj) => {
+                const statusInfo = getStatusInfo(proj.status);
+                return (
+                  <div
+                    key={proj.id}
+                    onClick={() => onSelectProject(proj.id)}
+                    className="p-3.5 rounded-xl hover:bg-indigo-50/40 border border-transparent hover:border-indigo-100 transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
+                  >
+                    <div className="space-y-1.5 flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-900 text-sm truncate group-hover:text-indigo-600 transition-colors">
+                          {proj.title}
+                        </span>
+                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${statusInfo.color}`}>
+                          {statusInfo.label}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                          {proj.original_language.toUpperCase()} → {proj.target_language.toUpperCase()}
+                        </span>
+                        <span>•</span>
+                        <span className="flex items-center gap-1 text-[11px]">
+                          <Calendar className="w-3 h-3" />
+                          {new Date(proj.updated_at || proj.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="w-full max-w-xs bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-indigo-600 h-full rounded-full transition-all duration-300"
+                          style={{ width: `${statusInfo.percent}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectProject(proj.id);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-50 group-hover:bg-indigo-600 text-indigo-700 group-hover:text-white text-xs font-semibold transition-all flex items-center gap-1.5 shadow-sm"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Continue Studio</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* System Capabilities & Model Overview */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div className="pb-3 border-b border-slate-100">
+            <h3 className="text-sm font-bold text-slate-800">AI Dubbing Engine</h3>
+            <p className="text-xs text-slate-500">Active pipeline components</p>
+          </div>
+
+          <div className="space-y-3 text-xs">
+            {/* STT */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+              <div className="flex items-center justify-between font-semibold text-slate-800">
+                <span className="flex items-center gap-1.5">
+                  <FileAudio className="w-3.5 h-3.5 text-emerald-600" />
+                  Speech-to-Text
+                </span>
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">Faster-Whisper</span>
+              </div>
+              <p className="text-slate-500 text-[11px]">
+                CTranslate2 INT8 quantized execution with VAD voice activity timestamps.
+              </p>
+            </div>
+
+            {/* Translation */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+              <div className="flex items-center justify-between font-semibold text-slate-800">
+                <span className="flex items-center gap-1.5">
+                  <Languages className="w-3.5 h-3.5 text-purple-600" />
+                  Translation Engine
+                </span>
+                <span className="text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">Hybrid AI</span>
+              </div>
+              <p className="text-slate-500 text-[11px]">
+                Meta NLLB-200 (local offline) + Google Gemini / OpenAI / Claude / Custom API with glossary alignment.
+              </p>
+            </div>
+
+            {/* Voice */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+              <div className="flex items-center justify-between font-semibold text-slate-800">
+                <span className="flex items-center gap-1.5">
+                  <Mic2 className="w-3.5 h-3.5 text-indigo-600" />
+                  Khmer Text-to-Speech
+                </span>
+                <span className="text-[10px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded">Multi-Voice</span>
+              </div>
+              <p className="text-slate-500 text-[11px]">
+                Google gTTS default + Microsoft Piseth (Male) and Sreymom (Female) neural voices.
+              </p>
+            </div>
+
+            {/* Video Sync */}
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+              <div className="flex items-center justify-between font-semibold text-slate-800">
+                <span className="flex items-center gap-1.5">
+                  <Film className="w-3.5 h-3.5 text-rose-600" />
+                  Video Synchronization
+                </span>
+                <span className="text-[10px] bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded">FFmpeg Muxer</span>
+              </div>
+              <p className="text-slate-500 text-[11px]">
+                44.1kHz timeline building, gap silence padding, tempo adjustment & timing conflict safety.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

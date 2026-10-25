@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 9 Complete — AI Translation API Integration (Google Gemini) Verified
+- **Current Phase**: Phase 10 Complete — Professional UI/UX Redesign & Modular Dubbing Studio
 - **Overall Status**: Version 1 Complete & Verified
 
 ---
@@ -124,30 +124,43 @@
 - [x] Total automated test suite expanded to 92 passing backend tests (11 new tests in `tests/test_voice_selection.py`).
 - [x] Production frontend build verified with TypeScript strict mode enabled.
 
-### [x] Phase 9: AI Translation API Integration (Google Gemini)
+### [x] Phase 9: AI Translation API Integration (Google Gemini, OpenAI, Claude, Custom AI)
 - [x] Official `google-genai` Python SDK installed in Docker environment with cryptography library for secure credentials.
+- [x] Multi-provider architecture supporting Google Gemini, OpenAI, Anthropic Claude, and OpenAI-compatible custom endpoints.
 - [x] Symmetric credential encryption (`backend/app/core/credentials.py`) using Fernet (AES-128-CBC + HMAC-SHA256) at `/app/data/.secrets/credentials.enc`.
 - [x] Masked API key display (`AIzaSy...4aB8`), environment variable override (`GEMINI_API_KEY`), and zero plaintext exposure.
 - [x] Multi-style translation prompt engineering (`backend/app/services/translation/prompts.py`) supporting 5 distinct modes: `natural`, `short`, `simple`, `formal`, `standard`.
 - [x] Strict technical glossary (`KhmerGlossary`) prompt injection and regex normalization guaranteeing standard terminology (`បញ្ញាសិប្បនិម្មិត`, `ដំណើរការ`).
 - [x] Prompt injection defense sanitizing and strictly bounding user custom prompt instructions.
-- [x] Concrete `GeminiTranslationProvider` (`backend/app/services/translation/gemini.py`) implementing `TranslationProvider` with exponential backoff on rate limits, JSON structured outputs, and fallback per-segment processing.
-- [x] Dynamic provider registry (`backend/app/services/translation/registry.py`) and connection validation supporting `nllb` (local offline default) and `gemini` (cloud AI).
+- [x] Concrete translation providers (`gemini.py`, `openai_compat.py`, `claude.py`) implementing `TranslationProvider` with exponential backoff on rate limits, JSON structured outputs, and fallback per-segment processing.
+- [x] Dynamic provider registry (`backend/app/services/translation/registry.py`) and connection validation supporting `nllb` (local offline default), `gemini`, `openai`, `claude`, and `custom`.
 - [x] Database migration (`d2a83b5e1f02`) adding `translation_provider` and `translation_style` to `projects` table, plus `style` and `explanation` to `translation_segments`.
 - [x] API endpoints:
-  - `GET /api/translation/providers`: Catalog of providers, supported models (`gemini-2.5-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`), and styles.
+  - `GET /api/translation/providers`: Catalog of providers, supported models, and styles.
   - `POST /api/translation/test-connection`: Non-blocking authentication test and connectivity ping.
   - `POST /api/translation/credentials` & `DELETE /api/translation/credentials/{provider}`: Secure storage and removal of API keys.
   - `PATCH /api/projects/{id}/translation-settings`: Project translation provider and style updates.
   - `POST /api/projects/{id}/translations/{segment_id}/ai-improve`: Per-segment context-, style-, and duration-aware AI translation improvement.
   - `POST /api/projects/{id}/translations/{segment_id}/alternatives`: Generation of 3 distinct alternatives (Natural, Simple, Short) side-by-side.
   - `POST /api/projects/{id}/translations/{segment_id}/apply`: 1-click apply of AI suggestion/alternative, updating segment and automatically invalidating generated audio and video export.
-- [x] Frontend UI updates:
-  - `Settings.tsx`: Dedicated "AI Translation Providers & API Keys" card with masked key, connection test button, save/delete key buttons, model dropdown, and security notice.
-  - `ProjectWorkspace.tsx`: Step 3 header toolbar with Provider toggle (NLLB vs Gemini) and Style dropdown. Segment cards enhanced with "AI Improve" (Sparkles) and "Alternatives" (Layers) buttons, style badge, and AI reasoning display.
-  - Interactive AI Modal: Side-by-side comparative inspection, fine-tuning prompt input, and 1-click apply for improvements and alternatives.
-- [x] Automated test suite expanded to 102 passing backend tests (10 new tests in `tests/test_ai_translation.py`).
+- [x] Automated test suite expanded to 106 passing backend tests (14 tests in `tests/test_ai_translation.py`).
 - [x] Production frontend build verified with TypeScript strict mode enabled (0 errors).
+
+### [x] Phase 10: Professional UI/UX Redesign & Modular Dubbing Studio
+- [x] Complete Dashboard overhaul (`Dashboard.tsx`): Real metrics (`totalProjects`, `completedProjects`, `processingProjects`, `attentionProjects`), recent projects list with progress bars, fast project creation drawer, and AI engine overview.
+- [x] Advanced Project Management (`Projects.tsx`): Real-time search, status filter pills, sorting options, Grid vs Table view switcher, stage progress bars, and "Open Studio" continue actions.
+- [x] Professional Dubbing Studio Architecture (`ProjectWorkspace.tsx`): Replaced 2,550-line vertical monolith with a 5-stage tabbed studio (`Media`, `Transcript`, `Translation`, `Voice`, `Export`) and non-stalling polling.
+- [x] Studio Navigation Bar (`StudioHeader.tsx`): Compact 5-stage stepper with status indicators, background processing spinners, timing conflict badge, and manual refresh.
+- [x] Persistent Video Preview Dock (`PersistentVideoPlayer.tsx`): Docked player accessible across all editing tabs, click-to-seek timestamp navigation, active segment highlighting by playhead time, speed presets (`0.75x`, `1x`, `1.25x`, `1.5x`), and volume controls.
+- [x] Media Management Tab (`MediaTab.tsx`): Drag-and-drop video upload zone with real-time percentage progress, FFprobe container metadata (dimensions, duration, codecs), and 16kHz PCM WAV audio extraction player.
+- [x] Transcript Editor Tab (`TranscriptTab.tsx`): Faster-Whisper English transcript list, search filter, click-to-seek timestamp navigation, inline segment text editing, and timing window badges.
+- [x] Bilingual Comparative Translation Tab (`TranslationTab.tsx`): Side-by-side English + Khmer layout, provider & style selector, segment cards with audio players, timing warnings, AI Improve modal trigger, and per-segment retranslation.
+- [x] AI Refinement & Alternatives Modal (`AIImproveModal.tsx`): Side-by-side comparative preview for Gemini/OpenAI/Claude/NLLB, 3-style alternatives generation (Natural, Simple, Short), duration constraints, and 1-click apply.
+- [x] Khmer Voice Selection Tab (`VoiceTab.tsx`): Cards for Google Khmer, Microsoft Piseth, and Microsoft Sreymom with voice preview audio players, batch speech generation, and single-segment regeneration.
+- [x] Export & Delivery Tab (`ExportTab.tsx`): 5-point readiness checklist, timing conflict analysis with overflow breakdown, export progress bar, in-browser dubbed video player, and MP4 download.
+- [x] Reorganized Settings Workspace (`Settings.tsx`): Tabbed configuration sections for AI Translation Providers & API Keys, Voice Providers, AI Models, Hardware, Storage, and Developer CLI.
+- [x] Modular Component Extraction (`frontend/src/components/studio/`): AIImproveModal, ExportTab, MediaTab, PersistentVideoPlayer, StudioHeader, TranscriptTab, TranslationTab, VoiceTab.
+- [x] Automated Verification: 106 backend tests passing (100%), TypeScript typecheck passing (0 errors), and Vite production build verified.
 
 ---
 
