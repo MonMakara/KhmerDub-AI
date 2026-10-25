@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,8 @@ from app.core.storage import (
 )
 from app.database.session import get_db
 from app.models.project import Project
-from app.models.toolkit import ToolkitTask, ToolkitTranscriptSegment
+from app.models.toolkit import ToolkitTask, ToolkitTranscriptSegment, ToolkitTTSSegment
+from app.schemas.project import VoiceOptionResponse
 from app.services.subtitles.generator import (
     SubtitleCue,
     generate_csv,
@@ -41,6 +43,12 @@ from app.services.subtitles.generator import (
     generate_vtt,
 )
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
+from app.services.tts.registry import (
+    get_tts_provider,
+    is_valid_voice_combination,
+    list_supported_voices,
+)
+from app.services.tts.voxcpm import VoxCPM2TTSProvider
 from app.services.video.exceptions import (
     CorruptedVideoError,
     InvalidVideoFormatError,
@@ -91,6 +99,43 @@ class ToolkitTranscriptSegmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ToolkitTTSSegmentResponse(BaseModel):
+    id: str
+    task_id: str
+    segment_order: int
+    text: str
+    audio_file_path: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    file_size_bytes: Optional[int] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TTSPreviewRequest(BaseModel):
+    text: str
+    provider: str
+    voice: str
+    language: str = "km"
+
+
+class TTSGenerateRequest(BaseModel):
+    text: str
+    provider: str
+    voice: str
+    language: str = "km"
+    target_format: str = "mp3"
+    pause_duration_seconds: float = 0.4
+
+
+class TTSSegmentRegenerateRequest(BaseModel):
+    text: Optional[str] = None
+    pause_duration_seconds: Optional[float] = None
+
+
 class SegmentUpdateRequest(BaseModel):
     text: str
 
@@ -117,6 +162,7 @@ class ToolkitTaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     segments: Optional[List[ToolkitTranscriptSegmentResponse]] = None
+    tts_segments: Optional[List[ToolkitTTSSegmentResponse]] = None
     full_text: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -135,6 +181,23 @@ def _serialize_segment(seg: ToolkitTranscriptSegment) -> Dict[str, Any]:
         "edited_text": seg.edited_text,
         "text": active_text,
         "is_edited": seg.edited_text is not None and seg.edited_text != seg.raw_text,
+        "created_at": seg.created_at,
+        "updated_at": seg.updated_at,
+    }
+
+
+def _serialize_tts_segment(seg: ToolkitTTSSegment) -> Dict[str, Any]:
+    """Helper to convert TTS segment model to dict."""
+    return {
+        "id": seg.id,
+        "task_id": seg.task_id,
+        "segment_order": seg.segment_order,
+        "text": seg.text,
+        "audio_file_path": seg.audio_file_path,
+        "duration_seconds": seg.duration_seconds,
+        "file_size_bytes": seg.file_size_bytes,
+        "status": seg.status,
+        "error_message": seg.error_message,
         "created_at": seg.created_at,
         "updated_at": seg.updated_at,
     }
@@ -165,6 +228,13 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
             if seg_dict["text"].strip():
                 full_text_parts.append(seg_dict["text"].strip())
 
+    serialized_tts_segments: List[Dict[str, Any]] = []
+    if hasattr(task, "tts_segments") and task.tts_segments:
+        for s in sorted(task.tts_segments, key=lambda seg: seg.segment_order):
+            serialized_tts_segments.append(_serialize_tts_segment(s))
+            if s.text and s.text.strip():
+                full_text_parts.append(s.text.strip())
+
     full_text = "\n\n".join(full_text_parts) if full_text_parts else None
 
     return {
@@ -184,7 +254,8 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
         "error_message": task.error_message,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
-        "segments": serialized_segments,
+        "segments": serialized_segments or None,
+        "tts_segments": serialized_tts_segments or None,
         "full_text": full_text,
     }
 
@@ -304,9 +375,9 @@ def get_toolkit_capabilities():
             {
                 "id": "text_to_speech",
                 "title": "Text to Speech Studio",
-                "description": "Standalone Khmer speech synthesis using Google Khmer, Edge Piseth/Sreymom, or VoxCPM2 voice cloning.",
+                "description": "Standalone Khmer & English speech synthesis using Google Khmer, Edge Piseth/Sreymom/Aria/Guy, or authorized VoxCPM2 voice cloning.",
                 "category": "Synthesis",
-                "status": "planned",
+                "status": "available",
                 "phase": "13E.3",
                 "supported_formats": ["mp3", "wav"],
             },
@@ -1053,3 +1124,513 @@ def delete_toolkit_task(task_id: str, db: Session = Depends(get_db)):
         "task_id": safe_id,
         "message": "Toolkit task and associated files deleted successfully.",
     }
+
+
+def split_tts_text(text: str, language: str = "km", max_chars: int = 150) -> List[str]:
+    """Split text into natural segments suitable for speech synthesis.
+    Respects Khmer sentence terminators (។, ៕), punctuation, newlines, and length constraints.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    raw_paragraphs = [p.strip() for p in cleaned.split("\n") if p.strip()]
+    segments: List[str] = []
+    boundary_pattern = re.compile(r"([^។៕.!?;\n]+[។៕.!?;\n]*)")
+
+    for para in raw_paragraphs:
+        chunks = [c.strip() for c in boundary_pattern.findall(para) if c.strip()]
+        if not chunks:
+            chunks = [para]
+
+        for chunk in chunks:
+            if len(chunk) <= max_chars:
+                segments.append(chunk)
+            else:
+                sub_parts = re.split(r"([,፣\s]+)", chunk)
+                current = ""
+                for part in sub_parts:
+                    if len(current) + len(part) <= max_chars:
+                        current += part
+                    else:
+                        if current.strip():
+                            segments.append(current.strip())
+                        current = part
+                if current.strip():
+                    segments.append(current.strip())
+
+    final_segments = [s.strip() for s in segments if s.strip()]
+    return final_segments if final_segments else [cleaned]
+
+
+def assemble_tts_narration(
+    task_id: str,
+    segments: List[ToolkitTTSSegment],
+    pause_duration_seconds: float = 0.4,
+    target_format: str = "mp3",
+    ffmpeg_bin: str = "ffmpeg",
+) -> tuple[Path, Path, Path, float]:
+    """Assemble synthesized segment audio files into a unified narration audio file.
+    Inserts a silence interval of pause_duration_seconds between segments if specified.
+    Returns: (primary_output_path, wav_output_path, mp3_output_path, total_duration_seconds)
+    """
+    output_dir = get_toolkit_task_output_dir(task_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    standard_segments_dir = output_dir / "standard_segments"
+    standard_segments_dir.mkdir(parents=True, exist_ok=True)
+
+    valid_segments = [
+        s for s in segments
+        if s.audio_file_path and Path(s.audio_file_path).exists() and Path(s.audio_file_path).stat().st_size > 0
+    ]
+    if not valid_segments:
+        raise RuntimeError("No synthesized audio segments available to assemble narration.")
+
+    # Convert each segment to standard 44.1kHz stereo 16-bit PCM WAV
+    standard_segment_paths: List[Path] = []
+    for s in valid_segments:
+        src = Path(s.audio_file_path)
+        dst = standard_segments_dir / f"std_{s.segment_order:03d}.wav"
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-i", str(src),
+            "-acodec", "pcm_s16le",
+            "-ar", "44100",
+            "-ac", "2",
+            str(dst),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"FFmpeg failed to standardize segment {s.segment_order}: {res.stderr}")
+        standard_segment_paths.append(dst)
+
+    # Generate silence file if pause is specified and more than 1 segment
+    silence_path: Optional[Path] = None
+    if pause_duration_seconds > 0.01 and len(standard_segment_paths) > 1:
+        silence_path = standard_segments_dir / "pause_silence.wav"
+        dur = max(0.01, round(pause_duration_seconds, 3))
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-f", "lavfi",
+            "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", f"{dur:.3f}",
+            "-acodec", "pcm_s16le",
+            "-ar", "44100",
+            "-ac", "2",
+            str(silence_path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"FFmpeg failed to generate silence: {res.stderr}")
+
+    # Build concat manifest
+    manifest_path = standard_segments_dir / "concat_list.txt"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        for idx, seg_path in enumerate(standard_segment_paths):
+            f.write(f"file '{seg_path.absolute()}'\n")
+            if silence_path and idx < len(standard_segment_paths) - 1:
+                f.write(f"file '{silence_path.absolute()}'\n")
+
+    # Concat into WAV
+    wav_output_path = output_dir / "narration.wav"
+    cmd_concat = [
+        ffmpeg_bin,
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(manifest_path),
+        "-c", "copy",
+        str(wav_output_path),
+    ]
+    res = subprocess.run(cmd_concat, capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        raise RuntimeError(f"FFmpeg concat failed: {res.stderr}")
+
+    # Transcode to MP3
+    mp3_output_path = output_dir / "narration.mp3"
+    cmd_mp3 = [
+        ffmpeg_bin,
+        "-y",
+        "-i", str(wav_output_path),
+        "-c:a", "libmp3lame",
+        "-b:a", "192k",
+        str(mp3_output_path),
+    ]
+    res_mp3 = subprocess.run(cmd_mp3, capture_output=True, text=True, check=False)
+    if res_mp3.returncode != 0:
+        raise RuntimeError(f"FFmpeg MP3 transcoding failed: {res_mp3.stderr}")
+
+    total_duration = video_processor.get_audio_duration(wav_output_path)
+    primary_output = wav_output_path if target_format.lower().lstrip(".") == "wav" else mp3_output_path
+
+    return primary_output, wav_output_path, mp3_output_path, total_duration
+
+
+# --- Phase 13E.3 Text to Speech Studio Endpoints ---
+
+
+@router.get("/tts/voices")
+def get_tts_voices(language: Optional[str] = None, db: Session = Depends(get_db)):
+    """List all supported system and authorized custom TTS voices, optionally filtered by language."""
+    return list_supported_voices(db=db, language=language)
+
+
+@router.post("/tts/preview")
+def preview_tts(request: TTSPreviewRequest, db: Session = Depends(get_db)):
+    """Generate a short audio preview for the selected voice and sample text."""
+    clean_text = (request.text or "").strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Preview text cannot be empty.")
+    sample_text = clean_text[:200]
+    provider_name = request.provider.strip().lower()
+    voice = request.voice.strip()
+
+    if not is_valid_voice_combination(provider_name, voice, db=db):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Voice '{voice}' with provider '{provider_name}' is not supported or not authorized.",
+        )
+
+    if provider_name in ("voxcpm", "voxcpm2", "custom"):
+        vox = VoxCPM2TTSProvider()
+        if not vox.is_worker_online():
+            raise HTTPException(
+                status_code=503,
+                detail="VoxCPM2 GPU inference worker is currently offline. Please ensure the worker is running or switch to Edge/Google TTS.",
+            )
+
+    try:
+        provider = get_tts_provider(provider_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    temp_preview_dir = settings.TEMP_DIR / "tts_previews"
+    temp_preview_dir.mkdir(parents=True, exist_ok=True)
+    preview_id = str(uuid.uuid4())
+    ext = "wav" if provider_name in ("voxcpm", "voxcpm2", "custom") else "mp3"
+    preview_file = temp_preview_dir / f"preview_{preview_id}.{ext}"
+
+    try:
+        provider.synthesize(
+            text=sample_text,
+            output_path=preview_file,
+            language=request.language,
+            voice=voice,
+        )
+    except Exception as e:
+        logger.error("TTS preview synthesis failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"TTS synthesis error: {e}")
+
+    mime = AUDIO_MIME_TYPES.get(ext, "audio/wav")
+    return FileResponse(
+        path=str(preview_file),
+        media_type=mime,
+        filename=preview_file.name,
+        content_disposition_type="inline",
+    )
+
+
+@router.post("/tts/generate", response_model=ToolkitTaskResponse)
+def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
+    """Convert multi-sentence plain text into structured speech segments and assembled narration."""
+    clean_text = (request.text or "").strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    provider_name = request.provider.strip().lower()
+    voice = request.voice.strip()
+    target_format = request.target_format.lower().lstrip(".")
+    if target_format not in ["mp3", "wav"]:
+        target_format = "mp3"
+
+    if not is_valid_voice_combination(provider_name, voice, db=db):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Voice '{voice}' with provider '{provider_name}' is not supported or not authorized.",
+        )
+
+    if provider_name in ("voxcpm", "voxcpm2", "custom"):
+        vox = VoxCPM2TTSProvider()
+        if not vox.is_worker_online():
+            raise HTTPException(
+                status_code=503,
+                detail="VoxCPM2 GPU inference worker is currently offline. Please ensure the worker is running or switch to Edge/Google TTS.",
+            )
+
+    task_id = str(uuid.uuid4())
+    task_dir = get_toolkit_task_dir(task_id)
+    input_dir = get_toolkit_task_input_dir(task_id)
+    output_dir = get_toolkit_task_output_dir(task_id)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    text_source_path = input_dir / "source_text.txt"
+    text_source_path.write_text(clean_text, encoding="utf-8")
+
+    task = ToolkitTask(
+        id=task_id,
+        tool_type="text_to_speech",
+        source_type="direct_text",
+        source_filename=f"tts_{request.language}_{provider_name}_{voice[:8]}.txt",
+        source_file_path=str(text_source_path),
+        target_format=target_format,
+        status="processing",
+        progress_percentage=5,
+        source_media_metadata=json.dumps({
+            "character_count": len(clean_text),
+            "language": request.language,
+            "provider": provider_name,
+            "voice": voice,
+            "pause_duration_seconds": request.pause_duration_seconds,
+        }),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    # Split text into segments
+    segment_texts = split_tts_text(clean_text, language=request.language)
+    segments_objs: List[ToolkitTTSSegment] = []
+    for idx, s_text in enumerate(segment_texts, start=1):
+        seg = ToolkitTTSSegment(
+            id=str(uuid.uuid4()),
+            task_id=task.id,
+            segment_order=idx,
+            text=s_text,
+            status="pending",
+        )
+        db.add(seg)
+        segments_objs.append(seg)
+    db.commit()
+
+    provider = get_tts_provider(provider_name)
+    seg_ext = "wav" if provider_name in ("voxcpm", "voxcpm2", "custom") else "mp3"
+
+    for idx, seg in enumerate(segments_objs):
+        seg_file = output_dir / f"segment_{seg.segment_order:03d}.{seg_ext}"
+        try:
+            provider.synthesize(
+                text=seg.text,
+                output_path=seg_file,
+                language=request.language,
+                voice=voice,
+            )
+            dur = video_processor.get_audio_duration(seg_file)
+            seg.audio_file_path = str(seg_file)
+            seg.duration_seconds = dur
+            seg.file_size_bytes = seg_file.stat().st_size
+            seg.status = "completed"
+        except Exception as e:
+            logger.error("Segment %d synthesis failed: %s", seg.segment_order, e)
+            seg.status = "failed"
+            seg.error_message = str(e)
+        db.commit()
+        task.progress_percentage = 10 + int(70 * (idx + 1) / len(segments_objs))
+        db.commit()
+
+    completed_segs = [s for s in segments_objs if s.status == "completed"]
+    if not completed_segs:
+        task.status = "failed"
+        task.error_message = "All text segments failed to synthesize."
+        db.commit()
+        db.refresh(task)
+        raise HTTPException(status_code=500, detail="Text-to-speech synthesis failed for all segments.")
+
+    try:
+        primary_out, wav_out, mp3_out, total_dur = assemble_tts_narration(
+            task_id=task.id,
+            segments=completed_segs,
+            pause_duration_seconds=request.pause_duration_seconds,
+            target_format=target_format,
+        )
+        task.output_file_path = str(primary_out)
+        task.output_filename = primary_out.name
+        task.output_duration_seconds = total_dur
+        task.output_file_size_bytes = primary_out.stat().st_size
+        task.output_media_metadata = json.dumps({
+            "provider": provider_name,
+            "voice": voice,
+            "language": request.language,
+            "segment_count": len(segments_objs),
+            "pause_duration_seconds": request.pause_duration_seconds,
+            "wav_path": str(wav_out),
+            "mp3_path": str(mp3_out),
+        })
+        task.progress_percentage = 100
+        task.status = "completed"
+    except Exception as e:
+        logger.error("Narration assembly failed: %s", e)
+        task.status = "failed"
+        task.error_message = f"Narration assembly failed: {e}"
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@router.post("/tts/tasks/{task_id}/segments/{segment_id}/regenerate", response_model=ToolkitTaskResponse)
+def regenerate_tts_segment(
+    task_id: str,
+    segment_id: str,
+    request: TTSSegmentRegenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """Regenerate a single TTS speech segment with optional text update, and rebuild narration."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id, ToolkitTask.tool_type == "text_to_speech").first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Text-to-speech task '{task_id}' not found.")
+
+    seg = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.id == segment_id, ToolkitTTSSegment.task_id == safe_id).first()
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"TTS segment '{segment_id}' not found in task '{task_id}'.")
+
+    if request.text and request.text.strip():
+        seg.text = request.text.strip()
+
+    meta = {}
+    if task.output_media_metadata:
+        try:
+            meta = json.loads(task.output_media_metadata)
+        except Exception:
+            pass
+    if not meta and task.source_media_metadata:
+        try:
+            meta = json.loads(task.source_media_metadata)
+        except Exception:
+            pass
+
+    provider_name = meta.get("provider", "gtts")
+    voice = meta.get("voice", "default")
+    language = meta.get("language", "km")
+    pause_dur = request.pause_duration_seconds if request.pause_duration_seconds is not None else meta.get("pause_duration_seconds", 0.4)
+
+    if provider_name in ("voxcpm", "voxcpm2", "custom"):
+        vox = VoxCPM2TTSProvider()
+        if not vox.is_worker_online():
+            raise HTTPException(
+                status_code=503,
+                detail="VoxCPM2 GPU inference worker is currently offline. Cannot regenerate segment.",
+            )
+
+    provider = get_tts_provider(provider_name)
+    output_dir = get_toolkit_task_output_dir(safe_id)
+    seg_ext = "wav" if provider_name in ("voxcpm", "voxcpm2", "custom") else "mp3"
+    seg_file = output_dir / f"segment_{seg.segment_order:03d}.{seg_ext}"
+
+    try:
+        provider.synthesize(
+            text=seg.text,
+            output_path=seg_file,
+            language=language,
+            voice=voice,
+        )
+        dur = video_processor.get_audio_duration(seg_file)
+        seg.audio_file_path = str(seg_file)
+        seg.duration_seconds = dur
+        seg.file_size_bytes = seg_file.stat().st_size
+        seg.status = "completed"
+        seg.error_message = None
+        db.commit()
+    except Exception as e:
+        logger.error("Segment regeneration failed: %s", e)
+        seg.status = "failed"
+        seg.error_message = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Segment regeneration failed: {e}")
+
+    # Reassemble narration
+    all_segs = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.task_id == safe_id).order_by(ToolkitTTSSegment.segment_order).all()
+    completed_segs = [s for s in all_segs if s.status == "completed"]
+    if completed_segs:
+        primary_out, wav_out, mp3_out, total_dur = assemble_tts_narration(
+            task_id=safe_id,
+            segments=completed_segs,
+            pause_duration_seconds=pause_dur,
+            target_format=task.target_format,
+        )
+        task.output_file_path = str(primary_out)
+        task.output_filename = primary_out.name
+        task.output_duration_seconds = total_dur
+        task.output_file_size_bytes = primary_out.stat().st_size
+        meta["duration"] = total_dur
+        meta["pause_duration_seconds"] = pause_dur
+        meta["wav_path"] = str(wav_out)
+        meta["mp3_path"] = str(mp3_out)
+        task.output_media_metadata = json.dumps(meta)
+        db.commit()
+
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@router.get("/tts/tasks/{task_id}/segments/{segment_id}/stream")
+def stream_tts_segment(task_id: str, segment_id: str, db: Session = Depends(get_db)):
+    """Stream audio for an individual synthesized speech segment."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    seg = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.id == segment_id, ToolkitTTSSegment.task_id == safe_id).first()
+    if not seg or not seg.audio_file_path:
+        raise HTTPException(status_code=404, detail="Segment audio not found.")
+
+    p = Path(seg.audio_file_path)
+    if not p.exists() or p.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="Segment audio file missing from disk.")
+
+    ext = p.suffix.lower().lstrip(".")
+    mime = AUDIO_MIME_TYPES.get(ext, "audio/wav")
+    return FileResponse(path=str(p), media_type=mime, filename=p.name, content_disposition_type="inline")
+
+
+@router.get("/tts/tasks/{task_id}/segments/{segment_id}/download")
+def download_tts_segment(task_id: str, segment_id: str, db: Session = Depends(get_db)):
+    """Download audio for an individual synthesized speech segment."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    seg = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.id == segment_id, ToolkitTTSSegment.task_id == safe_id).first()
+    if not seg or not seg.audio_file_path:
+        raise HTTPException(status_code=404, detail="Segment audio not found.")
+
+    p = Path(seg.audio_file_path)
+    if not p.exists() or p.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="Segment audio file missing from disk.")
+
+    ext = p.suffix.lower().lstrip(".")
+    mime = AUDIO_MIME_TYPES.get(ext, "audio/wav")
+    return FileResponse(path=str(p), media_type=mime, filename=p.name, content_disposition_type="attachment")
+
+
+@router.get("/tts/tasks/{task_id}/export")
+def export_tts_narration(
+    task_id: str,
+    format: str = "mp3",
+    db: Session = Depends(get_db),
+):
+    """Export the assembled narration in either MP3 or WAV format."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id, ToolkitTask.tool_type == "text_to_speech").first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Text-to-speech task '{task_id}' not found.")
+
+    output_dir = get_toolkit_task_output_dir(safe_id)
+    req_fmt = format.lower().lstrip(".")
+    if req_fmt not in ["mp3", "wav"]:
+        req_fmt = "mp3"
+
+    target_path = output_dir / f"narration.{req_fmt}"
+    if not target_path.exists() or target_path.stat().st_size == 0:
+        if task.output_file_path and Path(task.output_file_path).exists():
+            target_path = Path(task.output_file_path)
+        else:
+            raise HTTPException(status_code=404, detail=f"Narration file for format '{req_fmt}' not found.")
+
+    ext = target_path.suffix.lower().lstrip(".")
+    mime = AUDIO_MIME_TYPES.get(ext, "audio/wav")
+    return FileResponse(
+        path=str(target_path),
+        media_type=mime,
+        filename=f"narration_{safe_id[:8]}.{ext}",
+        content_disposition_type="attachment",
+    )

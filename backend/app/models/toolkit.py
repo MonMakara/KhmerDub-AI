@@ -36,6 +36,12 @@ class ToolkitTask(Base):
         cascade="all, delete-orphan",
         order_by="ToolkitTranscriptSegment.segment_order",
     )
+    tts_segments = relationship(
+        "ToolkitTTSSegment",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="ToolkitTTSSegment.segment_order",
+    )
 
 
 class ToolkitTranscriptSegment(Base):
@@ -54,3 +60,24 @@ class ToolkitTranscriptSegment(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     task = relationship("ToolkitTask", back_populates="segments")
+
+
+class ToolkitTTSSegment(Base):
+    """Represents a single synthesized speech segment within a text-to-speech toolkit task."""
+
+    __tablename__ = "toolkit_tts_segments"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = Column(String(36), ForeignKey("toolkit_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    segment_order = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+    audio_file_path = Column(String(1024), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    status = Column(String(20), default="pending", nullable=False)  # pending, completed, failed
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    task = relationship("ToolkitTask", back_populates="tts_segments")
+

@@ -30,6 +30,7 @@ import {
   Save,
   X,
   FileCheck,
+  Volume2,
 } from 'lucide-react';
 import { api } from '../services/api';
 import {
@@ -37,6 +38,7 @@ import {
   ToolkitCapabilities,
   ToolkitTask,
   ToolkitTranscriptSegment,
+  TTSVoiceOption,
 } from '../types';
 
 interface MediaToolkitProps {
@@ -73,6 +75,27 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   // Copy Feedback State
   const [copiedSegmentId, setCopiedSegmentId] = useState<string | null>(null);
   const [copiedFullText, setCopiedFullText] = useState<boolean>(false);
+
+  // Text-to-Speech Studio State (Phase 13E.3)
+  const [ttsText, setTtsText] = useState<string>(
+    'សួស្តីបងប្អូនទាំងអស់គ្នា។ សូមស្វាគមន៍មកកាន់ KhmerDub AI។ ថ្ងៃនេះយើងសាកល្បងបង្កើតសំឡេងនិយាយដោយស្វ័យប្រវត្តិ។'
+  );
+  const [ttsLanguage, setTtsLanguage] = useState<string>('km');
+  const [ttsVoices, setTtsVoices] = useState<TTSVoiceOption[]>([]);
+  const [ttsSelectedVoice, setTtsSelectedVoice] = useState<string>('km-KH-PisethNeural');
+  const [ttsSelectedProvider, setTtsSelectedProvider] = useState<string>('edge');
+  const [ttsPauseDuration, setTtsPauseDuration] = useState<number>(0.4);
+  const [ttsTargetFormat, setTtsTargetFormat] = useState<string>('mp3');
+  const [isTtsPreviewLoading, setIsTtsPreviewLoading] = useState<boolean>(false);
+  const [ttsPreviewAudioUrl, setTtsPreviewAudioUrl] = useState<string | null>(null);
+  const [isTtsGenerating, setIsTtsGenerating] = useState<boolean>(false);
+  const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
+  const [editingTtsSegmentId, setEditingTtsSegmentId] = useState<string | null>(null);
+  const [editingTtsSegmentText, setEditingTtsSegmentText] = useState<string>('');
+  const [playingSegmentId, setPlayingSegmentId] = useState<string | null>(null);
+
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const segmentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Active Task & History
   const [activeTask, setActiveTask] = useState<ToolkitTask | null>(null);
@@ -136,6 +159,32 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     fetchCapabilities();
     fetchTasks();
   }, [fetchCapabilities, fetchTasks]);
+
+  // Load TTS voices when language or tool changes (Phase 13E.3)
+  const fetchTtsVoices = useCallback(async (lang: string) => {
+    try {
+      const voices = await api.getToolkitVoices(lang);
+      setTtsVoices(voices);
+      if (voices.length > 0) {
+        const matchingCurrent = voices.find(
+          (v) => v.voice === ttsSelectedVoice && v.provider === ttsSelectedProvider
+        );
+        if (!matchingCurrent) {
+          const firstAvailable = voices.find((v) => v.is_available) || voices[0];
+          setTtsSelectedVoice(firstAvailable.voice);
+          setTtsSelectedProvider(firstAvailable.provider);
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to load TTS voices:', err);
+    }
+  }, [ttsSelectedVoice, ttsSelectedProvider]);
+
+  useEffect(() => {
+    if (selectedTool === 'text_to_speech') {
+      fetchTtsVoices(ttsLanguage);
+    }
+  }, [selectedTool, ttsLanguage, fetchTtsVoices]);
 
   // Handle Drag & Drop
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -379,12 +428,126 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const full = await api.getToolkitTask(task.id);
       setActiveTask(full);
       // Auto-switch selected tool if matching
-      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text'].includes(full.tool_type)) {
+      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech'].includes(full.tool_type)) {
         setSelectedTool(full.tool_type);
+        if (full.tool_type === 'text_to_speech' && full.full_text) {
+          setTtsText(full.full_text);
+        }
       }
     } catch (err: any) {
       console.error('Failed to load task details:', err);
       setActiveTask(task);
+    }
+  };
+
+  // Text-to-Speech Studio Handlers (Phase 13E.3)
+  const handleVoiceChange = (compositeVal: string) => {
+    const [p, ...rest] = compositeVal.split(':');
+    const v = rest.join(':');
+    setTtsSelectedProvider(p);
+    setTtsSelectedVoice(v);
+  };
+
+  const handlePreviewTts = async () => {
+    setError(null);
+    if (!ttsText.trim()) {
+      setError('Please enter some text to preview speech.');
+      return;
+    }
+    try {
+      setIsTtsPreviewLoading(true);
+      const blob = await api.previewToolkitTTS({
+        text: ttsText.slice(0, 200),
+        provider: ttsSelectedProvider,
+        voice: ttsSelectedVoice,
+        language: ttsLanguage,
+      });
+      const url = URL.createObjectURL(blob);
+      setTtsPreviewAudioUrl(url);
+      if (previewAudioRef.current) {
+        previewAudioRef.current.src = url;
+        previewAudioRef.current.play().catch((e) => console.warn('Preview play error:', e));
+      }
+    } catch (err: any) {
+      console.error('TTS preview failed:', err);
+      setError(err.message || 'TTS preview failed.');
+    } finally {
+      setIsTtsPreviewLoading(false);
+    }
+  };
+
+  const handleGenerateTts = async () => {
+    setError(null);
+    if (!ttsText.trim()) {
+      setError('Please enter text to generate speech narration.');
+      return;
+    }
+    try {
+      setIsTtsGenerating(true);
+      setStatusMessage('Synthesizing speech segments and assembling narration audio...');
+      const task = await api.generateToolkitTTS({
+        text: ttsText,
+        provider: ttsSelectedProvider,
+        voice: ttsSelectedVoice,
+        language: ttsLanguage,
+        target_format: ttsTargetFormat,
+        pause_duration_seconds: ttsPauseDuration,
+      });
+      setActiveTask(task);
+      await fetchTasks();
+      setStatusMessage('Speech narration generated and assembled successfully!');
+    } catch (err: any) {
+      console.error('TTS generation failed:', err);
+      setError(err.message || 'Failed to generate speech narration.');
+    } finally {
+      setIsTtsGenerating(false);
+      setTimeout(() => setStatusMessage(''), 3000);
+    }
+  };
+
+  const handleStartEditTtsSegment = (segId: string, currentText: string) => {
+    setEditingTtsSegmentId(segId);
+    setEditingTtsSegmentText(currentText);
+  };
+
+  const handleCancelEditTtsSegment = () => {
+    setEditingTtsSegmentId(null);
+    setEditingTtsSegmentText('');
+  };
+
+  const handleRegenerateTtsSegment = async (segmentId: string, textToUse?: string) => {
+    if (!activeTask) return;
+    setError(null);
+    try {
+      setRegeneratingSegmentId(segmentId);
+      const updated = await api.regenerateToolkitTTSSegment(activeTask.id, segmentId, {
+        text: textToUse,
+        pause_duration_seconds: ttsPauseDuration,
+      });
+      setActiveTask(updated);
+      setEditingTtsSegmentId(null);
+      await fetchTasks();
+    } catch (err: any) {
+      console.error('Segment regeneration failed:', err);
+      setError(err.message || 'Failed to regenerate segment.');
+    } finally {
+      setRegeneratingSegmentId(null);
+    }
+  };
+
+  const handlePlayTtsSegment = (taskId: string, segmentId: string) => {
+    if (playingSegmentId === segmentId) {
+      if (segmentAudioRef.current) {
+        segmentAudioRef.current.pause();
+      }
+      setPlayingSegmentId(null);
+    } else {
+      const url = api.getToolkitTTSSegmentStreamUrl(taskId, segmentId);
+      if (segmentAudioRef.current) {
+        segmentAudioRef.current.src = url;
+        segmentAudioRef.current.play().catch((e) => console.warn('Segment play error:', e));
+      }
+      setPlayingSegmentId(segmentId);
     }
   };
 
@@ -473,9 +636,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     {
       id: 'text_to_speech',
       title: 'Text to Speech Studio',
-      desc: 'Generate natural Khmer speech using Google Khmer, Edge Piseth/Sreymom, or VoxCPM2.',
+      desc: 'Generate natural Khmer & English speech using Google Khmer, Edge Piseth/Sreymom/Aria/Guy, or VoxCPM2 voice cloning.',
       icon: Mic2,
-      status: 'planned' as const,
+      status: 'available' as const,
       phase: 'Phase 13E.3',
     },
     {
@@ -1445,6 +1608,550 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             )}
           </div>
         </div>
+      ) : selectedTool === 'text_to_speech' ? (
+        /* Standalone Text-to-Speech Studio (Phase 13E.3) */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          <audio
+            ref={previewAudioRef}
+            onEnded={() => setTtsPreviewAudioUrl(null)}
+          />
+          <audio
+            ref={segmentAudioRef}
+            onEnded={() => setPlayingSegmentId(null)}
+            onError={() => setPlayingSegmentId(null)}
+          />
+
+          {/* Left Column: Input Configuration */}
+          <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Mic2 className="w-5 h-5 text-indigo-600" />
+                  Text to Speech Studio
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Convert multi-sentence text into segmented speech and assembled narration.
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Phase 13E.3
+              </span>
+            </div>
+
+            {/* Language Selection */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700">Language</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTtsLanguage('km')}
+                  className={`py-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                    ttsLanguage === 'km'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  🇰🇭 Khmer (Default)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtsLanguage('en')}
+                  className={`py-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                    ttsLanguage === 'en'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  🇺🇸 English
+                </button>
+              </div>
+            </div>
+
+            {/* Voice Selection */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-700">Voice Profile</label>
+                <span className="text-[11px] text-slate-400">
+                  {ttsVoices.length} voices available
+                </span>
+              </div>
+              <select
+                value={`${ttsSelectedProvider}:${ttsSelectedVoice}`}
+                onChange={(e) => handleVoiceChange(e.target.value)}
+                className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+              >
+                <optgroup label="Standard System Voices">
+                  {ttsVoices
+                    .filter((v) => !v.is_custom)
+                    .map((v) => (
+                      <option
+                        key={`${v.provider}:${v.voice}`}
+                        value={`${v.provider}:${v.voice}`}
+                        disabled={!v.is_available}
+                      >
+                        {v.label} ({v.gender}, {v.language.toUpperCase()})
+                      </option>
+                    ))}
+                </optgroup>
+                {ttsVoices.some((v) => v.is_custom) && (
+                  <optgroup label="Authorized Custom Cloned Voices (VoxCPM2 GPU)">
+                    {ttsVoices
+                      .filter((v) => v.is_custom)
+                      .map((v) => (
+                        <option
+                          key={`${v.provider}:${v.voice}`}
+                          value={`${v.provider}:${v.voice}`}
+                          disabled={!v.is_available}
+                        >
+                          {v.label} ({v.gender}) {!v.is_available ? '(Worker Offline)' : '• Ready'}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+              </select>
+
+              {/* Selected Voice Details Card */}
+              {(() => {
+                const currentVoiceObj = ttsVoices.find(
+                  (v) => v.voice === ttsSelectedVoice && v.provider === ttsSelectedProvider
+                );
+                return (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-800">
+                            {currentVoiceObj?.label || ttsSelectedVoice}
+                          </span>
+                          {currentVoiceObj?.is_custom ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
+                              Custom Clone
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-200 text-slate-700">
+                              {currentVoiceObj?.provider.toUpperCase()}
+                            </span>
+                          )}
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              currentVoiceObj?.is_available
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                            }`}
+                          >
+                            {currentVoiceObj?.is_available ? 'Online' : 'Offline'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          {currentVoiceObj?.description || 'Natural speech synthesis voice'}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handlePreviewTts}
+                        disabled={isTtsPreviewLoading || !currentVoiceObj?.is_available}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="Preview this voice"
+                      >
+                        {isTtsPreviewLoading ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Volume2 className="w-3.5 h-3.5" />
+                        )}
+                        <span>Preview</span>
+                      </button>
+                    </div>
+
+                    {ttsPreviewAudioUrl && (
+                      <div className="pt-2 border-t border-slate-200">
+                        <audio controls src={ttsPreviewAudioUrl} className="w-full h-8" autoPlay />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Input Textarea with Presets */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-700">Narration Script</label>
+                <span className="text-[11px] text-slate-400">
+                  {ttsText.trim().split(/\s+/).filter(Boolean).length} words • {ttsText.length} chars
+                </span>
+              </div>
+
+              {/* Sample presets */}
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="text-slate-400">Samples:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtsLanguage('km');
+                    setTtsText(
+                      'សួស្តីបងប្អូនទាំងអស់គ្នា។ សូមស្វាគមន៍មកកាន់ KhmerDub AI។ ថ្ងៃនេះយើងសាកល្បងបង្កើតសំឡេងនិយាយដោយស្វ័យប្រវត្តិ។'
+                    );
+                  }}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                >
+                  Khmer Intro
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtsLanguage('km');
+                    setTtsText(
+                      'កាលពីព្រេងនាយ មានកុមារាម្នាក់រស់នៅតាមជនបទដ៏ស្រស់ស្អាត។ គាត់តែងតែឧស្សាហ៍ព្យាយាមរៀនសូត្ររាល់ថ្ងៃ។ ដោយសារការតស៊ូ គាត់បានក្លាយជាមនុស្សជោគជ័យ។'
+                    );
+                  }}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                >
+                  Khmer Story
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtsLanguage('en');
+                    setTtsText(
+                      'Welcome to KhmerDub AI. Today we are testing standalone speech synthesis with multi-sentence segmentation and pause control. Everything sounds great.'
+                    );
+                  }}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                >
+                  English Sample
+                </button>
+              </div>
+
+              <textarea
+                value={ttsText}
+                onChange={(e) => setTtsText(e.target.value)}
+                placeholder="Enter or paste text to synthesize speech..."
+                rows={6}
+                className="w-full p-3 rounded-xl border border-slate-200 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 resize-y leading-relaxed"
+              />
+              <p className="text-[11px] text-slate-400">
+                Text is automatically divided into natural sentence segments (respecting Khmer «។», «៕», and punctuation) for clean pacing and individual regeneration.
+              </p>
+            </div>
+
+            {/* Speech Tuning Controls */}
+            <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-100">
+              {/* Pause Duration */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-700">Pause Interval</label>
+                  <span className="text-xs font-mono font-bold text-indigo-600">
+                    {ttsPauseDuration.toFixed(2)}s
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="1.5"
+                  step="0.05"
+                  value={ttsPauseDuration}
+                  onChange={(e) => setTtsPauseDuration(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-600 cursor-pointer"
+                />
+                <span className="text-[10px] text-slate-400 block">Silence between sentences</span>
+              </div>
+
+              {/* Output Audio Format */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700">Audio Format</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setTtsTargetFormat('mp3')}
+                    className={`py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                      ttsTargetFormat === 'mp3'
+                        ? 'bg-indigo-600 border-indigo-600 text-white'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    MP3 (192k)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTtsTargetFormat('wav')}
+                    className={`py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                      ttsTargetFormat === 'wav'
+                        ? 'bg-indigo-600 border-indigo-600 text-white'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    WAV (PCM)
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 block">Both MP3 & WAV are generated</span>
+              </div>
+            </div>
+
+            {/* Error Message */}
+            {error && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="leading-relaxed">{error}</span>
+              </div>
+            )}
+
+            {/* Generate Button */}
+            <button
+              type="button"
+              onClick={handleGenerateTts}
+              disabled={isTtsGenerating || !ttsText.trim()}
+              className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm transition-all shadow-md hover:shadow-indigo-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isTtsGenerating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Generating Narration...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Generate Speech Narration</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Right Column: Narration Player & Segment Breakdown */}
+          <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+            {activeTask && activeTask.tool_type === 'text_to_speech' ? (
+              <div className="space-y-6">
+                {/* Assembled Narration Header */}
+                <div className="border-b border-slate-100 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                      <FileAudio className="w-5 h-5 text-indigo-600" />
+                      Synthesized Narration
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Completed {activeTask.tts_segments?.length || 0} sentence segments • Pause: {activeTask.source_media_metadata?.pause_duration_seconds || activeTask.output_media_metadata?.pause_duration_seconds || 0.4}s
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={api.getToolkitTTSExportUrl(activeTask.id, 'mp3')}
+                      download={`narration_${activeTask.id.slice(0, 8)}.mp3`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-colors shadow-xs cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download MP3</span>
+                    </a>
+                    <a
+                      href={api.getToolkitTTSExportUrl(activeTask.id, 'wav')}
+                      download={`narration_${activeTask.id.slice(0, 8)}.wav`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>WAV (PCM)</span>
+                    </a>
+                  </div>
+                </div>
+
+                {/* Combined Narration Player Banner */}
+                <div className="bg-gradient-to-r from-slate-900 to-indigo-950 rounded-2xl p-5 text-white shadow-md space-y-3">
+                  <div className="flex items-center justify-between text-xs text-slate-300">
+                    <span className="font-semibold flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-indigo-400" />
+                      Narration Audio Track
+                    </span>
+                    <div className="flex items-center gap-2 font-mono text-[11px]">
+                      <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                        {formatDuration(activeTask.output_duration_seconds)}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                        {formatBytes(activeTask.output_file_size_bytes)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleTogglePlay(activeTask.id)}
+                      className="w-12 h-12 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center transition-all shadow-md shrink-0 cursor-pointer"
+                    >
+                      {playingTaskId === activeTask.id ? (
+                        <Pause className="w-5 h-5" />
+                      ) : (
+                        <Play className="w-5 h-5 ml-0.5" />
+                      )}
+                    </button>
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span>{playingTaskId === activeTask.id ? 'Playing Narration' : 'Click to Play Full Audio'}</span>
+                        <span className="font-mono">{formatDuration(activeTask.output_duration_seconds)}</span>
+                      </div>
+                      <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className={`bg-indigo-500 h-full ${
+                            playingTaskId === activeTask.id ? 'animate-pulse w-full' : 'w-0'
+                          }`}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Segments Breakdown */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-slate-900 text-sm">
+                      Individual Speech Segments ({activeTask.tts_segments?.length || 0})
+                    </h4>
+                    <span className="text-xs text-slate-400">
+                      Edit text & regenerate individual sentences
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+                    {(activeTask.tts_segments || []).map((seg) => {
+                      const isEditing = editingTtsSegmentId === seg.id;
+                      const isRegenerating = regeneratingSegmentId === seg.id;
+                      const isPlaying = playingSegmentId === seg.id;
+
+                      return (
+                        <div
+                          key={seg.id}
+                          className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-3 shadow-xs"
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-700 text-[11px]">
+                                #{seg.segment_order}
+                              </span>
+                              <span className="font-mono text-slate-400">
+                                {seg.duration_seconds ? `${seg.duration_seconds.toFixed(2)}s` : '--'}
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                  seg.status === 'completed'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                }`}
+                              >
+                                {seg.status}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              {/* Play individual segment */}
+                              <button
+                                type="button"
+                                onClick={() => handlePlayTtsSegment(activeTask.id, seg.id)}
+                                disabled={!seg.audio_file_path}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer disabled:opacity-40"
+                                title="Play segment"
+                              >
+                                {isPlaying ? (
+                                  <Pause className="w-3.5 h-3.5 text-indigo-600" />
+                                ) : (
+                                  <Play className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+
+                              {/* Edit segment text */}
+                              {!isEditing && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartEditTtsSegment(seg.id, seg.text)}
+                                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                  title="Edit sentence text"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
+                              {/* Download segment audio */}
+                              <a
+                                href={api.getToolkitTTSSegmentDownloadUrl(activeTask.id, seg.id)}
+                                download={`segment_${seg.segment_order}.wav`}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                title="Download segment audio"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          </div>
+
+                          {/* Segment Text or Edit Area */}
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <textarea
+                                value={editingTtsSegmentText}
+                                onChange={(e) => setEditingTtsSegmentText(e.target.value)}
+                                className="w-full p-2.5 rounded-lg border border-indigo-300 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
+                                rows={2}
+                                autoFocus
+                              />
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={handleCancelEditTtsSegment}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold cursor-pointer"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRegenerateTtsSegment(seg.id, editingTtsSegmentText)}
+                                  disabled={isRegenerating || !editingTtsSegmentText.trim()}
+                                  className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                                >
+                                  {isRegenerating ? (
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Save className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Save & Regenerate</span>
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-slate-800 text-sm leading-relaxed">{seg.text}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-12 text-center text-slate-400 space-y-4">
+                <Mic2 className="w-14 h-14 text-slate-300 mx-auto" />
+                <div className="space-y-1">
+                  <h4 className="font-semibold text-slate-700 text-base">Text-to-Speech Studio Ready</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                    Enter or paste your text on the left, pick from standard Google/Microsoft voices or authorized custom cloned voices, and click "Generate Speech Narration".
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3 max-w-sm mx-auto text-left text-[11px] text-slate-500 pt-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Khmer Unicode Safe</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Configurable Pauses</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Per-Segment Editing</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>MP3 & Lossless WAV</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       ) : null}
 
       {/* Task Workspace History Section */}
@@ -1535,7 +2242,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       <div className="flex items-center justify-end gap-1.5">
                         {task.status === 'completed' && (
                           <>
-                            {task.tool_type === 'video_to_audio' && (
+                            {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech') && (
                               <button
                                 onClick={() => {
                                   setActiveTask(task);

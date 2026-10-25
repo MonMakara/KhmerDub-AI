@@ -430,10 +430,37 @@ export interface ToolkitTranscriptSegment {
   updated_at: string;
 }
 
+export interface ToolkitTTSSegment {
+  id: string;
+  task_id: string;
+  segment_order: number;
+  text: string;
+  audio_file_path?: string | null;
+  duration_seconds?: number | null;
+  file_size_bytes?: number | null;
+  status: 'pending' | 'completed' | 'failed' | string;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TTSVoiceOption {
+  provider: string;
+  voice: string;
+  label: string;
+  gender: string;
+  language: string;
+  description?: string;
+  sample_rate?: number;
+  is_custom: boolean;
+  profile_id?: string;
+  is_available: boolean;
+}
+
 export interface ToolkitTask {
   id: string;
   tool_type: string;
-  source_type: 'upload' | 'project';
+  source_type: 'upload' | 'project' | 'direct_text';
   source_project_id?: string | null;
   source_filename: string;
   target_format: ToolkitTargetFormat;
@@ -448,6 +475,7 @@ export interface ToolkitTask {
   created_at: string;
   updated_at: string;
   segments?: ToolkitTranscriptSegment[];
+  tts_segments?: ToolkitTTSSegment[];
   full_text?: string | null;
 }
 

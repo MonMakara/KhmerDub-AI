@@ -34,6 +34,20 @@ SUPPORTED_EDGE_VOICES: Dict[str, Dict[str, str]] = {
         "label": "Microsoft Sreymom (Female)",
         "description": "Microsoft Edge Neural Voice (Female, friendly & positive)",
     },
+    "en-US-AriaNeural": {
+        "name": "Aria",
+        "gender": "female",
+        "language": "en-US",
+        "label": "Microsoft Aria (Female)",
+        "description": "Microsoft Edge Neural Voice (Female, clear & natural)",
+    },
+    "en-US-GuyNeural": {
+        "name": "Guy",
+        "gender": "male",
+        "language": "en-US",
+        "label": "Microsoft Guy (Male)",
+        "description": "Microsoft Edge Neural Voice (Male, clear & natural)",
+    },
 }
 
 DEFAULT_EDGE_VOICE = "km-KH-PisethNeural"

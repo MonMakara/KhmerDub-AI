@@ -16,6 +16,7 @@ AVAILABLE_VOICES: List[Dict[str, Any]] = [
         "voice": "default",
         "label": "Google Khmer (Default)",
         "gender": "neutral",
+        "language": "km",
         "description": "Standard Google Translate Khmer online voice",
         "sample_rate": 24000,
         "is_custom": False,
@@ -26,6 +27,7 @@ AVAILABLE_VOICES: List[Dict[str, Any]] = [
         "voice": "km-KH-PisethNeural",
         "label": "Microsoft Piseth (Male)",
         "gender": "male",
+        "language": "km",
         "description": "Microsoft Edge Neural Voice (Male, friendly & natural)",
         "sample_rate": 24000,
         "is_custom": False,
@@ -36,7 +38,30 @@ AVAILABLE_VOICES: List[Dict[str, Any]] = [
         "voice": "km-KH-SreymomNeural",
         "label": "Microsoft Sreymom (Female)",
         "gender": "female",
+        "language": "km",
         "description": "Microsoft Edge Neural Voice (Female, expressive & natural)",
+        "sample_rate": 24000,
+        "is_custom": False,
+        "is_available": True,
+    },
+    {
+        "provider": "edge",
+        "voice": "en-US-AriaNeural",
+        "label": "Microsoft Aria (Female)",
+        "gender": "female",
+        "language": "en",
+        "description": "Microsoft Edge Neural Voice (English US, clear & natural)",
+        "sample_rate": 24000,
+        "is_custom": False,
+        "is_available": True,
+    },
+    {
+        "provider": "edge",
+        "voice": "en-US-GuyNeural",
+        "label": "Microsoft Guy (Male)",
+        "gender": "male",
+        "language": "en",
+        "description": "Microsoft Edge Neural Voice (English US, clear & natural)",
         "sample_rate": 24000,
         "is_custom": False,
         "is_available": True,
@@ -47,8 +72,8 @@ DEFAULT_PROVIDER = "gtts"
 DEFAULT_VOICE = "default"
 
 
-def list_supported_voices(db: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """Return all available Khmer TTS voices with metadata, including authorized custom voice profiles."""
+def list_supported_voices(db: Optional[Any] = None, language: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return all available TTS voices with metadata, filtered optionally by language ('km' or 'en')."""
     voices = [dict(v) for v in AVAILABLE_VOICES]
 
     # Query active, legally authorized custom voice profiles if database session or connection is available
@@ -99,12 +124,17 @@ def list_supported_voices(db: Optional[Any] = None) -> List[Dict[str, Any]]:
                     "voice": profile.id,
                     "label": f"{profile.name} (Custom Clone)",
                     "gender": profile.gender or "custom",
+                    "language": profile.language or "km",
                     "description": f"Custom voice cloned from authorized speaker '{speaker_name}' using VoxCPM2 GPU inference",
                     "sample_rate": profile.reference_audio_sample_rate or 48000,
                     "is_custom": True,
                     "profile_id": profile.id,
                     "is_available": worker_online,
                 })
+
+    if language:
+        clean_lang = language.strip().lower()
+        voices = [v for v in voices if v.get("language", "km") == clean_lang]
 
     return voices
 

@@ -29,6 +29,7 @@ import {
   ToolkitTask,
   ToolkitTranscriptSegment,
   ToolkitCapabilities,
+  TTSVoiceOption,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -916,5 +917,87 @@ export const api = {
 
   getToolkitExportUrl(taskId: string, format: string): string {
     return `${API_BASE}/toolkit/tasks/${taskId}/export/${format}`;
+  },
+
+  // Standalone Text-to-Speech Studio API methods (Phase 13E.3)
+  async getToolkitVoices(language?: string): Promise<TTSVoiceOption[]> {
+    const url = language
+      ? `${API_BASE}/toolkit/tts/voices?language=${encodeURIComponent(language)}`
+      : `${API_BASE}/toolkit/tts/voices`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to list TTS voices: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async previewToolkitTTS(data: {
+    text: string;
+    provider: string;
+    voice: string;
+    language?: string;
+  }): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/toolkit/tts/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `TTS preview failed: ${res.statusText}`);
+    }
+    return res.blob();
+  },
+
+  async generateToolkitTTS(data: {
+    text: string;
+    provider: string;
+    voice: string;
+    language?: string;
+    target_format?: string;
+    pause_duration_seconds?: number;
+  }): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/tts/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `TTS generation failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async regenerateToolkitTTSSegment(
+    taskId: string,
+    segmentId: string,
+    data?: { text?: string; pause_duration_seconds?: number }
+  ): Promise<ToolkitTask> {
+    const res = await fetch(
+      `${API_BASE}/toolkit/tts/tasks/${taskId}/segments/${segmentId}/regenerate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data || {}),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Segment regeneration failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getToolkitTTSSegmentStreamUrl(taskId: string, segmentId: string): string {
+    return `${API_BASE}/toolkit/tts/tasks/${taskId}/segments/${segmentId}/stream`;
+  },
+
+  getToolkitTTSSegmentDownloadUrl(taskId: string, segmentId: string): string {
+    return `${API_BASE}/toolkit/tts/tasks/${taskId}/segments/${segmentId}/download`;
+  },
+
+  getToolkitTTSExportUrl(taskId: string, format: string): string {
+    return `${API_BASE}/toolkit/tts/tasks/${taskId}/export?format=${format}`;
   },
 };

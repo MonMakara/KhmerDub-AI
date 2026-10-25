@@ -155,6 +155,7 @@ class VoiceOptionResponse(BaseModel):
     label: str
     gender: str
     description: str
+    language: Optional[str] = "km"
     sample_rate: Optional[int] = 24000
     is_custom: Optional[bool] = False
     profile_id: Optional[str] = None
