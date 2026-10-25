@@ -34,6 +34,10 @@ from app.schemas.project import (
     SubtitleSegmentItem,
     SubtitleListResponse,
     SubtitleSegmentUpdate,
+    SubtitleAutoSplitRequest,
+    SubtitleManualSplitRequest,
+    SubtitleMergeRequest,
+    SubtitleKeepEditsRequest,
     SubtitleResetResponse,
 )
 

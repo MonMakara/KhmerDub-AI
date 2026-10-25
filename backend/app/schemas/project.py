@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, field_validator
 from app.models.project import ProjectStatus, JobStatus
 
@@ -333,8 +333,12 @@ class SubtitleSegmentItem(BaseModel):
     end_time: float
     text: str
     source_text: Optional[str] = None
+    source_segment_order: Optional[int] = None
+    timing_confidence: Optional[str] = "verified"  # "verified", "estimated", "manual"
+    is_source_outdated: bool = False
     is_customized: bool = False
     language: str = "km"
+    readability: Optional[Dict[str, Any]] = None
 
 
 class SubtitleListResponse(BaseModel):
@@ -346,7 +350,29 @@ class SubtitleListResponse(BaseModel):
 
 
 class SubtitleSegmentUpdate(BaseModel):
-    text: str
+    text: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    language: Optional[str] = "km"
+
+
+class SubtitleAutoSplitRequest(BaseModel):
+    language: Optional[str] = "km"
+    max_chars: Optional[int] = 75
+    max_duration: Optional[float] = 6.5
+
+
+class SubtitleManualSplitRequest(BaseModel):
+    language: Optional[str] = "km"
+    split_index: Optional[int] = None
+    split_ratio: Optional[float] = 0.5
+
+
+class SubtitleMergeRequest(BaseModel):
+    language: Optional[str] = "km"
+
+
+class SubtitleKeepEditsRequest(BaseModel):
     language: Optional[str] = "km"
 
 

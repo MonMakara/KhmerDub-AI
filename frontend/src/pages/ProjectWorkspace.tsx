@@ -93,10 +93,13 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [subtitleLanguage, setSubtitleLanguage] = useState<'km' | 'en'>('km');
   const [inPlayerSubtitleLang, setInPlayerSubtitleLang] = useState<'off' | 'km' | 'en'>('km');
   const [subtitleStyles, setSubtitleStyles] = useState<SubtitleStylePreferences>({
+    preset: 'standard',
     fontSize: 'base',
     textColor: 'white',
+    position: 'bottom',
     bgOpacity: 0.75,
-    bottomMargin: 10,
+    bottomMargin: 12,
+    shadow: false,
   });
 
   // Global AI Modal (opened from Voice or Export tab)

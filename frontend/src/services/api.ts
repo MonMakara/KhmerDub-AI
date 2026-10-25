@@ -560,20 +560,130 @@ export const api = {
   async updateSubtitleSegment(
     projectId: string,
     segmentOrder: number,
-    text: string,
-    language: string = 'km'
+    payload: {
+      text?: string;
+      start_time?: number;
+      end_time?: number;
+      language?: string;
+    }
   ): Promise<SubtitleSegment> {
     const res = await fetch(
       `${API_BASE}/projects/${projectId}/subtitles/${segmentOrder}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, language }),
+        body: JSON.stringify(payload),
       }
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Failed to update subtitle: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async autoSplitSubtitles(
+    projectId: string,
+    language: string = 'km',
+    maxChars: number = 75,
+    maxDuration: number = 6.5
+  ): Promise<SubtitleListResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/subtitles/auto-split`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        language,
+        max_chars: maxChars,
+        max_duration: maxDuration,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to auto-split subtitles: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async splitSubtitleCue(
+    projectId: string,
+    segmentOrder: number,
+    language: string = 'km',
+    splitIndex?: number,
+    splitRatio: number = 0.5
+  ): Promise<SubtitleListResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles/${segmentOrder}/split`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          language,
+          split_index: splitIndex,
+          split_ratio: splitRatio,
+        }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to split subtitle cue: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async mergeSubtitleCue(
+    projectId: string,
+    segmentOrder: number,
+    language: string = 'km'
+  ): Promise<SubtitleListResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles/${segmentOrder}/merge`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to merge subtitle cue: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async keepSubtitleEdits(
+    projectId: string,
+    segmentOrder: number,
+    language: string = 'km'
+  ): Promise<SubtitleListResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles/${segmentOrder}/keep`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ language }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to keep subtitle edits: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async resetSubtitleCue(
+    projectId: string,
+    segmentOrder: number,
+    language: string = 'km'
+  ): Promise<SubtitleListResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles/${segmentOrder}/reset?language=${encodeURIComponent(language)}`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to reset subtitle cue: ${res.statusText}`);
     }
     return res.json();
   },

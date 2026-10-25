@@ -201,6 +201,10 @@ class SubtitleSegment(Base):
     start_time = Column(Float, nullable=False)
     end_time = Column(Float, nullable=False)
     text = Column(Text, nullable=False)
+    source_segment_order = Column(Integer, nullable=True)
+    source_text_hash = Column(String(64), nullable=True)
+    timing_confidence = Column(String(20), default="verified", nullable=False)  # "verified", "estimated", "manual"
+    is_source_outdated = Column(Boolean, default=False, nullable=False)
     is_customized = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

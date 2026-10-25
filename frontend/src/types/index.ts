@@ -295,6 +295,15 @@ export interface ProjectDeleteResponse {
   deleted_files_count: number;
 }
 
+export interface SubtitleReadabilityMetrics {
+  duration: number;
+  character_count: number;
+  line_count: number;
+  characters_per_second: number;
+  warnings: string[];
+  has_warnings: boolean;
+}
+
 export interface SubtitleSegment {
   id: string;
   segment_order: number;
@@ -302,8 +311,12 @@ export interface SubtitleSegment {
   end_time: number;
   text: string;
   source_text?: string | null;
+  source_segment_order?: number | null;
+  timing_confidence?: 'verified' | 'estimated' | 'manual';
+  is_source_outdated?: boolean;
   is_customized: boolean;
   language: string;
+  readability?: SubtitleReadabilityMetrics;
 }
 
 export interface SubtitleListResponse {
@@ -315,9 +328,12 @@ export interface SubtitleListResponse {
 }
 
 export interface SubtitleStylePreferences {
+  preset: 'standard' | 'cinema' | 'custom';
   fontSize: 'sm' | 'base' | 'lg' | 'xl';
-  textColor: 'white' | 'yellow' | 'cyan';
+  textColor: 'white' | 'yellow' | 'cyan' | 'green';
+  position: 'bottom' | 'top' | 'middle';
   bgOpacity: number;
   bottomMargin: number;
+  shadow: boolean;
 }
 

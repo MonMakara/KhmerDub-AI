@@ -224,24 +224,48 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
             {activeSubtitle && (
               <div
                 data-testid="video-subtitle-overlay"
-                className="absolute left-4 right-4 text-center pointer-events-none transition-all z-20 flex justify-center"
-                style={{ bottom: `${subtitleStyles?.bottomMargin ?? 10}px` }}
+                className={`absolute left-4 right-4 text-center pointer-events-none transition-all z-20 flex justify-center ${
+                  subtitleStyles?.position === 'top'
+                    ? 'top-4'
+                    : subtitleStyles?.position === 'middle'
+                    ? 'top-1/2 -translate-y-1/2'
+                    : ''
+                }`}
+                style={
+                  subtitleStyles?.position === 'top' || subtitleStyles?.position === 'middle'
+                    ? {}
+                    : { bottom: `${subtitleStyles?.bottomMargin ?? 12}px` }
+                }
               >
                 <div
-                  className={`px-3.5 py-1.5 rounded-lg max-w-[85%] inline-block shadow-lg leading-relaxed select-none ${
+                  className={`px-4 py-1.5 rounded-lg max-w-[88%] inline-block leading-relaxed select-none transition-all ${
                     activeSubtitle.language === 'km' ? 'font-khmer font-medium' : 'font-sans'
+                  } ${
+                    subtitleStyles?.preset === 'cinema'
+                      ? 'drop-shadow-[0_2px_4px_rgba(0,0,0,0.95)]'
+                      : 'shadow-lg'
                   }`}
                   style={{
                     backgroundColor:
-                      subtitleStyles?.bgOpacity === 0
+                      subtitleStyles?.preset === 'cinema'
+                        ? 'transparent'
+                        : subtitleStyles?.bgOpacity === 0
                         ? 'transparent'
                         : `rgba(0, 0, 0, ${subtitleStyles?.bgOpacity ?? 0.75})`,
                     color:
-                      subtitleStyles?.textColor === 'yellow'
+                      subtitleStyles?.preset === 'cinema'
+                        ? '#facc15'
+                        : subtitleStyles?.textColor === 'yellow'
                         ? '#facc15'
                         : subtitleStyles?.textColor === 'cyan'
                         ? '#38bdf8'
+                        : subtitleStyles?.textColor === 'green'
+                        ? '#4ade80'
                         : '#ffffff',
+                    textShadow:
+                      subtitleStyles?.preset === 'cinema' || subtitleStyles?.shadow
+                        ? '2px 2px 4px rgba(0,0,0,0.95), -1px -1px 2px rgba(0,0,0,0.85), 0 0 6px rgba(0,0,0,0.9)'
+                        : 'none',
                     fontSize:
                       subtitleStyles?.fontSize === 'sm'
                         ? '0.875rem'
