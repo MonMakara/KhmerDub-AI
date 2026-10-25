@@ -1,8 +1,10 @@
 import json
 import logging
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -164,14 +166,20 @@ class VoxCPM2TTSProvider(TTSProvider):
 
         active_worker_url = health.get("url", self.worker_url)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            output_path.parent.chmod(0o777)
+        except OSError:
+            pass
 
-        # Intermediate WAV path if destination is MP3
+        # Intermediate WAV path in shared temporary storage (guaranteed accessible across Docker and host)
+        settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            settings.TEMP_DIR.chmod(0o777)
+        except OSError:
+            pass
+        temp_wav_path = settings.TEMP_DIR / f"voxcpm_{uuid.uuid4().hex}.wav"
+
         wants_mp3 = output_path.suffix.lower() == ".mp3"
-        temp_wav_path = (
-            output_path.with_suffix(".temp.wav")
-            if wants_mp3
-            else output_path
-        )
 
         payload = {
             "text": clean_text,
@@ -220,19 +228,34 @@ class VoxCPM2TTSProvider(TTSProvider):
             logger.exception("Unexpected error communicating with VoxCPM worker: %s", e)
             raise TTSGenerationError(f"Inference worker communication error: {e}")
 
-        # Step 5: Verify Generated Audio & Transcode if Output Requires MP3
-        if not temp_wav_path.exists() or temp_wav_path.stat().st_size < 44:
+        # Step 5: Verify Generated Audio & Transcode to Output Path
+        worker_returned_path_str = resp_data.get("output_audio_path")
+        actual_wav_path = temp_wav_path
+        if worker_returned_path_str:
+            candidate = Path(worker_returned_path_str)
+            if candidate.exists():
+                actual_wav_path = candidate
+            else:
+                # In case worker returned host path, map it to container /app/data/...
+                clean_c = str(candidate)
+                if "/data/" in clean_c:
+                    sub = clean_c[clean_c.index("/data/") :]
+                    container_p = Path(f"/app{sub}")
+                    if container_p.exists():
+                        actual_wav_path = container_p
+
+        if not actual_wav_path.exists() or actual_wav_path.stat().st_size < 44:
             raise TTSGenerationError(
-                f"Generated audio file missing or empty at {temp_wav_path}."
+                f"Generated audio file missing or empty at {actual_wav_path}."
             )
 
-        if wants_mp3:
-            try:
+        try:
+            if wants_mp3:
                 # Transcode 48 kHz WAV to clean 192k MP3 using FFmpeg
                 cmd = [
                     self.video_processor.ffmpeg_bin,
                     "-y",
-                    "-i", str(temp_wav_path),
+                    "-i", str(actual_wav_path),
                     "-codec:a", "libmp3lame",
                     "-b:a", "192k",
                     str(output_path),
@@ -240,10 +263,18 @@ class VoxCPM2TTSProvider(TTSProvider):
                 res = subprocess.run(cmd, capture_output=True, text=True, check=False)
                 if res.returncode != 0:
                     raise RuntimeError(f"FFmpeg transcode error: {res.stderr}")
-            finally:
-                if temp_wav_path.exists() and temp_wav_path != output_path:
+            else:
+                shutil.copyfile(str(actual_wav_path), str(output_path))
+
+            try:
+                output_path.chmod(0o666)
+            except OSError:
+                pass
+        finally:
+            for p in (actual_wav_path, temp_wav_path):
+                if p and p.exists() and p != output_path:
                     try:
-                        temp_wav_path.unlink()
+                        p.unlink()
                     except OSError:
                         pass
 

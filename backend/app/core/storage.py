@@ -21,47 +21,51 @@ def sanitize_project_id(project_id: str) -> str:
     return sanitized
 
 
+def _ensure_writable_dir(path: Path) -> Path:
+    """Ensure directory exists and has permissive permissions across Docker and host boundaries."""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o777)
+    except OSError:
+        pass
+    return path
+
+
 def get_project_base_dir(project_id: str) -> Path:
     """Return root directory for project-specific storage: data/projects/{project_id}/."""
     safe_id = sanitize_project_id(project_id)
     base = settings.DATA_DIR / "projects" / safe_id
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+    return _ensure_writable_dir(base)
 
 
 def get_project_original_dir(project_id: str) -> Path:
     """Return directory for original uploaded video: data/projects/{project_id}/original/."""
     d = get_project_base_dir(project_id) / "original"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _ensure_writable_dir(d)
 
 
 def get_project_extracted_dir(project_id: str) -> Path:
     """Return directory for extracted audio: data/projects/{project_id}/extracted/."""
     d = get_project_base_dir(project_id) / "extracted"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _ensure_writable_dir(d)
 
 
 def get_project_generated_audio_dir(project_id: str) -> Path:
     """Return directory for persistent TTS speech segments: data/projects/{project_id}/generated_audio/."""
     d = get_project_base_dir(project_id) / "generated_audio"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _ensure_writable_dir(d)
 
 
 def get_project_output_dir(project_id: str) -> Path:
     """Return directory for final synchronized audio and video exports: data/projects/{project_id}/output/."""
     d = get_project_base_dir(project_id) / "output"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _ensure_writable_dir(d)
 
 
 def get_project_subtitles_dir(project_id: str) -> Path:
     """Return directory for subtitle files: data/projects/{project_id}/subtitles/."""
     d = get_project_base_dir(project_id) / "subtitles"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return _ensure_writable_dir(d)
 
 
 def get_subtitle_file_path(project_id: str, language: str, format: str) -> Path:

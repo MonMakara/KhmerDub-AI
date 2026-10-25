@@ -228,16 +228,25 @@ async def synthesize_khmer_speech(
             detail=f"Reference audio file is invalid or empty at {ref_host_path}",
         )
 
+    # Ensure shared temp dir exists with permissive permissions
+    temp_dir = DATA_DIR / "temp" / "voxcpm_worker"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        temp_dir.chmod(0o777)
+    except OSError:
+        pass
+
     # Determine output destination path
     if payload.output_audio_path:
         out_host_path = resolve_path(payload.output_audio_path)
     else:
         # Default fallback to temp dir
-        temp_dir = DATA_DIR / "temp" / "voxcpm_worker"
-        temp_dir.mkdir(parents=True, exist_ok=True)
         out_host_path = temp_dir / f"cloned_{int(time.time()*1000)}.wav"
 
-    out_host_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out_host_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
 
     # Ensure model is ready
     model = await get_or_load_model()
@@ -280,7 +289,17 @@ async def synthesize_khmer_speech(
 
             # Write standard 48 kHz studio mono 16-bit PCM WAV
             sample_rate = 48000
-            sf.write(str(out_host_path), wav, sample_rate, subtype="PCM_16")
+            try:
+                sf.write(str(out_host_path), wav, sample_rate, subtype="PCM_16")
+            except Exception as write_err:
+                logger.warning(
+                    "Primary write to '%s' failed (%s). Writing to fallback in temp_dir.",
+                    out_host_path,
+                    write_err,
+                )
+                fallback_path = temp_dir / f"fallback_{int(time.time()*1000)}_{out_host_path.name}"
+                sf.write(str(fallback_path), wav, sample_rate, subtype="PCM_16")
+                out_host_path = fallback_path
 
             # Verify generated file
             data, sr = sf.read(str(out_host_path))
