@@ -6,6 +6,7 @@ providing reference-conditioned Khmer voice cloning on the NVIDIA RTX 4060 GPU.
 
 import asyncio
 import gc
+import hashlib
 import logging
 import os
 import re
@@ -94,6 +95,54 @@ def resolve_path(path_str: str) -> Path:
         )
 
     return resolved
+
+
+def get_optimized_reference_path(ref_path: Path, max_duration_sec: float = 15.0) -> Path:
+    """Ensure reference audio does not exceed max_duration_sec to prevent CUDA OOM on long recordings.
+
+    VoxCPM2 achieves optimal voice conditioning on 5-15s samples. Excessively long reference
+    audio (e.g. 30-60s) causes O(N^2) memory explosion in the LLM prefill attention layers on 8GB GPUs.
+    Original reference audio files are never modified.
+    """
+    try:
+        info = sf.info(str(ref_path))
+        if info.duration <= max_duration_sec:
+            return ref_path
+
+        slices_dir = DATA_DIR / "temp" / "voxcpm_worker" / "ref_slices"
+        slices_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            slices_dir.chmod(0o777)
+        except OSError:
+            pass
+
+        ref_stat = ref_path.stat()
+        cache_key = hashlib.md5(
+            f"{ref_path.name}_{ref_stat.st_mtime}_{ref_stat.st_size}_{max_duration_sec}".encode()
+        ).hexdigest()
+        sliced_path = slices_dir / f"{ref_path.stem}_{cache_key[:12]}_{int(max_duration_sec)}s.wav"
+
+        if sliced_path.exists() and sliced_path.stat().st_size > 44:
+            return sliced_path
+
+        data, sr = sf.read(str(ref_path), stop=int(max_duration_sec * info.samplerate))
+        sf.write(str(sliced_path), data, sr, subtype="PCM_16")
+        try:
+            sliced_path.chmod(0o666)
+        except OSError:
+            pass
+
+        logger.info(
+            "Conditioning reference audio '%s' (%.1fs) safely capped to %.1fs at '%s' to protect VRAM.",
+            ref_path.name,
+            info.duration,
+            max_duration_sec,
+            sliced_path.name,
+        )
+        return sliced_path
+    except Exception as e:
+        logger.warning("Failed to optimize reference audio length (%s); falling back to original: %s", e, ref_path)
+        return ref_path
 
 
 def verify_internal_auth(x_internal_token: Optional[str] = Header(None)):
@@ -236,6 +285,9 @@ async def synthesize_khmer_speech(
     except OSError:
         pass
 
+    # Protect VRAM: automatically optimize reference audio duration (safe 15s conditioning slice)
+    conditioning_ref_path = get_optimized_reference_path(ref_host_path, max_duration_sec=15.0)
+
     # Determine output destination path
     if payload.output_audio_path:
         out_host_path = resolve_path(payload.output_audio_path)
@@ -273,14 +325,14 @@ async def synthesize_khmer_speech(
                 torch.cuda.reset_peak_memory_stats()
             t_gen_start = time.time()
 
-            logger.info("Starting synthesis: '%s' (ref: %s)", clean_text[:40], ref_host_path.name)
+            logger.info("Starting synthesis: '%s' (ref: %s)", clean_text[:40], conditioning_ref_path.name)
 
             def _run_inference():
                 with torch.inference_mode():
                     try:
                         return model.generate(
                             text=clean_text,
-                            reference_wav_path=str(ref_host_path),
+                            reference_wav_path=str(conditioning_ref_path),
                             cfg_value=payload.cfg_value,
                             inference_timesteps=payload.inference_timesteps,
                             normalize=False,
@@ -296,7 +348,7 @@ async def synthesize_khmer_speech(
                         time.sleep(0.3)
                         return model.generate(
                             text=clean_text,
-                            reference_wav_path=str(ref_host_path),
+                            reference_wav_path=str(conditioning_ref_path),
                             cfg_value=payload.cfg_value,
                             inference_timesteps=payload.inference_timesteps,
                             normalize=False,
