@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     Boolean,
+    UniqueConstraint,
     Enum as SQLEnum,
 )
 from sqlalchemy.orm import relationship
@@ -89,6 +90,12 @@ class Project(Base):
         "GeneratedAudio",
         back_populates="project",
         cascade="all, delete-orphan",
+    )
+    subtitle_segments = relationship(
+        "SubtitleSegment",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="SubtitleSegment.segment_order",
     )
 
 
@@ -182,3 +189,24 @@ class ProcessingJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="jobs")
+
+
+class SubtitleSegment(Base):
+    __tablename__ = "subtitle_segments"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = Column(String(36), ForeignKey("projects.id"), nullable=False)
+    language = Column(String(10), nullable=False)  # "en" or "km"
+    segment_order = Column(Integer, nullable=False)
+    start_time = Column(Float, nullable=False)
+    end_time = Column(Float, nullable=False)
+    text = Column(Text, nullable=False)
+    is_customized = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "language", "segment_order", name="uq_project_language_segment"),
+    )
+
+    project = relationship("Project", back_populates="subtitle_segments")

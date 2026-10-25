@@ -34,6 +34,7 @@ from app.models.project import (
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
+    SubtitleSegment,
     ProcessingJob,
     ProjectStatus,
     JobStatus,
@@ -330,6 +331,7 @@ def delete_project(
 
     # 4. Safe explicit database cleanup in foreign-key dependency order
     try:
+        db.query(SubtitleSegment).filter(SubtitleSegment.project_id == project_id).delete(synchronize_session=False)
         db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).delete(synchronize_session=False)
         db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).delete(synchronize_session=False)
         db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete(synchronize_session=False)

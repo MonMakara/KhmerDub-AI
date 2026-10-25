@@ -15,6 +15,7 @@ import {
   Film,
   Languages,
   Sliders,
+  Subtitles,
 } from 'lucide-react';
 import {
   TranscriptSegment,
@@ -34,6 +35,7 @@ export interface DubbingTimelineProps {
   onSelectSegment: (segmentId: string) => void;
   onSeek: (timeInSeconds: number) => void;
   onNavigateToTranslation?: (segmentId: string) => void;
+  onNavigateToSubtitles?: (segmentId: string) => void;
   onOpenAIImprove?: (segment: TranslationSegment) => void;
   isPlaying?: boolean;
 }
@@ -72,6 +74,7 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
   onSelectSegment,
   onSeek,
   onNavigateToTranslation,
+  onNavigateToSubtitles,
   onOpenAIImprove,
   isPlaying = false,
 }) => {
@@ -794,6 +797,19 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
                     <Languages className="w-3.5 h-3.5" />
                     <span>Edit Translation</span>
                     <ArrowRight className="w-3 h-3 text-slate-400 ml-0.5" />
+                  </button>
+                )}
+
+                {/* Edit in Subtitle Tab Action */}
+                {onNavigateToSubtitles && (
+                  <button
+                    data-testid="timeline-edit-subtitles-btn"
+                    onClick={() => onNavigateToSubtitles(selectedItem.id)}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 font-medium text-xs transition"
+                    title="Navigate to Subtitles Tab to format captions & line breaks"
+                  >
+                    <Subtitles className="w-3.5 h-3.5" />
+                    <span>Edit Subtitles</span>
                   </button>
                 )}
 

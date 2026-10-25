@@ -294,3 +294,30 @@ export interface ProjectDeleteResponse {
   id: string;
   deleted_files_count: number;
 }
+
+export interface SubtitleSegment {
+  id: string;
+  segment_order: number;
+  start_time: number;
+  end_time: number;
+  text: string;
+  source_text?: string | null;
+  is_customized: boolean;
+  language: string;
+}
+
+export interface SubtitleListResponse {
+  project_id: string;
+  language: string;
+  has_custom_edits: boolean;
+  total_segments: number;
+  segments: SubtitleSegment[];
+}
+
+export interface SubtitleStylePreferences {
+  fontSize: 'sm' | 'base' | 'lg' | 'xl';
+  textColor: 'white' | 'yellow' | 'cyan';
+  bgOpacity: number;
+  bottomMargin: number;
+}
+

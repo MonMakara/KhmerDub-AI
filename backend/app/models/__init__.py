@@ -6,6 +6,7 @@ from app.models.project import (
     TranslationSegment,
     ProcessingJob,
     GeneratedAudio,
+    SubtitleSegment,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "TranslationSegment",
     "ProcessingJob",
     "GeneratedAudio",
+    "SubtitleSegment",
 ]

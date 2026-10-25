@@ -324,3 +324,34 @@ class ProjectResponse(ProjectSummaryResponse):
     generated_audios: List[GeneratedAudioResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SubtitleSegmentItem(BaseModel):
+    id: str
+    segment_order: int
+    start_time: float
+    end_time: float
+    text: str
+    source_text: Optional[str] = None
+    is_customized: bool = False
+    language: str = "km"
+
+
+class SubtitleListResponse(BaseModel):
+    project_id: str
+    language: str
+    has_custom_edits: bool
+    total_segments: int
+    segments: List[SubtitleSegmentItem]
+
+
+class SubtitleSegmentUpdate(BaseModel):
+    text: str
+    language: Optional[str] = "km"
+
+
+class SubtitleResetResponse(BaseModel):
+    message: str
+    deleted_count: int
+    language: str
+

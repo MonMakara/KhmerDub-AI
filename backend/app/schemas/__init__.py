@@ -31,6 +31,10 @@ from app.schemas.project import (
     AlternativesResponse,
     ApplyTranslationRequest,
     ProjectTranslationSettingsUpdate,
+    SubtitleSegmentItem,
+    SubtitleListResponse,
+    SubtitleSegmentUpdate,
+    SubtitleResetResponse,
 )
 
 __all__ = [
@@ -66,4 +70,8 @@ __all__ = [
     "AlternativesResponse",
     "ApplyTranslationRequest",
     "ProjectTranslationSettingsUpdate",
+    "SubtitleSegmentItem",
+    "SubtitleListResponse",
+    "SubtitleSegmentUpdate",
+    "SubtitleResetResponse",
 ]

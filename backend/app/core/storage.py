@@ -57,6 +57,20 @@ def get_project_output_dir(project_id: str) -> Path:
     return d
 
 
+def get_project_subtitles_dir(project_id: str) -> Path:
+    """Return directory for subtitle files: data/projects/{project_id}/subtitles/."""
+    d = get_project_base_dir(project_id) / "subtitles"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_subtitle_file_path(project_id: str, language: str, format: str) -> Path:
+    """Return standard path for project-specific subtitle export file."""
+    safe_lang = re.sub(r"[^a-zA-Z0-9_-]", "", language.strip())
+    safe_fmt = re.sub(r"[^a-zA-Z0-9_-]", "", format.strip().lower())
+    return get_project_subtitles_dir(project_id) / f"{safe_lang}.{safe_fmt}"
+
+
 def get_audio_segment_path(project_id: str, segment_id: str) -> Path:
     """Return standard persistent path for a synthesized Khmer audio segment."""
     safe_seg = re.sub(r"[^a-zA-Z0-9_-]", "", segment_id.strip())

@@ -11,10 +11,11 @@ import {
   AlertTriangle,
   Globe2,
   Edit3,
+  Subtitles,
 } from 'lucide-react';
 import { ProjectDetail } from '../../types';
 
-export type StudioTab = 'media' | 'transcript' | 'translation' | 'voice' | 'export';
+export type StudioTab = 'media' | 'transcript' | 'translation' | 'subtitles' | 'voice' | 'export';
 
 interface StudioHeaderProps {
   project: ProjectDetail;
@@ -92,8 +93,16 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
       hasWarning: timingConflictsCount > 0,
     },
     {
-      id: 'voice',
+      id: 'subtitles',
       num: 4,
+      label: 'Subtitles',
+      icon: Subtitles,
+      isComplete: hasTranscript || hasTranslation,
+      isRunning: false,
+    },
+    {
+      id: 'voice',
+      num: 5,
       label: 'Voice',
       icon: Mic2,
       isComplete: hasVoice,
@@ -101,7 +110,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
     },
     {
       id: 'export',
-      num: 5,
+      num: 6,
       label: 'Export',
       icon: Download,
       isComplete: hasExport,

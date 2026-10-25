@@ -20,6 +20,8 @@ import {
   ApplyTranslationRequest,
   ProjectTranslationSettingsUpdate,
   ProjectDeleteResponse,
+  SubtitleSegment,
+  SubtitleListResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -539,5 +541,73 @@ export const api = {
       );
     }
     return res.json();
+  },
+
+  async getSubtitles(
+    projectId: string,
+    language: string = 'km'
+  ): Promise<SubtitleListResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles?language=${encodeURIComponent(language)}`
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to fetch subtitles: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateSubtitleSegment(
+    projectId: string,
+    segmentOrder: number,
+    text: string,
+    language: string = 'km'
+  ): Promise<SubtitleSegment> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles/${segmentOrder}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, language }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update subtitle: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async resetSubtitles(
+    projectId: string,
+    language: string = 'km'
+  ): Promise<{ message: string; deleted_count: number; language: string }> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/subtitles/reset?language=${encodeURIComponent(language)}`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to reset subtitles: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getSubtitleExportUrl(
+    projectId: string,
+    language: string = 'km',
+    format: string = 'srt'
+  ): string {
+    return `${API_BASE}/projects/${projectId}/subtitles/export?language=${encodeURIComponent(language)}&format=${encodeURIComponent(format)}`;
+  },
+
+  getSubtitleStreamUrl(
+    projectId: string,
+    language: string = 'km',
+    format: string = 'vtt'
+  ): string {
+    return `${API_BASE}/projects/${projectId}/subtitles/stream?language=${encodeURIComponent(language)}&format=${encodeURIComponent(format)}`;
   },
 };

@@ -9,6 +9,7 @@ from app.models.project import (
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
+    SubtitleSegment,
     ProcessingJob,
     JobStatus,
     ProjectStatus,
@@ -135,6 +136,7 @@ def recover_interrupted_deletions(db: Session) -> int:
 
         # 2. Safely purge database records in foreign-key dependency order
         try:
+            db.query(SubtitleSegment).filter(SubtitleSegment.project_id == project_id).delete(synchronize_session=False)
             db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).delete(synchronize_session=False)
             db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).delete(synchronize_session=False)
             db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete(synchronize_session=False)

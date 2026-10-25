@@ -7,6 +7,7 @@ import {
   RefreshCw,
   RotateCcw,
   Sparkles,
+  Subtitles,
 } from 'lucide-react';
 import {
   ProjectDetail,
@@ -302,6 +303,105 @@ export const ExportTab: React.FC<ExportTabProps> = ({
           </div>
         </div>
       )}
+
+      {/* Subtitles Export Card */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100">
+              <Subtitles className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-slate-900">Subtitle Files (.SRT & .VTT)</h4>
+              <p className="text-xs text-slate-500">
+                Export synchronized subtitles with full Khmer Unicode support for YouTube, Facebook, or video players
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          {/* Khmer SRT */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col justify-between gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-slate-800">Khmer Subtitles</span>
+                <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[10px] font-mono font-bold">SRT</span>
+              </div>
+              <p className="text-[11px] text-slate-500">Standard SubRip format with Khmer Unicode</p>
+            </div>
+            <a
+              data-testid="export-card-km-srt"
+              href={`/api/projects/${project.id}/subtitles/export?language=km&format=srt`}
+              download
+              className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg flex items-center justify-center gap-1.5 transition shadow-2xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Khmer .SRT</span>
+            </a>
+          </div>
+
+          {/* Khmer VTT */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col justify-between gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-slate-800">Khmer WebVTT</span>
+                <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-mono font-bold">VTT</span>
+              </div>
+              <p className="text-[11px] text-slate-500">W3C Web Video Text Track format</p>
+            </div>
+            <a
+              data-testid="export-card-km-vtt"
+              href={`/api/projects/${project.id}/subtitles/export?language=km&format=vtt`}
+              download
+              className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-lg flex items-center justify-center gap-1.5 transition shadow-2xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Khmer .VTT</span>
+            </a>
+          </div>
+
+          {/* English SRT */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col justify-between gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-slate-800">English Subtitles</span>
+                <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 text-[10px] font-mono font-bold">SRT</span>
+              </div>
+              <p className="text-[11px] text-slate-500">SubRip format from transcribed audio</p>
+            </div>
+            <a
+              data-testid="export-card-en-srt"
+              href={`/api/projects/${project.id}/subtitles/export?language=en&format=srt`}
+              download
+              className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg flex items-center justify-center gap-1.5 transition shadow-2xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download English .SRT</span>
+            </a>
+          </div>
+
+          {/* English VTT */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col justify-between gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-slate-800">English WebVTT</span>
+                <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-mono font-bold">VTT</span>
+              </div>
+              <p className="text-[11px] text-slate-500">Web video format from transcribed audio</p>
+            </div>
+            <a
+              data-testid="export-card-en-vtt"
+              href={`/api/projects/${project.id}/subtitles/export?language=en&format=vtt`}
+              download
+              className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-lg flex items-center justify-center gap-1.5 transition shadow-2xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download English .VTT</span>
+            </a>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

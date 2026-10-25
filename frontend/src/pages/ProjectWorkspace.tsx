@@ -8,6 +8,7 @@ import { DubbingTimeline } from '../components/studio/DubbingTimeline';
 import { MediaTab } from '../components/studio/MediaTab';
 import { TranscriptTab } from '../components/studio/TranscriptTab';
 import { TranslationTab } from '../components/studio/TranslationTab';
+import { SubtitleTab } from '../components/studio/SubtitleTab';
 import { VoiceTab } from '../components/studio/VoiceTab';
 import { ExportTab } from '../components/studio/ExportTab';
 import { AIImproveModal } from '../components/studio/AIImproveModal';
@@ -22,6 +23,8 @@ import {
   ExportStatusResponse,
   VoiceOption,
   TranslationProviderInfo,
+  SubtitleSegment,
+  SubtitleStylePreferences,
 } from '../types';
 
 interface ProjectWorkspaceProps {
@@ -85,6 +88,17 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
 
+  // Subtitles State
+  const [subtitles, setSubtitles] = useState<SubtitleSegment[]>([]);
+  const [subtitleLanguage, setSubtitleLanguage] = useState<'km' | 'en'>('km');
+  const [inPlayerSubtitleLang, setInPlayerSubtitleLang] = useState<'off' | 'km' | 'en'>('km');
+  const [subtitleStyles, setSubtitleStyles] = useState<SubtitleStylePreferences>({
+    fontSize: 'base',
+    textColor: 'white',
+    bgOpacity: 0.75,
+    bottomMargin: 10,
+  });
+
   // Global AI Modal (opened from Voice or Export tab)
   const [activeAIModalSegment, setActiveAIModalSegment] = useState<TranslationSegment | null>(null);
   const [isRenameModalOpen, setIsRenameModalOpen] = useState<boolean>(false);
@@ -135,6 +149,22 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       // ignore if empty
     }
   }, [projectId]);
+
+  const fetchSubtitlesData = useCallback(
+    async (lang: 'km' | 'en' = subtitleLanguage) => {
+      try {
+        const data = await api.getSubtitles(projectId, lang);
+        setSubtitles(data.segments || []);
+      } catch {
+        // ignore if empty
+      }
+    },
+    [projectId, subtitleLanguage]
+  );
+
+  useEffect(() => {
+    fetchSubtitlesData(subtitleLanguage);
+  }, [fetchSubtitlesData, subtitleLanguage]);
 
   const fetchCatalogs = useCallback(async () => {
     try {
@@ -214,6 +244,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         fetchTranslationData(),
         fetchAudioData(),
         fetchExportData(),
+        fetchSubtitlesData(subtitleLanguage),
       ]);
     } catch (err: any) {
       console.error('Failed to fetch project data:', err);
@@ -541,6 +572,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
               }
               onTimeUpdate={(t) => setCurrentPlayTime(t)}
               onPlayStateChange={(playing) => setIsVideoPlaying(playing)}
+              subtitles={subtitles}
+              subtitleLanguage={inPlayerSubtitleLang}
+              onSubtitleLanguageChange={(lang) => {
+                setInPlayerSubtitleLang(lang);
+                if (lang !== 'off') {
+                  setSubtitleLanguage(lang);
+                }
+              }}
+              subtitleStyles={subtitleStyles}
             />
           </div>
 
@@ -606,6 +646,10 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             setSelectedSegmentId(id);
             setActiveTab('translation');
           }}
+          onNavigateToSubtitles={(id) => {
+            setSelectedSegmentId(id);
+            setActiveTab('subtitles');
+          }}
           onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
           isPlaying={isVideoPlaying}
         />
@@ -660,6 +704,26 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             selectedSegmentId={selectedSegmentId}
             translationError={translationError}
             isTranscriptReady={isTranscriptReady}
+          />
+        )}
+
+        {activeTab === 'subtitles' && (
+          <SubtitleTab
+            projectId={projectId}
+            subtitles={subtitles}
+            currentLanguage={subtitleLanguage}
+            onLanguageChange={(lang) => {
+              setSubtitleLanguage(lang);
+              if (inPlayerSubtitleLang !== 'off') {
+                setInPlayerSubtitleLang(lang);
+              }
+            }}
+            onRefreshSubtitles={() => fetchSubtitlesData(subtitleLanguage)}
+            onSeekVideo={handleSeekVideo}
+            activeSegmentId={activeSegmentId}
+            selectedSegmentId={selectedSegmentId}
+            subtitleStyles={subtitleStyles}
+            onUpdateStyles={setSubtitleStyles}
           />
         )}
 

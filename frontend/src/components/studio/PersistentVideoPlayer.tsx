@@ -1,4 +1,4 @@
-import React, { useRef, useState, forwardRef, useImperativeHandle } from 'react';
+import React, { useRef, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   Play,
   Pause,
@@ -8,8 +8,9 @@ import {
   Minimize2,
   RotateCcw,
   Film,
+  Subtitles,
 } from 'lucide-react';
-import { VideoInfo } from '../../types';
+import { VideoInfo, SubtitleSegment, SubtitleStylePreferences } from '../../types';
 
 export interface VideoPlayerRef {
   seekTo: (timeInSeconds: number) => void;
@@ -23,10 +24,27 @@ interface PersistentVideoPlayerProps {
   activeSegmentOrder?: number | null;
   onTimeUpdate?: (currentTime: number) => void;
   onPlayStateChange?: (isPlaying: boolean) => void;
+  subtitles?: SubtitleSegment[];
+  subtitleLanguage?: 'off' | 'km' | 'en';
+  onSubtitleLanguageChange?: (lang: 'off' | 'km' | 'en') => void;
+  subtitleStyles?: SubtitleStylePreferences;
 }
 
 export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoPlayerProps>(
-  ({ projectId, video, activeSegmentOrder, onTimeUpdate, onPlayStateChange }, ref) => {
+  (
+    {
+      projectId,
+      video,
+      activeSegmentOrder,
+      onTimeUpdate,
+      onPlayStateChange,
+      subtitles = [],
+      subtitleLanguage = 'off',
+      onSubtitleLanguageChange,
+      subtitleStyles,
+    },
+    ref
+  ) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const [currentTime, setCurrentTime] = useState<number>(0);
@@ -58,6 +76,14 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
     }));
 
     const videoSrc = `/api/projects/${projectId}/video`;
+
+    // Active subtitle calculation
+    const activeSubtitle = useMemo(() => {
+      if (!subtitles || subtitleLanguage === 'off') return null;
+      return subtitles.find(
+        (s) => currentTime >= s.start_time && currentTime <= s.end_time
+      );
+    }, [subtitles, subtitleLanguage, currentTime]);
 
     const handleTimeUpdate = () => {
       if (videoRef.current) {
@@ -193,6 +219,48 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
                 <Play className="w-6 h-6 ml-0.5" />
               </button>
             )}
+
+            {/* Subtitle Caption Overlay */}
+            {activeSubtitle && (
+              <div
+                data-testid="video-subtitle-overlay"
+                className="absolute left-4 right-4 text-center pointer-events-none transition-all z-20 flex justify-center"
+                style={{ bottom: `${subtitleStyles?.bottomMargin ?? 10}px` }}
+              >
+                <div
+                  className={`px-3.5 py-1.5 rounded-lg max-w-[85%] inline-block shadow-lg leading-relaxed select-none ${
+                    activeSubtitle.language === 'km' ? 'font-khmer font-medium' : 'font-sans'
+                  }`}
+                  style={{
+                    backgroundColor:
+                      subtitleStyles?.bgOpacity === 0
+                        ? 'transparent'
+                        : `rgba(0, 0, 0, ${subtitleStyles?.bgOpacity ?? 0.75})`,
+                    color:
+                      subtitleStyles?.textColor === 'yellow'
+                        ? '#facc15'
+                        : subtitleStyles?.textColor === 'cyan'
+                        ? '#38bdf8'
+                        : '#ffffff',
+                    fontSize:
+                      subtitleStyles?.fontSize === 'sm'
+                        ? '0.875rem'
+                        : subtitleStyles?.fontSize === 'lg'
+                        ? '1.125rem'
+                        : subtitleStyles?.fontSize === 'xl'
+                        ? '1.25rem'
+                        : '1rem',
+                  }}
+                >
+                  {activeSubtitle.text.split('\n').map((line, i) => (
+                    <React.Fragment key={i}>
+                      {line}
+                      {i < activeSubtitle.text.split('\n').length - 1 && <br />}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -258,8 +326,35 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
               </div>
             </div>
 
-            {/* Speed selection */}
-            <div className="flex items-center gap-1">
+            {/* Right: Speed & Subtitles selection */}
+            <div className="flex items-center gap-2">
+              {/* Closed Captions (CC) Toggle */}
+              {onSubtitleLanguageChange && (
+                <button
+                  data-testid="video-subtitle-toggle"
+                  onClick={() => {
+                    const next =
+                      subtitleLanguage === 'off'
+                        ? 'km'
+                        : subtitleLanguage === 'km'
+                        ? 'en'
+                        : 'off';
+                    onSubtitleLanguageChange(next);
+                  }}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold transition border ${
+                    subtitleLanguage !== 'off'
+                      ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                      : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                  title={`Captions: ${subtitleLanguage.toUpperCase()}. Click to toggle (Off -> KM -> EN).`}
+                >
+                  <Subtitles className="w-3.5 h-3.5" />
+                  <span>{subtitleLanguage === 'off' ? 'CC Off' : `CC ${subtitleLanguage.toUpperCase()}`}</span>
+                </button>
+              )}
+
+              {/* Speed selection */}
+              <div className="flex items-center gap-1">
               {[0.75, 1, 1.25, 1.5].map((rate) => (
                 <button
                   key={rate}
@@ -277,6 +372,7 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
           </div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 );
