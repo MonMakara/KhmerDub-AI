@@ -103,17 +103,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
   return (
     <div className="space-y-8 max-w-7xl mx-auto">
       {/* Top Banner / Hero */}
-      <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-8 text-white shadow-lg border border-slate-800 relative overflow-hidden">
+      <div className="rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-5 sm:p-8 text-white shadow-lg border border-slate-800 relative overflow-hidden">
         <div className="absolute right-0 top-0 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="max-w-2xl space-y-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold border border-indigo-500/30">
                 Studio Dashboard
               </span>
               <span className="text-[11px] text-slate-400">• English → Khmer Dubbing Engine</span>
             </div>
-            <h2 className="text-2xl font-bold tracking-tight text-white">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
               KhmerDub AI Dubbing Studio
             </h2>
             <p className="text-slate-300 text-xs sm:text-sm leading-relaxed">
@@ -123,7 +123,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
             <button
               onClick={() => setShowQuickCreate(!showQuickCreate)}
               className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs sm:text-sm shadow-md shadow-indigo-600/30 transition-all flex items-center justify-center gap-2"
@@ -179,45 +179,45 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* Real Real-Time Metrics Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
         {/* Total Projects */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+        <div className="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
             <span>Total Projects</span>
             <FolderKanban className="w-4 h-4 text-indigo-500" />
           </div>
-          <div className="text-3xl font-bold text-slate-900">{totalProjects}</div>
-          <p className="text-[11px] text-slate-400">Total videos in workspace</p>
+          <div className="text-2xl sm:text-3xl font-bold text-slate-900">{totalProjects}</div>
+          <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">Total videos in workspace</p>
         </div>
 
         {/* Processing Projects */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+        <div className="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
             <span>In Progress</span>
             <Clock className="w-4 h-4 text-amber-500" />
           </div>
-          <div className="text-3xl font-bold text-amber-600">{processingProjects}</div>
-          <p className="text-[11px] text-slate-400">Transcribing, translating, or dubbing</p>
+          <div className="text-2xl sm:text-3xl font-bold text-amber-600">{processingProjects}</div>
+          <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">Transcribing, translating, dubbing</p>
         </div>
 
         {/* Completed Projects */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+        <div className="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
             <span>Exported MP4</span>
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
           </div>
-          <div className="text-3xl font-bold text-emerald-600">{completedProjects}</div>
-          <p className="text-[11px] text-slate-400">Fully synchronized Khmer videos</p>
+          <div className="text-2xl sm:text-3xl font-bold text-emerald-600">{completedProjects}</div>
+          <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">Fully synchronized Khmer videos</p>
         </div>
 
         {/* Attention / Drafts */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+        <div className="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold uppercase tracking-wider">
             <span>Attention / Draft</span>
             <AlertCircle className="w-4 h-4 text-rose-500" />
           </div>
-          <div className="text-3xl font-bold text-slate-700">{attentionProjects}</div>
-          <p className="text-[11px] text-slate-400">Awaiting media upload or retry</p>
+          <div className="text-2xl sm:text-3xl font-bold text-slate-700">{attentionProjects}</div>
+          <p className="text-[10px] sm:text-[11px] text-slate-400 truncate">Awaiting media upload or retry</p>
         </div>
       </div>
 

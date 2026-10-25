@@ -142,7 +142,7 @@ export const Projects: React.FC<ProjectsProps> = ({
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex items-center gap-2">
+        <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
           <input
             type="text"
             value={newTitle}
@@ -154,7 +154,7 @@ export const Projects: React.FC<ProjectsProps> = ({
           <button
             type="submit"
             disabled={creating || !newTitle.trim()}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition-all shadow-sm shrink-0"
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold transition-all shadow-sm shrink-0"
           >
             <Plus className="w-4 h-4" />
             {creating ? 'Creating...' : 'Create Project'}
@@ -199,7 +199,7 @@ export const Projects: React.FC<ProjectsProps> = ({
         </div>
 
         {/* Controls: Sorting and Grid/Table Switcher */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <div className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded-lg text-xs">
             <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
             <select

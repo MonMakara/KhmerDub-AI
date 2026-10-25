@@ -32,6 +32,50 @@ export const App: React.FC = () => {
   const [projectsLoading, setProjectsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Responsive Sidebar States:
+  // Desktop collapsed preference (persisted to localStorage)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('khmerdub_sidebar_collapsed');
+      if (saved !== null) {
+        return saved === 'true';
+      }
+      // If tablet width (768px - 1023px), default to compact collapsed state
+      if (typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  });
+
+  // Mobile Drawer state
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
+
+  const toggleSidebarCollapse = useCallback(() => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('khmerdub_sidebar_collapsed', String(next));
+      } catch (e) {
+        console.error('Failed to save sidebar collapsed state:', e);
+      }
+      return next;
+    });
+  }, []);
+
+  // Auto-close mobile drawer when window resizes to desktop breakpoint (>= 768px)
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth >= 768) {
+        setIsMobileSidebarOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const fetchHealth = useCallback(async () => {
     try {
       setHealthLoading(true);
@@ -65,6 +109,7 @@ export const App: React.FC = () => {
       const { tab, projectId } = parseHash();
       setCurrentTab(tab);
       setSelectedProjectId(projectId);
+      setIsMobileSidebarOpen(false);
       if (!projectId) {
         fetchProjects();
       }
@@ -91,6 +136,7 @@ export const App: React.FC = () => {
   const handleTabChange = (tab: string) => {
     setCurrentTab(tab);
     setSelectedProjectId(null);
+    setIsMobileSidebarOpen(false);
     window.location.hash = tab;
     fetchProjects();
   };
@@ -98,30 +144,40 @@ export const App: React.FC = () => {
   const handleSelectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
     setCurrentTab('projects');
+    setIsMobileSidebarOpen(false);
     window.location.hash = `project/${projectId}`;
   };
 
   return (
     <div className="flex h-screen bg-slate-100 text-slate-800 font-sans overflow-hidden">
-      {/* Sidebar */}
-      <Sidebar currentTab={currentTab} onTabChange={handleTabChange} />
+      {/* Sidebar: Supports Desktop Collapsed/Expanded & Mobile Drawer */}
+      <Sidebar
+        currentTab={currentTab}
+        onTabChange={handleTabChange}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={toggleSidebarCollapse}
+        isMobileOpen={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
+      />
 
-      {/* Main Content Area */}
+      {/* Main Content Area: Resizes automatically when sidebar expands/collapses */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Header */}
+        {/* Responsive Header with Hamburger Menu for Mobile */}
         <Header
           health={health}
           loading={healthLoading}
           onRefreshHealth={fetchHealth}
+          onToggleMobileSidebar={() => setIsMobileSidebarOpen((prev) => !prev)}
+          isMobileSidebarOpen={isMobileSidebarOpen}
         />
 
         {/* Global Error Banner if backend unreachable */}
         {error && (
-          <div className="bg-rose-50 border-b border-rose-200 px-8 py-2.5 text-xs text-rose-700 flex items-center justify-between">
+          <div className="bg-rose-50 border-b border-rose-200 px-4 sm:px-8 py-2.5 text-xs text-rose-700 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2">
             <span>{error}</span>
             <button
               onClick={fetchHealth}
-              className="font-semibold underline hover:text-rose-900 ml-4"
+              className="font-semibold underline hover:text-rose-900 ml-4 shrink-0"
             >
               Retry
             </button>
@@ -129,7 +185,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Scrollable Page Body */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8">
+        <main className="flex-1 overflow-y-auto p-3.5 sm:p-6 md:p-8">
           {currentTab === 'dashboard' && (
             <Dashboard
               health={health}

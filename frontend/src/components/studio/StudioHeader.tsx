@@ -119,10 +119,10 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   ];
 
   return (
-    <div className="bg-white border-b border-slate-200 px-6 py-4 space-y-4">
+    <div className="bg-white border-b border-slate-200 px-3.5 sm:px-6 py-3.5 sm:py-4 space-y-3 sm:space-y-4 rounded-xl shadow-xs">
       {/* Top Row: Back button, Title, Language Pair, Refresh */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
           <button
             onClick={onBack}
             className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors shrink-0"
@@ -130,9 +130,9 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-slate-900 truncate">{project.title}</h2>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 truncate">{project.title}</h2>
               {onRename && (
                 <button
                   type="button"
