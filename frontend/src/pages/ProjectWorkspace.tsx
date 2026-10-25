@@ -4,6 +4,7 @@ import {
   StudioTab,
 } from '../components/studio/StudioHeader';
 import { PersistentVideoPlayer, VideoPlayerRef } from '../components/studio/PersistentVideoPlayer';
+import { DubbingTimeline } from '../components/studio/DubbingTimeline';
 import { MediaTab } from '../components/studio/MediaTab';
 import { TranscriptTab } from '../components/studio/TranscriptTab';
 import { TranslationTab } from '../components/studio/TranslationTab';
@@ -77,6 +78,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   // Video Playhead Tracking & Player Ref
   const videoPlayerRef = useRef<VideoPlayerRef>(null);
   const [currentPlayTime, setCurrentPlayTime] = useState<number>(0);
+  const [isVideoPlaying, setIsVideoPlaying] = useState<boolean>(false);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
 
   // Voice Preview
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
@@ -525,118 +528,175 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         onRename={() => setIsRenameModalOpen(true)}
       />
 
-      {/* Two-Column Studio Layout: Main Stage Editor (Left) + Persistent Video Preview (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Stage Tab Content (7 or 8 columns on large screens) */}
-        <div className="lg:col-span-7 xl:col-span-8 space-y-6">
-          {activeTab === 'media' && (
-            <MediaTab
-              project={project}
-              video={project.video || null}
-              onUploadFile={handleUploadFile}
-              onExtractAudio={handleExtractAudio}
-              isUploading={isUploading}
-              isExtracting={isExtracting}
-              uploadProgress={uploadProgress}
-            />
-          )}
-
-          {activeTab === 'transcript' && (
-            <TranscriptTab
-              segments={transcriptSegments}
-              isTranscribing={isTranscribing}
-              onStartTranscription={handleStartTranscription}
-              onUpdateSegment={handleUpdateTranscriptSegment}
-              onSeekVideo={handleSeekVideo}
-              activeSegmentId={activeSegmentId}
-              transcriptionError={transcriptionError}
-              isMediaReady={isMediaReady}
-            />
-          )}
-
-          {activeTab === 'translation' && (
-            <TranslationTab
+      {/* 1. Persistent Video Preview Section */}
+      {project.video && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-8">
+            <PersistentVideoPlayer
+              ref={videoPlayerRef}
               projectId={projectId}
-              translationSegments={translationSegments}
-              transcriptSegments={transcriptSegments}
-              generatedAudios={generatedAudios}
-              timingConflicts={timingConflicts}
-              providers={translationProviders}
-              selectedProvider={selectedTransProvider}
-              selectedStyle={selectedTransStyle}
-              isTranslating={isTranslating}
-              onUpdateTranslationSettings={handleUpdateTranslationSettings}
-              onStartTranslation={handleStartTranslation}
-              onUpdateSegment={handleUpdateTranslationSegment}
-              onRetranslateSegment={handleRetranslateSegment}
-              onApplyAIImprovement={handleApplyAIImprovement}
-              onSeekVideo={handleSeekVideo}
-              activeSegmentId={activeSegmentId}
-              translationError={translationError}
-              isTranscriptReady={isTranscriptReady}
+              video={project.video || null}
+              activeSegmentOrder={
+                transcriptSegments.find((s) => s.id === activeSegmentId)?.segment_order || null
+              }
+              onTimeUpdate={(t) => setCurrentPlayTime(t)}
+              onPlayStateChange={(playing) => setIsVideoPlaying(playing)}
             />
-          )}
+          </div>
 
-          {activeTab === 'voice' && (
-            <VoiceTab
-              voices={voices}
-              selectedVoice={selectedVoice}
-              generatedAudios={generatedAudios}
-              translationSegments={translationSegments}
-              timingConflicts={timingConflicts}
-              isGeneratingSpeech={isGeneratingVoice}
-              onSelectVoice={handleSelectVoice}
-              onPreviewVoice={handlePreviewVoice}
-              onGenerateAllSpeech={handleGenerateAllSpeech}
-              onRegenerateSegmentAudio={handleRegenerateSegmentAudio}
-              onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
-              onSeekVideo={handleSeekVideo}
-              activeSegmentId={activeSegmentId}
-              ttsError={ttsError}
-              previewAudioUrl={previewAudioUrl}
-              previewingVoice={previewingVoice}
-            />
-          )}
-
-          {activeTab === 'export' && (
-            <ExportTab
-              project={project}
-              exportStatus={exportStatus}
-              timingConflicts={timingConflicts}
-              translationSegments={translationSegments}
-              isExporting={isExporting}
-              onExportVideo={handleExportVideo}
-              onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
-              exportError={exportError}
-            />
-          )}
-        </div>
-
-        {/* Right Column: Persistent Sticky Video Preview (5 or 4 columns on large screens) */}
-        <div className="lg:col-span-5 xl:col-span-4 sticky top-6 space-y-4">
-          <PersistentVideoPlayer
-            ref={videoPlayerRef}
-            projectId={projectId}
-            video={project.video || null}
-            activeSegmentOrder={
-              transcriptSegments.find((s) => s.id === activeSegmentId)?.segment_order || null
-            }
-            onTimeUpdate={(t) => setCurrentPlayTime(t)}
-          />
-
-          {/* Quick Info Capsule under Video */}
-          {project.video && (
-            <div className="bg-white rounded-xl border border-slate-200 p-3.5 shadow-xs text-xs space-y-2">
-              <div className="flex items-center justify-between text-slate-500 text-[11px]">
-                <span className="font-semibold uppercase tracking-wider">Active Stage</span>
-                <span className="font-mono text-indigo-600 capitalize font-medium">{activeTab} editor</span>
+          <div className="lg:col-span-4 space-y-4">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs text-xs space-y-3">
+              <div className="flex items-center justify-between text-slate-500 text-[11px] border-b border-slate-100 pb-2">
+                <span className="font-semibold uppercase tracking-wider">Active Workspace</span>
+                <span className="font-mono text-indigo-600 capitalize font-medium">{activeTab} tab</span>
               </div>
-              <p className="text-slate-600 text-[11px] leading-relaxed">
-                Clicking any segment's timestamp automatically seeks the video to that exact speech moment.
+
+              <div className="space-y-1.5 text-slate-600">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Video Duration:</span>
+                  <span className="font-mono font-medium text-slate-800">
+                    {project.video?.duration_seconds ? `${project.video.duration_seconds.toFixed(1)}s` : 'N/A'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">English Speech Segments:</span>
+                  <span className="font-mono font-medium text-slate-800">
+                    {transcriptSegments.length}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Khmer Synthesized Speech:</span>
+                  <span className="font-mono font-medium text-slate-800">
+                    {generatedAudios.length} / {transcriptSegments.length}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Speech Timing Conflicts:</span>
+                  <span
+                    className={`font-mono font-semibold ${
+                      timingConflicts.length > 0 ? 'text-rose-600' : 'text-emerald-600'
+                    }`}
+                  >
+                    {timingConflicts.length}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-slate-500 text-[11px] leading-relaxed pt-1 border-t border-slate-100">
+                Scrub the playhead or click any timeline block to seek video playback and synchronize transcript, translation, and speech tracks.
               </p>
             </div>
-          )}
+          </div>
         </div>
+      )}
+
+      {/* 2. Interactive Dubbing Timeline (Positioned between Video Preview and Workspace Tab) */}
+      {isTranscriptReady && (
+        <DubbingTimeline
+          duration={project.video?.duration_seconds || transcriptSegments[transcriptSegments.length - 1]?.end_time || 0}
+          currentTime={currentPlayTime}
+          transcriptSegments={transcriptSegments}
+          translationSegments={translationSegments}
+          generatedAudios={generatedAudios}
+          timingConflicts={timingConflicts}
+          selectedSegmentId={selectedSegmentId}
+          onSelectSegment={(id) => setSelectedSegmentId(id)}
+          onSeek={handleSeekVideo}
+          onNavigateToTranslation={(id) => {
+            setSelectedSegmentId(id);
+            setActiveTab('translation');
+          }}
+          onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
+          isPlaying={isVideoPlaying}
+        />
+      )}
+
+      {/* 3. Active Workspace Stage Editor Tab */}
+      <div className="space-y-6">
+        {activeTab === 'media' && (
+          <MediaTab
+            project={project}
+            video={project.video || null}
+            onUploadFile={handleUploadFile}
+            onExtractAudio={handleExtractAudio}
+            isUploading={isUploading}
+            isExtracting={isExtracting}
+            uploadProgress={uploadProgress}
+          />
+        )}
+
+        {activeTab === 'transcript' && (
+          <TranscriptTab
+            segments={transcriptSegments}
+            isTranscribing={isTranscribing}
+            onStartTranscription={handleStartTranscription}
+            onUpdateSegment={handleUpdateTranscriptSegment}
+            onSeekVideo={handleSeekVideo}
+            activeSegmentId={activeSegmentId}
+            selectedSegmentId={selectedSegmentId}
+            transcriptionError={transcriptionError}
+            isMediaReady={isMediaReady}
+          />
+        )}
+
+        {activeTab === 'translation' && (
+          <TranslationTab
+            projectId={projectId}
+            translationSegments={translationSegments}
+            transcriptSegments={transcriptSegments}
+            generatedAudios={generatedAudios}
+            timingConflicts={timingConflicts}
+            providers={translationProviders}
+            selectedProvider={selectedTransProvider}
+            selectedStyle={selectedTransStyle}
+            isTranslating={isTranslating}
+            onUpdateTranslationSettings={handleUpdateTranslationSettings}
+            onStartTranslation={handleStartTranslation}
+            onUpdateSegment={handleUpdateTranslationSegment}
+            onRetranslateSegment={handleRetranslateSegment}
+            onApplyAIImprovement={handleApplyAIImprovement}
+            onSeekVideo={handleSeekVideo}
+            activeSegmentId={activeSegmentId}
+            selectedSegmentId={selectedSegmentId}
+            translationError={translationError}
+            isTranscriptReady={isTranscriptReady}
+          />
+        )}
+
+        {activeTab === 'voice' && (
+          <VoiceTab
+            voices={voices}
+            selectedVoice={selectedVoice}
+            generatedAudios={generatedAudios}
+            translationSegments={translationSegments}
+            timingConflicts={timingConflicts}
+            isGeneratingSpeech={isGeneratingVoice}
+            onSelectVoice={handleSelectVoice}
+            onPreviewVoice={handlePreviewVoice}
+            onGenerateAllSpeech={handleGenerateAllSpeech}
+            onRegenerateSegmentAudio={handleRegenerateSegmentAudio}
+            onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
+            onSeekVideo={handleSeekVideo}
+            activeSegmentId={activeSegmentId}
+            selectedSegmentId={selectedSegmentId}
+            ttsError={ttsError}
+            previewAudioUrl={previewAudioUrl}
+            previewingVoice={previewingVoice}
+          />
+        )}
+
+        {activeTab === 'export' && (
+          <ExportTab
+            project={project}
+            exportStatus={exportStatus}
+            timingConflicts={timingConflicts}
+            translationSegments={translationSegments}
+            isExporting={isExporting}
+            onExportVideo={handleExportVideo}
+            onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
+            exportError={exportError}
+          />
+        )}
       </div>
 
       {/* Global AI Refinement Modal for Voice / Export tabs */}

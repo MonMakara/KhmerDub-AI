@@ -22,10 +22,11 @@ interface PersistentVideoPlayerProps {
   video: VideoInfo | null;
   activeSegmentOrder?: number | null;
   onTimeUpdate?: (currentTime: number) => void;
+  onPlayStateChange?: (isPlaying: boolean) => void;
 }
 
 export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoPlayerProps>(
-  ({ projectId, video, activeSegmentOrder, onTimeUpdate }, ref) => {
+  ({ projectId, video, activeSegmentOrder, onTimeUpdate, onPlayStateChange }, ref) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const [currentTime, setCurrentTime] = useState<number>(0);
@@ -41,15 +42,18 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
           videoRef.current.currentTime = Math.max(0, timeInSeconds);
           videoRef.current.play().catch(() => {});
           setIsPlaying(true);
+          onPlayStateChange?.(true);
         }
       },
       play: () => {
         videoRef.current?.play().catch(() => {});
         setIsPlaying(true);
+        onPlayStateChange?.(true);
       },
       pause: () => {
         videoRef.current?.pause();
         setIsPlaying(false);
+        onPlayStateChange?.(false);
       },
     }));
 
@@ -76,9 +80,11 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
       if (isPlaying) {
         videoRef.current.pause();
         setIsPlaying(false);
+        onPlayStateChange?.(false);
       } else {
         videoRef.current.play().catch(() => {});
         setIsPlaying(true);
+        onPlayStateChange?.(true);
       }
     };
 
@@ -160,15 +166,21 @@ export const PersistentVideoPlayer = forwardRef<VideoPlayerRef, PersistentVideoP
 
         {/* Video Canvas */}
         {!isCollapsed && (
-          <div className="relative aspect-video bg-black flex items-center justify-center group">
+          <div className="relative aspect-video max-h-[360px] bg-black flex items-center justify-center group mx-auto">
             <video
               ref={videoRef}
               src={videoSrc}
               className="w-full h-full object-contain"
               onTimeUpdate={handleTimeUpdate}
               onLoadedMetadata={handleLoadedMetadata}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
+              onPlay={() => {
+                setIsPlaying(true);
+                onPlayStateChange?.(true);
+              }}
+              onPause={() => {
+                setIsPlaying(false);
+                onPlayStateChange?.(false);
+              }}
               onClick={togglePlay}
             />
 

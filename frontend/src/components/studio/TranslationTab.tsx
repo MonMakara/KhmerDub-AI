@@ -40,6 +40,7 @@ interface TranslationTabProps {
   onApplyAIImprovement: (segmentId: string, khmerText: string, style?: string, explanation?: string) => Promise<void>;
   onSeekVideo: (timestamp: number) => void;
   activeSegmentId?: string | null;
+  selectedSegmentId?: string | null;
   translationError?: string | null;
   isTranscriptReady: boolean;
 }
@@ -61,6 +62,7 @@ export const TranslationTab: React.FC<TranslationTabProps> = ({
   onApplyAIImprovement,
   onSeekVideo,
   activeSegmentId,
+  selectedSegmentId,
   translationError,
   isTranscriptReady,
 }) => {
@@ -109,6 +111,17 @@ export const TranslationTab: React.FC<TranslationTabProps> = ({
         (s.english_text && s.english_text.toLowerCase().includes(q))
     );
   }, [translationSegments, searchQuery]);
+
+  // Scroll matching segment into view when selected from timeline
+  useEffect(() => {
+    if (!selectedSegmentId) return;
+    const el =
+      document.getElementById(`trans-seg-${selectedSegmentId}`) ||
+      document.getElementById(`trans-seg-trans-${selectedSegmentId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [selectedSegmentId]);
 
   const handleStartEdit = (seg: TranslationSegment) => {
     setEditingId(seg.id);
@@ -349,12 +362,20 @@ export const TranslationTab: React.FC<TranslationTabProps> = ({
               const isSaving = savingId === seg.id;
               const isRetranslating = retranslatingId === seg.id;
               const isActive = activeSegmentId === seg.id;
+              const isSelected =
+                Boolean(selectedSegmentId) &&
+                (selectedSegmentId === seg.id ||
+                  selectedSegmentId === seg.transcript_segment_id ||
+                  (transcriptSeg && selectedSegmentId === transcriptSeg.id));
 
               return (
                 <div
                   key={seg.id}
+                  id={`trans-seg-${transcriptSeg?.id || seg.id}`}
                   className={`p-4 rounded-xl border transition-all ${
-                    isActive
+                    isSelected
+                      ? 'bg-indigo-50/90 border-indigo-500 ring-2 ring-indigo-500/80 shadow-md'
+                      : isActive
                       ? 'bg-indigo-50/70 border-indigo-300 ring-1 ring-indigo-400 shadow-sm'
                       : conflict
                       ? 'bg-amber-50/30 border-amber-300'

@@ -31,6 +31,7 @@ interface VoiceTabProps {
   onOpenAIImprove: (segment: TranslationSegment) => void;
   onSeekVideo: (timestamp: number) => void;
   activeSegmentId?: string | null;
+  selectedSegmentId?: string | null;
   ttsError?: string | null;
   previewAudioUrl?: string | null;
   previewingVoice?: string | null;
@@ -50,6 +51,7 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
   onOpenAIImprove,
   onSeekVideo,
   activeSegmentId,
+  selectedSegmentId,
   ttsError,
   previewAudioUrl,
   previewingVoice,
@@ -65,6 +67,17 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
   // Conflict map by segment_order
   const conflictMap = new Map<number, TimingConflict>();
   timingConflicts.forEach((c) => conflictMap.set(c.segment_order, c));
+
+  // Scroll matching segment into view when selected from timeline
+  React.useEffect(() => {
+    if (!selectedSegmentId) return;
+    const el =
+      document.getElementById(`voice-seg-${selectedSegmentId}`) ||
+      document.getElementById(`voice-seg-trans-${selectedSegmentId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [selectedSegmentId]);
 
   const handleRegenerate = async (segmentId: string) => {
     try {
@@ -262,13 +275,19 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
             const isActive =
               activeSegmentId &&
               (activeSegmentId === seg.id || activeSegmentId === seg.transcript_segment_id);
+            const isSelected =
+              Boolean(selectedSegmentId) &&
+              (selectedSegmentId === seg.id || selectedSegmentId === seg.transcript_segment_id);
 
             return (
               <div
                 key={seg.id}
+                id={`voice-seg-${seg.transcript_segment_id || seg.id}`}
                 className={`p-4 rounded-xl border transition-all ${
-                  isActive
-                    ? 'ring-2 ring-indigo-500 bg-indigo-50/30 border-indigo-300'
+                  isSelected
+                    ? 'ring-2 ring-indigo-500 bg-indigo-50/70 border-indigo-400 shadow-md'
+                    : isActive
+                    ? 'ring-1 ring-indigo-400 bg-indigo-50/30 border-indigo-300'
                     : conflict
                     ? 'bg-amber-50/40 border-amber-300'
                     : audio

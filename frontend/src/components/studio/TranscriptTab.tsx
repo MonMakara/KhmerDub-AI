@@ -18,6 +18,7 @@ interface TranscriptTabProps {
   onUpdateSegment: (segmentId: string, text: string) => Promise<void>;
   onSeekVideo: (timestamp: number) => void;
   activeSegmentId?: string | null;
+  selectedSegmentId?: string | null;
   transcriptionError?: string | null;
   isMediaReady: boolean;
 }
@@ -29,6 +30,7 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
   onUpdateSegment,
   onSeekVideo,
   activeSegmentId,
+  selectedSegmentId,
   transcriptionError,
   isMediaReady,
 }) => {
@@ -52,6 +54,15 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
     setEditingId(null);
     setEditText('');
   };
+
+  // Scroll matching segment into view when selected from timeline
+  useEffect(() => {
+    if (!selectedSegmentId) return;
+    const el = document.getElementById(`transcript-seg-${selectedSegmentId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [selectedSegmentId]);
 
   // Prevent accidental loss of unsaved transcript edits on window/tab close
   useEffect(() => {
@@ -189,13 +200,17 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
               const isEditing = editingId === seg.id;
               const isSaving = savingId === seg.id;
               const isActive = activeSegmentId === seg.id;
+              const isSelected = Boolean(selectedSegmentId) && selectedSegmentId === seg.id;
               const duration = (seg.end_time - seg.start_time).toFixed(2);
 
               return (
                 <div
                   key={seg.id}
+                  id={`transcript-seg-${seg.id}`}
                   className={`p-4 rounded-xl border transition-all ${
-                    isActive
+                    isSelected
+                      ? 'bg-indigo-50/90 border-indigo-500 ring-2 ring-indigo-500/80 shadow-md'
+                      : isActive
                       ? 'bg-indigo-50/70 border-indigo-300 ring-1 ring-indigo-400 shadow-sm'
                       : 'bg-white border-slate-200 hover:border-slate-300'
                   }`}
