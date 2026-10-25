@@ -215,9 +215,35 @@ class VoxCPM2TTSProvider(TTSProvider):
             except Exception:
                 detail = str(http_err)
             logger.error("VoxCPM worker returned HTTP %d: %s", http_err.code, detail)
-            if http_err.code in (503, 507):
+
+            # Auto-recovery for VRAM limitation (507): flush worker memory and retry once
+            if http_err.code == 507:
+                logger.warning(
+                    "VoxCPM worker reported 507 VRAM limitation. Requesting cache purge and attempting automatic retry...",
+                )
+                try:
+                    rel_req = urllib.request.Request(
+                        f"{active_worker_url}/release_memory",
+                        data=json.dumps({"unload_model": False}).encode("utf-8"),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Internal-Token": self.internal_secret,
+                        },
+                    )
+                    with urllib.request.urlopen(rel_req, timeout=10):
+                        pass
+
+                    # Immediate single retry
+                    with urllib.request.urlopen(req, timeout=self.timeout_seconds) as retry_resp:
+                        resp_data = json.loads(retry_resp.read().decode("utf-8"))
+                        logger.info("Automatic retry succeeded after worker memory purge.")
+                except Exception as retry_err:
+                    logger.error("Automatic retry after worker memory purge also failed: %s", retry_err)
+                    raise TTSGenerationError(f"VoxCPM2 resource limitation: {detail}")
+            elif http_err.code == 503:
                 raise TTSGenerationError(f"VoxCPM2 resource limitation: {detail}")
-            raise TTSGenerationError(f"VoxCPM2 synthesis failed: {detail}")
+            else:
+                raise TTSGenerationError(f"VoxCPM2 synthesis failed: {detail}")
         except urllib.error.URLError as url_err:
             logger.error("Failed to connect to VoxCPM worker: %s", url_err)
             raise TTSNetworkError(

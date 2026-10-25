@@ -276,13 +276,31 @@ async def synthesize_khmer_speech(
             logger.info("Starting synthesis: '%s' (ref: %s)", clean_text[:40], ref_host_path.name)
 
             def _run_inference():
-                return model.generate(
-                    text=clean_text,
-                    reference_wav_path=str(ref_host_path),
-                    cfg_value=payload.cfg_value,
-                    inference_timesteps=payload.inference_timesteps,
-                    normalize=False,
-                )
+                with torch.inference_mode():
+                    try:
+                        return model.generate(
+                            text=clean_text,
+                            reference_wav_path=str(ref_host_path),
+                            cfg_value=payload.cfg_value,
+                            inference_timesteps=payload.inference_timesteps,
+                            normalize=False,
+                        )
+                    except torch.cuda.OutOfMemoryError as initial_oom:
+                        logger.warning(
+                            "Transient CUDA OOM during VoxCPM2 generation (%s). Purging cache and attempting immediate retry...",
+                            initial_oom,
+                        )
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        time.sleep(0.3)
+                        return model.generate(
+                            text=clean_text,
+                            reference_wav_path=str(ref_host_path),
+                            cfg_value=payload.cfg_value,
+                            inference_timesteps=payload.inference_timesteps,
+                            normalize=False,
+                        )
 
             wav = await asyncio.to_thread(_run_inference)
             gen_time = round(time.time() - t_gen_start, 3)
