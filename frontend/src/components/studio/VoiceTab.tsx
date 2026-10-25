@@ -375,6 +375,23 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
             );
           })}
         </div>
+
+        {/* Custom Voice Profiles Banner */}
+        <div className="mt-2 flex items-center justify-between text-xs text-slate-600 bg-slate-50 rounded-xl p-3 border border-slate-200">
+          <div className="flex items-center gap-2">
+            <Mic2 className="w-4 h-4 text-indigo-600 shrink-0" />
+            <span>
+              Looking for custom speaker cloning? Manage authorized voice recordings in the{' '}
+              <a
+                href="#voices"
+                className="font-semibold text-indigo-600 hover:text-indigo-800 underline"
+              >
+                Voice Studio
+              </a>
+              . (AI cloning engine evaluation in progress for Phase 13B).
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );

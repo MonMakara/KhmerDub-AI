@@ -40,6 +40,12 @@ from app.schemas.project import (
     SubtitleKeepEditsRequest,
     SubtitleResetResponse,
 )
+from app.schemas.voice import (
+    VoiceConsentResponse,
+    VoiceProfileResponse,
+    VoiceProfileUpdate,
+    VoiceStudioResponse,
+)
 
 __all__ = [
     "HealthResponse",

@@ -8,6 +8,7 @@ from app.models.project import (
     GeneratedAudio,
     SubtitleSegment,
 )
+from app.models.voice import VoiceConsent, VoiceProfile
 
 __all__ = [
     "Base",
@@ -18,4 +19,7 @@ __all__ = [
     "ProcessingJob",
     "GeneratedAudio",
     "SubtitleSegment",
+    "VoiceConsent",
+    "VoiceProfile",
 ]
+

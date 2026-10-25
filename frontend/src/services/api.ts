@@ -22,6 +22,10 @@ import {
   ProjectDeleteResponse,
   SubtitleSegment,
   SubtitleListResponse,
+  VoiceProfile,
+  VoiceStudioData,
+  CreateVoiceProfilePayload,
+  UpdateVoiceProfilePayload,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -719,5 +723,86 @@ export const api = {
     format: string = 'vtt'
   ): string {
     return `${API_BASE}/projects/${projectId}/subtitles/stream?language=${encodeURIComponent(language)}&format=${encodeURIComponent(format)}`;
+  },
+
+  // ---------------- Voice Studio APIs (Phase 13A) ----------------
+
+  async getVoiceStudio(): Promise<VoiceStudioData> {
+    const res = await fetch(`${API_BASE}/voices`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to fetch Voice Studio data: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getVoiceProfile(profileId: string): Promise<VoiceProfile> {
+    const res = await fetch(`${API_BASE}/voices/${profileId}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to fetch voice profile: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async createVoiceProfile(payload: CreateVoiceProfilePayload): Promise<VoiceProfile> {
+    const formData = new FormData();
+    formData.append('name', payload.name);
+    if (payload.description) {
+      formData.append('description', payload.description);
+    }
+    formData.append('gender', payload.gender || 'neutral');
+    formData.append('speaker_name', payload.speaker_name);
+    formData.append('authorized_by', payload.authorized_by);
+    formData.append('consent_confirmed', String(payload.consent_confirmed));
+    if (payload.reference_transcript) {
+      formData.append('reference_transcript', payload.reference_transcript);
+    }
+    formData.append('file', payload.file);
+
+    const res = await fetch(`${API_BASE}/voices`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to create voice profile: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateVoiceProfile(
+    profileId: string,
+    payload: UpdateVoiceProfilePayload
+  ): Promise<VoiceProfile> {
+    const res = await fetch(`${API_BASE}/voices/${profileId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update voice profile: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async deleteVoiceProfile(
+    profileId: string
+  ): Promise<{ message: string; id: string; deleted_files_count: number }> {
+    const res = await fetch(`${API_BASE}/voices/${profileId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to delete voice profile: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getVoiceProfileAudioUrl(profileId: string): string {
+    return `${API_BASE}/voices/${profileId}/audio`;
   },
 };

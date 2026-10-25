@@ -337,3 +337,57 @@ export interface SubtitleStylePreferences {
   shadow: boolean;
 }
 
+export interface VoiceConsent {
+  id: string;
+  speaker_name: string;
+  authorized_by: string;
+  consent_statement: string;
+  signature_hash: string;
+  granted_at: string;
+}
+
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  gender: string;
+  language: string;
+  reference_audio_duration?: number | null;
+  reference_audio_sample_rate?: number | null;
+  reference_transcript?: string | null;
+  audio_format: string;
+  is_active: boolean;
+  consent: VoiceConsent;
+  created_at: string;
+  updated_at: string;
+  model_status: string;
+}
+
+export interface VoiceStudioData {
+  system_voices: VoiceOption[];
+  custom_profiles: VoiceProfile[];
+  total_custom_profiles: number;
+  cloning_engine_status: string;
+  default_provider: string;
+  default_voice: string;
+}
+
+export interface CreateVoiceProfilePayload {
+  name: string;
+  description?: string;
+  gender: string;
+  speaker_name: string;
+  authorized_by: string;
+  consent_confirmed: boolean;
+  reference_transcript?: string;
+  file: File;
+}
+
+export interface UpdateVoiceProfilePayload {
+  name?: string;
+  description?: string;
+  gender?: string;
+  reference_transcript?: string;
+}
+
+

@@ -31,6 +31,8 @@ data/temp/*
 !data/temp/.gitkeep
 data/projects/*
 !data/projects/.gitkeep
+data/voice_profiles/*
+!data/voice_profiles/.gitkeep
 data/.secrets/
 *.enc
 *.key

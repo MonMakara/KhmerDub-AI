@@ -193,3 +193,73 @@ def delete_project_storage(project_id: str) -> Dict[str, Any]:
         "deleted_paths": deleted_paths,
         "deleted_count": len(deleted_paths),
     }
+
+
+def sanitize_profile_id(profile_id: str) -> str:
+    """Validate and sanitize voice profile_id to prevent path traversal."""
+    if not profile_id:
+        raise ValueError("Invalid profile_id: empty or None")
+    stripped = profile_id.strip()
+    if "/" in stripped or "\\" in stripped or ".." in stripped:
+        raise ValueError(f"Path traversal characters detected in profile_id: '{profile_id}'")
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "", stripped)
+    if not sanitized:
+        raise ValueError(f"Invalid profile_id: '{profile_id}'")
+    return sanitized
+
+
+def get_voice_profiles_base_dir() -> Path:
+    """Return root directory for custom voice profiles: data/voice_profiles/."""
+    base = settings.DATA_DIR / "voice_profiles"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def get_voice_profile_dir(profile_id: str) -> Path:
+    """Return directory for specific voice profile: data/voice_profiles/{profile_id}/."""
+    safe_id = sanitize_profile_id(profile_id)
+    d = get_voice_profiles_base_dir() / safe_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_voice_profile_audio_path(profile_id: str) -> Path:
+    """Return persistent normalized reference audio path: data/voice_profiles/{profile_id}/reference.wav."""
+    return get_voice_profile_dir(profile_id) / "reference.wav"
+
+
+def delete_voice_profile_storage(profile_id: str) -> Dict[str, Any]:
+    """
+    Safely delete all file storage belonging to a voice profile.
+    Strictly isolated from project directories, AI models, and volumes.
+    Prevents path traversal, handles symlinks safely, and is idempotent.
+    """
+    safe_id = sanitize_profile_id(profile_id)
+    base_dir = get_voice_profiles_base_dir().resolve()
+    target_dir = base_dir / safe_id
+
+    deleted_paths = []
+
+    if target_dir.is_symlink():
+        try:
+            target_dir.unlink()
+            deleted_paths.append(str(target_dir))
+            logger.info(f"Unlinked voice profile symlink: {target_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to unlink voice profile symlink {target_dir}: {e}")
+    elif target_dir.exists() and target_dir.is_dir():
+        resolved = target_dir.resolve()
+        if resolved.parent == base_dir and resolved.name == safe_id:
+            try:
+                shutil.rmtree(target_dir, ignore_errors=False)
+                deleted_paths.append(str(target_dir))
+                logger.info(f"Deleted voice profile directory: {target_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to delete voice profile directory {target_dir}: {e}")
+
+    return {
+        "profile_id": safe_id,
+        "deleted_paths": deleted_paths,
+        "deleted_count": len(deleted_paths),
+    }
+

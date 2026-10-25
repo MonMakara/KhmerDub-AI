@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, FolderKanban, Settings, Languages, Video } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, Settings, Languages, Video, Mic2 } from 'lucide-react';
 
 interface SidebarProps {
   currentTab: string;
@@ -10,6 +10,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onTabChange }) => 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'projects', label: 'Projects', icon: FolderKanban },
+    { id: 'voices', label: 'Voice Studio', icon: Mic2 },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
