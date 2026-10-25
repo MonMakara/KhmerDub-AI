@@ -17,6 +17,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Clock,
   HardDrive,
   Info,
@@ -31,6 +32,8 @@ import {
   X,
   FileCheck,
   Volume2,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { api } from '../services/api';
 import {
@@ -39,6 +42,8 @@ import {
   ToolkitTask,
   ToolkitTranscriptSegment,
   TTSVoiceOption,
+  ParsedTranscriptCue,
+  TimingConflictItem,
 } from '../types';
 
 interface MediaToolkitProps {
@@ -96,6 +101,30 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const segmentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Transcript-to-Audio Studio State (Phase 13E.4)
+  const [ttaInputTab, setTtaInputTab] = useState<'upload' | 'paste' | 'import'>('paste');
+  const [ttaMode, setTtaMode] = useState<'narration' | 'timed'>('narration');
+  const [ttaPastedText, setTtaPastedText] = useState<string>(
+    `1\n00:00:01,000 --> 00:00:04,500\nសួស្តីបងប្អូនទាំងអស់គ្នា។\n\n2\n00:00:05,000 --> 00:00:08,200\nសូមស្វាគមន៍មកកាន់ KhmerDub AI។`
+  );
+  const [ttaSelectedFile, setTtaSelectedFile] = useState<File | null>(null);
+  const [ttaImportTaskId, setTtaImportTaskId] = useState<string>('');
+  const [ttaParsedCues, setTtaParsedCues] = useState<ParsedTranscriptCue[]>([]);
+  const [ttaParsedFormat, setTtaParsedFormat] = useState<string>('');
+  const [ttaHasTimestamps, setTtaHasTimestamps] = useState<boolean>(false);
+  const [ttaWarnings, setTtaWarnings] = useState<string[]>([]);
+  const [ttaIsParsing, setTtaIsParsing] = useState<boolean>(false);
+  const [ttaIsGenerating, setTtaIsGenerating] = useState<boolean>(false);
+  const [ttaEditingCueIndex, setTtaEditingCueIndex] = useState<number | null>(null);
+  const [ttaEditingCueText, setTtaEditingCueText] = useState<string>('');
+  const [ttaEditingCueStart, setTtaEditingCueStart] = useState<number>(0);
+  const [ttaEditingCueEnd, setTtaEditingCueEnd] = useState<number>(0);
+  const [ttaEditingCueVoice, setTtaEditingCueVoice] = useState<string>('');
+  const [ttaEditingCueProvider, setTtaEditingCueProvider] = useState<string>('');
+  const [ttaSourceFilename, setTtaSourceFilename] = useState<string>('transcript.srt');
+  const [ttaSourceTaskId, setTtaSourceTaskId] = useState<string | null>(null);
+  const ttaFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Active Task & History
   const [activeTask, setActiveTask] = useState<ToolkitTask | null>(null);
@@ -181,10 +210,24 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   }, [ttsSelectedVoice, ttsSelectedProvider]);
 
   useEffect(() => {
-    if (selectedTool === 'text_to_speech') {
+    if (selectedTool === 'text_to_speech' || selectedTool === 'transcript_to_audio') {
       fetchTtsVoices(ttsLanguage);
     }
   }, [selectedTool, ttsLanguage, fetchTtsVoices]);
+
+  // Initial parse for Transcript to Audio pasted sample if empty
+  useEffect(() => {
+    if (selectedTool === 'transcript_to_audio' && ttaParsedCues.length === 0 && ttaPastedText.trim()) {
+      api.parseTranscriptToAudio(ttaPastedText, 'pasted.srt')
+        .then((res) => {
+          setTtaParsedCues(res.segments);
+          setTtaParsedFormat(res.format);
+          setTtaHasTimestamps(res.has_timestamps);
+          setTtaWarnings(res.warnings || []);
+        })
+        .catch(() => {});
+    }
+  }, [selectedTool, ttaParsedCues.length, ttaPastedText]);
 
   // Handle Drag & Drop
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -428,7 +471,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const full = await api.getToolkitTask(task.id);
       setActiveTask(full);
       // Auto-switch selected tool if matching
-      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech'].includes(full.tool_type)) {
+      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech', 'transcript_to_audio'].includes(full.tool_type)) {
         setSelectedTool(full.tool_type);
         if (full.tool_type === 'text_to_speech' && full.full_text) {
           setTtsText(full.full_text);
@@ -569,6 +612,244 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Transcript-to-Audio Studio Handlers (Phase 13E.4)
+  // -------------------------------------------------------------------------
+
+  const handleTtaParsePasted = async () => {
+    if (!ttaPastedText.trim()) {
+      setError('Please paste transcript text or subtitles first.');
+      return;
+    }
+    setError(null);
+    setTtaIsParsing(true);
+    try {
+      const res = await api.parseTranscriptToAudio(ttaPastedText, 'pasted.srt');
+      setTtaParsedCues(res.segments);
+      setTtaParsedFormat(res.format);
+      setTtaHasTimestamps(res.has_timestamps);
+      setTtaWarnings(res.warnings || []);
+      setTtaSourceFilename('pasted_' + (res.format === 'text' ? 'text.txt' : `${res.format}.srt`));
+      setTtaSourceTaskId(null);
+      if (!res.has_timestamps) {
+        setTtaMode('narration');
+      }
+      setStatusMessage(`Parsed ${res.segments.length} segment(s) successfully.`);
+    } catch (err: any) {
+      console.error('Failed to parse transcript:', err);
+      setError(err.message || 'Failed to parse transcript.');
+    } finally {
+      setTtaIsParsing(false);
+      setTimeout(() => setStatusMessage(''), 3000);
+    }
+  };
+
+  const handleTtaFileUpload = (file: File) => {
+    setError(null);
+    const validExts = ['.srt', '.vtt', '.txt'];
+    const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+    if (!validExts.includes(ext)) {
+      setError('Unsupported file type. Please upload a .srt, .vtt, or .txt file.');
+      return;
+    }
+    setTtaSelectedFile(file);
+    setTtaIsParsing(true);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const content = e.target?.result as string;
+        const res = await api.parseTranscriptToAudio(content, file.name);
+        setTtaParsedCues(res.segments);
+        setTtaParsedFormat(res.format);
+        setTtaHasTimestamps(res.has_timestamps);
+        setTtaWarnings(res.warnings || []);
+        setTtaSourceFilename(file.name);
+        setTtaSourceTaskId(null);
+        if (!res.has_timestamps) {
+          setTtaMode('narration');
+        }
+        setStatusMessage(`Loaded ${res.segments.length} segment(s) from ${file.name}.`);
+      } catch (err: any) {
+        console.error('Failed to parse uploaded transcript:', err);
+        setError(err.message || 'Failed to parse uploaded transcript file.');
+      } finally {
+        setTtaIsParsing(false);
+        setTimeout(() => setStatusMessage(''), 3000);
+      }
+    };
+    reader.onerror = () => {
+      setTtaIsParsing(false);
+      setError('Failed to read file from disk.');
+    };
+    reader.readAsText(file);
+  };
+
+  const handleTtaImportTask = async () => {
+    if (!ttaImportTaskId) {
+      setError('Please select a completed transcription task to import.');
+      return;
+    }
+    setError(null);
+    setTtaIsParsing(true);
+    try {
+      const res = await api.importTranscriptFromTask(ttaImportTaskId);
+      setTtaParsedCues(res.segments);
+      setTtaParsedFormat('imported');
+      setTtaHasTimestamps(res.has_timestamps);
+      setTtaWarnings(res.warnings || []);
+      setTtaSourceFilename(res.source_filename || `imported_${ttaImportTaskId.slice(0, 8)}.srt`);
+      setTtaSourceTaskId(res.source_task_id || ttaImportTaskId);
+      setStatusMessage(`Imported ${res.segments.length} segment(s) from previous task.`);
+    } catch (err: any) {
+      console.error('Failed to import transcript task:', err);
+      setError(err.message || 'Failed to import transcript.');
+    } finally {
+      setTtaIsParsing(false);
+      setTimeout(() => setStatusMessage(''), 3000);
+    }
+  };
+
+  const handleTtaGenerate = async () => {
+    if (ttaParsedCues.length === 0) {
+      setError('No transcript segments to synthesize. Please parse or import a transcript first.');
+      return;
+    }
+    if (ttaMode === 'timed') {
+      const missing = ttaParsedCues.some(
+        (c) => c.start_time === null || c.start_time === undefined || c.end_time === null || c.end_time === undefined
+      );
+      if (missing) {
+        setError('Timed Mode requires all segments to have start and end times. Please add timestamps or switch to Narration Mode.');
+        return;
+      }
+    }
+
+    setError(null);
+    setTtaIsGenerating(true);
+    setStatusMessage('Synthesizing speech segments and assembling audio track...');
+
+    try {
+      const task = await api.generateTranscriptToAudio({
+        segments: ttaParsedCues.map((c, i) => ({
+          segment_order: i + 1,
+          text: c.text,
+          start_time: c.start_time,
+          end_time: c.end_time,
+          voice: c.voice,
+          provider: c.provider,
+        })),
+        mode: ttaMode,
+        provider: ttsSelectedProvider,
+        voice: ttsSelectedVoice,
+        language: ttsLanguage,
+        target_format: ttsTargetFormat,
+        pause_duration_seconds: ttsPauseDuration,
+        source_task_id: ttaSourceTaskId || undefined,
+        filename: ttaSourceFilename,
+      });
+
+      setActiveTask(task);
+      setStatusMessage('Speech generation completed successfully!');
+      await fetchTasks();
+    } catch (err: any) {
+      console.error('Transcript to audio generation failed:', err);
+      setError(err.message || 'Failed to convert transcript to speech.');
+    } finally {
+      setTtaIsGenerating(false);
+      setTimeout(() => setStatusMessage(''), 3000);
+    }
+  };
+
+  const handleTtaStartEditCue = (index: number) => {
+    const cue = ttaParsedCues[index];
+    setTtaEditingCueIndex(index);
+    setTtaEditingCueText(cue.text);
+    setTtaEditingCueStart(cue.start_time ?? 0);
+    setTtaEditingCueEnd(cue.end_time ?? 1);
+    setTtaEditingCueVoice(cue.voice || '');
+    setTtaEditingCueProvider(cue.provider || '');
+  };
+
+  const handleTtaSaveEditCue = () => {
+    if (ttaEditingCueIndex === null) return;
+    const updated = [...ttaParsedCues];
+    updated[ttaEditingCueIndex] = {
+      ...updated[ttaEditingCueIndex],
+      text: ttaEditingCueText.trim(),
+      start_time: ttaEditingCueStart,
+      end_time: Math.max(ttaEditingCueStart + 0.1, ttaEditingCueEnd),
+      voice: ttaEditingCueVoice || null,
+      provider: ttaEditingCueProvider || null,
+    };
+    setTtaParsedCues(updated);
+    setTtaEditingCueIndex(null);
+  };
+
+  const handleTtaDeleteCue = (index: number) => {
+    const updated = ttaParsedCues.filter((_, i) => i !== index).map((c, i) => ({ ...c, segment_order: i + 1 }));
+    setTtaParsedCues(updated);
+    if (ttaEditingCueIndex === index) {
+      setTtaEditingCueIndex(null);
+    }
+  };
+
+  const handleTtaMoveCue = (index: number, direction: 'up' | 'down') => {
+    if ((direction === 'up' && index === 0) || (direction === 'down' && index === ttaParsedCues.length - 1)) {
+      return;
+    }
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    const updated = [...ttaParsedCues];
+    const temp = updated[index];
+    updated[index] = updated[targetIdx];
+    updated[targetIdx] = temp;
+    setTtaParsedCues(updated.map((c, i) => ({ ...c, segment_order: i + 1 })));
+  };
+
+  const handleTtaRegenerateTaskSegment = async (
+    segmentId: string,
+    textToUse?: string,
+    voiceToUse?: string,
+    provToUse?: string,
+    startToUse?: number,
+    endToUse?: number
+  ) => {
+    if (!activeTask) return;
+    setError(null);
+    setRegeneratingSegmentId(segmentId);
+    try {
+      const updated = await api.regenerateTranscriptToAudioSegment(activeTask.id, segmentId, {
+        text: textToUse,
+        voice: voiceToUse,
+        provider: provToUse,
+        start_time: startToUse,
+        end_time: endToUse,
+      });
+      setActiveTask(updated);
+      setEditingTtsSegmentId(null);
+      await fetchTasks();
+    } catch (err: any) {
+      console.error('Failed to regenerate transcript segment:', err);
+      setError(err.message || 'Failed to regenerate segment.');
+    } finally {
+      setRegeneratingSegmentId(null);
+    }
+  };
+
+  const handleTtaDeleteTaskSegment = async (segmentId: string) => {
+    if (!activeTask) return;
+    if (!window.confirm('Delete this segment? The narration timeline will be rebuilt automatically.')) return;
+    setError(null);
+    try {
+      const updated = await api.deleteTranscriptToAudioSegment(activeTask.id, segmentId);
+      setActiveTask(updated);
+      await fetchTasks();
+    } catch (err: any) {
+      console.error('Failed to delete segment:', err);
+      setError(err.message || 'Failed to delete segment.');
+    }
+  };
+
   // Helpers
   const formatBytes = (bytes?: number | null) => {
     if (!bytes || bytes === 0) return '0 B';
@@ -646,7 +927,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       title: 'Transcript to Audio',
       desc: 'Transform subtitle transcripts into continuous audio narration or synchronized tracks.',
       icon: Radio,
-      status: 'planned' as const,
+      status: 'available' as const,
       phase: 'Phase 13E.4',
     },
   ];
@@ -2152,6 +2433,877 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             )}
           </div>
         </div>
+      ) : selectedTool === 'transcript_to_audio' ? (
+        /* Transcript-to-Audio Studio (Phase 13E.4) */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          <audio
+            ref={previewAudioRef}
+            onEnded={() => setTtsPreviewAudioUrl(null)}
+          />
+          <audio
+            ref={segmentAudioRef}
+            onEnded={() => setPlayingSegmentId(null)}
+            onError={() => setPlayingSegmentId(null)}
+          />
+
+          {/* Left Column: Input Configuration */}
+          <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Radio className="w-5 h-5 text-indigo-600" />
+                  Transcript to Audio Studio
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Convert timestamped transcripts or plain text into natural continuous speech or timed tracks.
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Phase 13E.4
+              </span>
+            </div>
+
+            {/* Input Method Tabs */}
+            <div className="space-y-3">
+              <label className="text-xs font-semibold text-slate-700">Transcript Input Source</label>
+              <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setTtaInputTab('paste')}
+                  className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                    ttaInputTab === 'paste'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Paste Text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtaInputTab('upload')}
+                  className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                    ttaInputTab === 'upload'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Upload File
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtaInputTab('import')}
+                  className={`py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                    ttaInputTab === 'import'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Import Task
+                </button>
+              </div>
+
+              {/* Tab 1: Paste Transcript */}
+              {ttaInputTab === 'paste' && (
+                <div className="space-y-2">
+                  <div className="relative">
+                    <textarea
+                      value={ttaPastedText}
+                      onChange={(e) => setTtaPastedText(e.target.value)}
+                      placeholder="Paste SRT, WebVTT, or plain text here..."
+                      rows={6}
+                      className="w-full p-3 rounded-xl border border-slate-200 text-slate-800 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 resize-y leading-relaxed"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span>Supports SRT, WebVTT, and plain text</span>
+                    <button
+                      type="button"
+                      onClick={handleTtaParsePasted}
+                      disabled={ttaIsParsing || !ttaPastedText.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${ttaIsParsing ? 'animate-spin' : ''}`} />
+                      <span>Parse Transcript</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 2: Upload File */}
+              {ttaInputTab === 'upload' && (
+                <div className="space-y-2">
+                  <input
+                    ref={ttaFileInputRef}
+                    type="file"
+                    accept=".srt,.vtt,.txt"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleTtaFileUpload(e.target.files[0]);
+                      }
+                    }}
+                    className="hidden"
+                  />
+                  <div
+                    onClick={() => ttaFileInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-xl p-6 text-center cursor-pointer transition-colors bg-slate-50/50 hover:bg-indigo-50/20 space-y-2"
+                  >
+                    <Upload className="w-8 h-8 text-slate-400 mx-auto" />
+                    <div className="text-xs">
+                      <span className="font-semibold text-indigo-600">Click to upload</span>
+                      <span className="text-slate-500"> or drag and drop</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">SRT, VTT, or TXT (UTF-8 encoded)</p>
+                    {ttaSelectedFile && (
+                      <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white border border-slate-200 text-xs font-medium text-slate-700">
+                        <FileCode className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>{ttaSelectedFile.name}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 3: Import Existing Task */}
+              {ttaInputTab === 'import' && (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-500">
+                    Directly reuse speech segments from completed Whisper transcription tasks without re-running ASR.
+                  </p>
+                  <select
+                    value={ttaImportTaskId}
+                    onChange={(e) => setTtaImportTaskId(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">-- Select Completed Task --</option>
+                    {tasks
+                      .filter((t) => t.status === 'completed' && (t.tool_type.includes('transcript') || (t.segments && t.segments.length > 0)))
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.source_filename} ({getToolTitle(t.tool_type)} - {formatDuration(t.output_duration_seconds)})
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleTtaImportTask}
+                    disabled={!ttaImportTaskId || ttaIsParsing}
+                    className="w-full py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Import Task Transcript</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Generation Mode Selector */}
+            <div className="space-y-2 border-t border-slate-100 pt-4">
+              <label className="text-xs font-semibold text-slate-700">Speech Generation Mode</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTtaMode('narration')}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                    ttaMode === 'narration'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-900 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="font-semibold text-xs flex items-center justify-between">
+                    <span>Narration Mode</span>
+                    {ttaMode === 'narration' && <Check className="w-3.5 h-3.5 text-indigo-600" />}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Natural continuous speech. Gaps and sentence pacing use natural pauses.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (ttaHasTimestamps) {
+                      setTtaMode('timed');
+                    }
+                  }}
+                  disabled={!ttaHasTimestamps}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    !ttaHasTimestamps
+                      ? 'bg-slate-50 border-slate-200/80 text-slate-400 opacity-60 cursor-not-allowed'
+                      : ttaMode === 'timed'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-900 ring-1 ring-indigo-500 cursor-pointer'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer'
+                  }`}
+                >
+                  <div className="font-semibold text-xs flex items-center justify-between">
+                    <span>Timed Mode</span>
+                    {ttaMode === 'timed' && <Check className="w-3.5 h-3.5 text-indigo-600" />}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Aligned to timestamps with up to 1.25x tempo and conflict reporting.
+                  </p>
+                </button>
+              </div>
+
+              {!ttaHasTimestamps && (
+                <p className="text-[11px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-200 flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Timed Mode requires timestamped input (SRT or VTT). Narration Mode is active.</span>
+                </p>
+              )}
+            </div>
+
+            {/* Pause duration (Narration mode only) */}
+            {ttaMode === 'narration' && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-700">Pause Between Segments</label>
+                  <span className="text-xs font-mono font-bold text-indigo-600">{ttsPauseDuration.toFixed(2)}s</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="1.5"
+                  step="0.05"
+                  value={ttsPauseDuration}
+                  onChange={(e) => setTtsPauseDuration(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-600 cursor-pointer"
+                />
+              </div>
+            )}
+
+            {/* Language Selection */}
+            <div className="space-y-2 border-t border-slate-100 pt-4">
+              <label className="text-xs font-semibold text-slate-700">Language</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTtsLanguage('km')}
+                  className={`py-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                    ttsLanguage === 'km'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  🇰🇭 Khmer (Default)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtsLanguage('en')}
+                  className={`py-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                    ttsLanguage === 'en'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  🇺🇸 English
+                </button>
+              </div>
+            </div>
+
+            {/* Global Voice Selection */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-700">Global Voice</label>
+                <span className="text-[11px] text-slate-400">Can override per segment</span>
+              </div>
+              <select
+                value={`${ttsSelectedProvider}::${ttsSelectedVoice}`}
+                onChange={(e) => {
+                  const [prov, vName] = e.target.value.split('::');
+                  setTtsSelectedProvider(prov);
+                  setTtsSelectedVoice(vName);
+                }}
+                className="w-full p-2.5 rounded-xl border border-slate-200 text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                {ttsVoices.map((v) => (
+                  <option
+                    key={`${v.provider}-${v.voice}`}
+                    value={`${v.provider}::${v.voice}`}
+                    disabled={!v.is_available}
+                  >
+                    {v.label} ({v.provider.toUpperCase()}) {!v.is_available ? '— Offline' : ''}
+                  </option>
+                ))}
+              </select>
+
+              {/* Preview Button */}
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-[11px] text-slate-400">Test voice pronunciation</span>
+                <button
+                  type="button"
+                  onClick={handlePreviewTts}
+                  disabled={isTtsPreviewLoading}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isTtsPreviewLoading ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                  ) : ttsPreviewAudioUrl ? (
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5" />
+                  )}
+                  <span>{ttsPreviewAudioUrl ? 'Playing...' : 'Preview Voice'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Target Output Format */}
+            <div className="space-y-2 border-t border-slate-100 pt-4">
+              <label className="text-xs font-semibold text-slate-700">Audio Format</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTtsTargetFormat('mp3')}
+                  className={`py-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                    ttsTargetFormat === 'mp3'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  MP3 (Standard)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtsTargetFormat('wav')}
+                  className={`py-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                    ttsTargetFormat === 'wav'
+                      ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  WAV (Lossless 44.1kHz)
+                </button>
+              </div>
+            </div>
+
+            {/* Generate Action Button */}
+            <button
+              type="button"
+              onClick={handleTtaGenerate}
+              disabled={ttaIsGenerating || ttaParsedCues.length === 0}
+              className="w-full py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {ttaIsGenerating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Synthesizing Transcript Speech...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>
+                    Generate Speech Track ({ttaParsedCues.length}{' '}
+                    {ttaParsedCues.length === 1 ? 'Segment' : 'Segments'})
+                  </span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Right Column: Interactive Editor / Active Workspace */}
+          <div className="lg:col-span-7 space-y-6">
+            {activeTask && activeTask.tool_type === 'transcript_to_audio' && activeTask.status === 'completed' ? (
+              /* Active Generated Studio Workspace */
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        {activeTask.output_media_metadata?.mode === 'timed' ? 'Timed Mode' : 'Narration Mode'}
+                      </span>
+                      <span className="text-xs font-mono text-slate-400">
+                        {formatDuration(activeTask.output_duration_seconds)}
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                      <span>{activeTask.source_filename}</span>
+                    </h3>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTask(null);
+                      setTtaParsedCues([]);
+                    }}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-600 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>New Transcript</span>
+                  </button>
+                </div>
+
+                {/* Primary Audio Player & Downloads */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Volume2 className="w-4 h-4 text-indigo-600" />
+                      Assembled Narration Audio
+                    </span>
+                    <span className="text-xs font-mono text-slate-500">
+                      {formatDuration(activeTask.output_duration_seconds)} • {formatBytes(activeTask.output_file_size_bytes)}
+                    </span>
+                  </div>
+
+                  <audio
+                    controls
+                    className="w-full h-10"
+                    src={api.getToolkitAudioStreamUrl(activeTask.id)}
+                  />
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <a
+                      href={api.getToolkitTTSExportUrl(activeTask.id, 'mp3')}
+                      download={`narration_${activeTask.id.slice(0, 8)}.mp3`}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 transition-colors shadow-xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download MP3</span>
+                    </a>
+                    <a
+                      href={api.getToolkitTTSExportUrl(activeTask.id, 'wav')}
+                      download={`narration_${activeTask.id.slice(0, 8)}.wav`}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download WAV</span>
+                    </a>
+                  </div>
+                </div>
+
+                {/* Timing Conflicts Alert Banner (if in Timed Mode) */}
+                {activeTask.output_media_metadata?.conflicts && activeTask.output_media_metadata.conflicts.length > 0 && (
+                  <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-3">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <h4 className="font-bold text-amber-900 text-sm">
+                          {activeTask.output_media_metadata.conflicts.length} Speech Timing Conflict(s) Detected
+                        </h4>
+                        <p className="text-xs text-amber-800 leading-relaxed">
+                          The following speech segments take longer to pronounce in Khmer than the original transcript window.
+                          Per project architecture, silent truncation is prevented. You may shorten the text or switch to Narration Mode.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 pt-1">
+                      {activeTask.output_media_metadata.conflicts.map((c: TimingConflictItem) => (
+                        <div
+                          key={c.segment_order}
+                          className="p-3 rounded-lg bg-white/80 border border-amber-200/80 text-xs space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between font-semibold text-slate-800">
+                            <span className="font-mono text-indigo-700">Segment #{c.segment_order}</span>
+                            <span className="font-mono text-amber-700">
+                              {c.start_time.toFixed(2)}s → {c.end_time.toFixed(2)}s (+{c.overflow_seconds.toFixed(2)}s overflow)
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11px]">{c.suggested_action}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTtaMode('narration');
+                          handleTtaGenerate();
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold cursor-pointer transition-colors shadow-xs"
+                      >
+                        Switch to Narration Mode & Re-generate
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Segments Breakdown */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-slate-900 text-sm">
+                      Individual Speech Segments ({activeTask.tts_segments?.length || 0})
+                    </h4>
+                    <span className="text-xs text-slate-400">
+                      Play, edit text/timings, override voices, or regenerate single sentences
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+                    {(activeTask.tts_segments || []).map((seg) => {
+                      const isEditing = editingTtsSegmentId === seg.id;
+                      const isRegenerating = regeneratingSegmentId === seg.id;
+                      const isPlaying = playingSegmentId === seg.id;
+
+                      return (
+                        <div
+                          key={seg.id}
+                          className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-3 shadow-xs"
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-700 text-[11px]">
+                                #{seg.segment_order}
+                              </span>
+                              {seg.start_time !== null && seg.start_time !== undefined && seg.end_time !== null && seg.end_time !== undefined && (
+                                <span className="font-mono text-indigo-700 font-semibold text-[11px]">
+                                  {formatTimestamp(seg.start_time)} → {formatTimestamp(seg.end_time)}
+                                </span>
+                              )}
+                              <span className="font-mono text-slate-400">
+                                {seg.duration_seconds ? `${seg.duration_seconds.toFixed(2)}s` : '--'}
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                  seg.status === 'completed'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                }`}
+                              >
+                                {seg.status}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              {/* Play individual segment */}
+                              <button
+                                type="button"
+                                onClick={() => handlePlayTtsSegment(activeTask.id, seg.id)}
+                                disabled={!seg.audio_file_path}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer disabled:opacity-40"
+                                title="Play segment"
+                              >
+                                {isPlaying ? (
+                                  <Pause className="w-3.5 h-3.5 text-indigo-600" />
+                                ) : (
+                                  <Play className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+
+                              {/* Edit segment text and timing */}
+                              {!isEditing && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartEditTtsSegment(seg.id, seg.text)}
+                                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                  title="Edit segment"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
+                              {/* Download segment audio */}
+                              <a
+                                href={api.getToolkitTTSSegmentDownloadUrl(activeTask.id, seg.id)}
+                                download={`segment_${seg.segment_order}.wav`}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                title="Download segment audio"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </a>
+
+                              {/* Delete segment */}
+                              <button
+                                type="button"
+                                onClick={() => handleTtaDeleteTaskSegment(seg.id)}
+                                className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                                title="Delete segment"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Segment Text or Edit Area */}
+                          {isEditing ? (
+                            <div className="space-y-3">
+                              <textarea
+                                value={editingTtsSegmentText}
+                                onChange={(e) => setEditingTtsSegmentText(e.target.value)}
+                                className="w-full p-2.5 rounded-lg border border-indigo-300 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
+                                rows={2}
+                                autoFocus
+                              />
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={handleCancelEditTtsSegment}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold cursor-pointer"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTtaRegenerateTaskSegment(seg.id, editingTtsSegmentText)}
+                                  disabled={isRegenerating || !editingTtsSegmentText.trim()}
+                                  className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                                >
+                                  {isRegenerating ? (
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Save className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>Save & Regenerate</span>
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-slate-800 text-sm leading-relaxed">{seg.text}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : ttaParsedCues.length > 0 ? (
+              /* Pre-Generation Parsed Transcript Editor */
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        {ttaParsedFormat || 'SRT'} Format
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        {ttaParsedCues.length} {ttaParsedCues.length === 1 ? 'segment' : 'segments'}
+                      </span>
+                      {ttaHasTimestamps ? (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          Timestamps Validated
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">
+                          Narration Only
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="font-bold text-slate-900 text-base">
+                      {ttaSourceFilename}
+                    </h3>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setTtaParsedCues([])}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-600 transition-colors cursor-pointer"
+                  >
+                    Clear All
+                  </button>
+                </div>
+
+                {/* Warnings Banner */}
+                {ttaWarnings.length > 0 && (
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Parsing Notices ({ttaWarnings.length})</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5 pl-1 text-[11px]">
+                      {ttaWarnings.map((w, idx) => (
+                        <li key={idx}>{w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Interactive Parsed Cues List */}
+                <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+                  {ttaParsedCues.map((cue, idx) => {
+                    const isEditing = ttaEditingCueIndex === idx;
+
+                    return (
+                      <div
+                        key={idx}
+                        className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-3 shadow-xs"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-700 text-[11px]">
+                              #{idx + 1}
+                            </span>
+                            {cue.start_time !== null && cue.start_time !== undefined && cue.end_time !== null && cue.end_time !== undefined && (
+                              <span className="font-mono text-indigo-700 font-semibold text-[11px]">
+                                {formatTimestamp(cue.start_time)} → {formatTimestamp(cue.end_time)}
+                              </span>
+                            )}
+                            {cue.voice && (
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-700 font-semibold">
+                                {cue.voice}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            {/* Reordering buttons (Narration mode) */}
+                            {ttaMode === 'narration' && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTtaMoveCue(idx, 'up')}
+                                  disabled={idx === 0}
+                                  className="p-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30 cursor-pointer"
+                                  title="Move segment up"
+                                >
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTtaMoveCue(idx, 'down')}
+                                  disabled={idx === ttaParsedCues.length - 1}
+                                  className="p-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30 cursor-pointer"
+                                  title="Move segment down"
+                                >
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            )}
+
+                            {!isEditing && (
+                              <button
+                                type="button"
+                                onClick={() => handleTtaStartEditCue(idx)}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                title="Edit segment"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleTtaDeleteCue(idx)}
+                              className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                              title="Delete segment"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Text / Inline Editing */}
+                        {isEditing ? (
+                          <div className="space-y-3 pt-1">
+                            <textarea
+                              value={ttaEditingCueText}
+                              onChange={(e) => setTtaEditingCueText(e.target.value)}
+                              rows={2}
+                              className="w-full p-2.5 rounded-lg border border-indigo-300 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            />
+
+                            {/* Timing inputs if Timed Mode */}
+                            {ttaMode === 'timed' && (
+                              <div className="grid grid-cols-2 gap-3 text-xs">
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-600">Start Time (s)</label>
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    value={ttaEditingCueStart}
+                                    onChange={(e) => setTtaEditingCueStart(parseFloat(e.target.value) || 0)}
+                                    className="w-full mt-1 p-1.5 rounded border border-slate-200 text-slate-800"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-600">End Time (s)</label>
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    value={ttaEditingCueEnd}
+                                    onChange={(e) => setTtaEditingCueEnd(parseFloat(e.target.value) || 0)}
+                                    className="w-full mt-1 p-1.5 rounded border border-slate-200 text-slate-800"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Voice override dropdown */}
+                            <div>
+                              <label className="text-[11px] font-semibold text-slate-600">Voice Override (Optional)</label>
+                              <select
+                                value={`${ttaEditingCueProvider}::${ttaEditingCueVoice}`}
+                                onChange={(e) => {
+                                  if (!e.target.value) {
+                                    setTtaEditingCueProvider('');
+                                    setTtaEditingCueVoice('');
+                                  } else {
+                                    const [p, v] = e.target.value.split('::');
+                                    setTtaEditingCueProvider(p);
+                                    setTtaEditingCueVoice(v);
+                                  }
+                                }}
+                                className="w-full mt-1 p-1.5 rounded border border-slate-200 text-slate-800 text-xs"
+                              >
+                                <option value="">-- Use Global Voice --</option>
+                                {ttsVoices.map((v) => (
+                                  <option key={`${v.provider}-${v.voice}`} value={`${v.provider}::${v.voice}`}>
+                                    {v.label} ({v.provider.toUpperCase()})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="flex items-center justify-end gap-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => setTtaEditingCueIndex(null)}
+                                className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleTtaSaveEditCue}
+                                className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Save className="w-3.5 h-3.5" />
+                                <span>Save Changes</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-slate-800 text-sm leading-relaxed">{cue.text}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* Empty State */
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-12 text-center text-slate-400 space-y-4">
+                <Radio className="w-14 h-14 text-slate-300 mx-auto" />
+                <div className="space-y-1">
+                  <h4 className="font-semibold text-slate-700 text-base">Transcript-to-Audio Studio Ready</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                    Paste an SRT or plain text transcript, upload a subtitle file (.srt, .vtt), or import from a completed transcription task to start synthesizing.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3 max-w-sm mx-auto text-left text-[11px] text-slate-500 pt-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Narration & Timed Modes</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>SRT / WebVTT / Plain Text</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Per-Segment Voice Override</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Conflict Detection & Tempo</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       ) : null}
 
       {/* Task Workspace History Section */}
@@ -2242,7 +3394,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       <div className="flex items-center justify-end gap-1.5">
                         {task.status === 'completed' && (
                           <>
-                            {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech') && (
+                            {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio') && (
                               <button
                                 onClick={() => {
                                   setActiveTask(task);

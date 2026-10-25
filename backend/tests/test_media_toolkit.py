@@ -90,13 +90,11 @@ def test_toolkit_capabilities_endpoint():
     assert "audio_to_text" in tools
     assert tools["audio_to_text"]["status"] == "available"
 
-    # Phase 13E.3 Active tools
+    # Phase 13E.3 & 13E.4 Active tools
     assert "text_to_speech" in tools
     assert tools["text_to_speech"]["status"] == "available"
-
-    # Future planned tools
     assert "transcript_to_audio" in tools
-    assert tools["transcript_to_audio"]["status"] == "planned"
+    assert tools["transcript_to_audio"]["status"] == "available"
 
 
     # Language capability mapping

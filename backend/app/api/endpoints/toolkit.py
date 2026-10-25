@@ -42,6 +42,14 @@ from app.services.subtitles.generator import (
     generate_txt,
     generate_vtt,
 )
+from app.services.subtitles.parser import (
+    parse_transcript_content,
+    TranscriptParseError,
+)
+from app.services.dubbing.synchronizer import (
+    AudioSynchronizationService,
+    TimingConflict,
+)
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
 from app.services.tts.registry import (
     get_tts_provider,
@@ -104,6 +112,10 @@ class ToolkitTTSSegmentResponse(BaseModel):
     task_id: str
     segment_order: int
     text: str
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    voice: Optional[str] = None
+    provider: Optional[str] = None
     audio_file_path: Optional[str] = None
     duration_seconds: Optional[float] = None
     file_size_bytes: Optional[int] = None
@@ -134,6 +146,42 @@ class TTSGenerateRequest(BaseModel):
 class TTSSegmentRegenerateRequest(BaseModel):
     text: Optional[str] = None
     pause_duration_seconds: Optional[float] = None
+    voice: Optional[str] = None
+    provider: Optional[str] = None
+
+
+class TranscriptToAudioParseRequest(BaseModel):
+    content: str
+    filename: Optional[str] = None
+
+
+class TranscriptToAudioSegmentInput(BaseModel):
+    segment_order: int
+    text: str
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    voice: Optional[str] = None
+    provider: Optional[str] = None
+
+
+class TranscriptToAudioGenerateRequest(BaseModel):
+    segments: List[TranscriptToAudioSegmentInput]
+    mode: str = "narration"  # "narration" or "timed"
+    provider: str = "gtts"
+    voice: str = "default"
+    language: str = "km"
+    target_format: str = "mp3"
+    pause_duration_seconds: float = 0.4
+    source_task_id: Optional[str] = None
+    filename: Optional[str] = "transcript.srt"
+
+
+class TranscriptSegmentUpdateRequest(BaseModel):
+    text: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    voice: Optional[str] = None
+    provider: Optional[str] = None
 
 
 class SegmentUpdateRequest(BaseModel):
@@ -193,6 +241,10 @@ def _serialize_tts_segment(seg: ToolkitTTSSegment) -> Dict[str, Any]:
         "task_id": seg.task_id,
         "segment_order": seg.segment_order,
         "text": seg.text,
+        "start_time": seg.start_time,
+        "end_time": seg.end_time,
+        "voice": seg.voice,
+        "provider": seg.provider,
         "audio_file_path": seg.audio_file_path,
         "duration_seconds": seg.duration_seconds,
         "file_size_bytes": seg.file_size_bytes,
@@ -386,7 +438,7 @@ def get_toolkit_capabilities():
                 "title": "Transcript to Audio",
                 "description": "Turn structured transcripts into continuous audio narration or timing-aligned speech tracks.",
                 "category": "Synthesis",
-                "status": "planned",
+                "status": "available",
                 "phase": "13E.4",
                 "supported_formats": ["mp3", "wav"],
             },
@@ -1615,9 +1667,12 @@ def export_tts_narration(
 ):
     """Export the assembled narration in either MP3 or WAV format."""
     safe_id = sanitize_toolkit_task_id(task_id)
-    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id, ToolkitTask.tool_type == "text_to_speech").first()
+    task = db.query(ToolkitTask).filter(
+        ToolkitTask.id == safe_id,
+        ToolkitTask.tool_type.in_(["text_to_speech", "transcript_to_audio"]),
+    ).first()
     if not task:
-        raise HTTPException(status_code=404, detail=f"Text-to-speech task '{task_id}' not found.")
+        raise HTTPException(status_code=404, detail=f"Audio synthesis task '{task_id}' not found.")
 
     output_dir = get_toolkit_task_output_dir(safe_id)
     req_fmt = format.lower().lstrip(".")
@@ -1639,3 +1694,547 @@ def export_tts_narration(
         filename=f"narration_{safe_id[:8]}.{ext}",
         content_disposition_type="attachment",
     )
+
+
+# -------------------------------------------------------------------------
+# Phase 13E.4: Transcript-to-Audio Studio Endpoints
+# -------------------------------------------------------------------------
+
+def _assemble_transcript_audio(
+    task_id: str,
+    mode: str,
+    segments: List[ToolkitTTSSegment],
+    target_format: str = "mp3",
+    pause_duration_seconds: float = 0.4,
+) -> tuple[Path, Path, Path, float, List[Dict[str, Any]]]:
+    """Assemble segments according to mode ('narration' vs 'timed').
+    Returns (primary_output, wav_path, mp3_path, duration, conflicts_list).
+    """
+    output_dir = get_toolkit_task_output_dir(task_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    clean_fmt = target_format.lower().lstrip(".")
+    if clean_fmt not in ["mp3", "wav"]:
+        clean_fmt = "mp3"
+
+    valid_segs = [
+        s for s in segments
+        if s.audio_file_path and Path(s.audio_file_path).exists() and Path(s.audio_file_path).stat().st_size > 0
+    ]
+    if not valid_segs:
+        raise RuntimeError("No valid synthesized audio segments available to assemble.")
+
+    sorted_segs = sorted(valid_segs, key=lambda s: (s.start_time if s.start_time is not None else 0.0, s.segment_order))
+
+    if mode == "timed":
+        sync_items = [
+            {
+                "segment_order": s.segment_order,
+                "segment_id": s.id,
+                "start_time": s.start_time if s.start_time is not None else 0.0,
+                "end_time": s.end_time if s.end_time is not None else ((s.start_time or 0.0) + (s.duration_seconds or 1.0)),
+                "audio_path": Path(s.audio_file_path),
+                "duration_seconds": s.duration_seconds or 1.0,
+            }
+            for s in sorted_segs
+        ]
+        sync_service = AudioSynchronizationService()
+        wav_out = output_dir / "narration.wav"
+        sync_res = sync_service.synchronize_timed_segments(
+            task_id=task_id,
+            segments=sync_items,
+            output_timeline_path=wav_out,
+            target_duration=None,
+            strict_validation=False,
+        )
+        total_dur = sync_res.total_duration_seconds
+        mp3_out = output_dir / "narration.mp3"
+        cmd_mp3 = [
+            "ffmpeg",
+            "-y",
+            "-i", str(wav_out),
+            "-c:a", "libmp3lame",
+            "-b:a", "192k",
+            str(mp3_out),
+        ]
+        res_mp3 = subprocess.run(cmd_mp3, capture_output=True, text=True, check=False)
+        if res_mp3.returncode != 0:
+            raise RuntimeError(f"FFmpeg MP3 transcoding failed: {res_mp3.stderr}")
+        primary_out = mp3_out if clean_fmt == "mp3" else wav_out
+        conflicts = [
+            {
+                "segment_order": c.segment_order,
+                "transcript_segment_id": c.transcript_segment_id,
+                "start_time": c.start_time,
+                "end_time": c.end_time,
+                "original_duration": c.original_duration,
+                "khmer_duration": c.khmer_duration,
+                "available_window": c.available_window,
+                "effective_window": c.effective_window,
+                "tempo_factor": c.tempo_factor,
+                "overflow_seconds": c.overflow_seconds,
+                "suggested_action": c.suggested_action,
+                "message": c.message,
+            }
+            for c in sync_res.conflicts
+        ]
+        return primary_out, wav_out, mp3_out, total_dur, conflicts
+    else:
+        # Narration mode
+        primary_out, wav_out, mp3_out, total_dur = assemble_tts_narration(
+            task_id=task_id,
+            segments=sorted_segs,
+            pause_duration_seconds=pause_duration_seconds,
+            target_format=clean_fmt,
+        )
+        return primary_out, wav_out, mp3_out, total_dur, []
+
+
+@router.post("/transcript-to-audio/parse")
+def parse_transcript_endpoint(request: TranscriptToAudioParseRequest):
+    """Parse transcript string (SRT, VTT, or plain text) into validated segments."""
+    try:
+        parsed = parse_transcript_content(request.content, filename=request.filename)
+        return {
+            "format": parsed.format,
+            "has_timestamps": parsed.has_timestamps,
+            "segments": [
+                {
+                    "segment_order": s.segment_order,
+                    "text": s.text,
+                    "start_time": s.start_time,
+                    "end_time": s.end_time,
+                }
+                for s in parsed.segments
+            ],
+            "warnings": parsed.warnings,
+        }
+    except TranscriptParseError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to parse transcript: %s", e)
+        raise HTTPException(status_code=400, detail=f"Failed to parse transcript: {e}")
+
+
+@router.post("/transcript-to-audio/import/{task_id}")
+def import_transcript_from_task(task_id: str, db: Session = Depends(get_db)):
+    """Import segments from an existing completed toolkit transcription task."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
+
+    if not task.segments:
+        raise HTTPException(status_code=400, detail="Selected task does not contain any transcript segments.")
+
+    segs = sorted(task.segments, key=lambda s: s.segment_order)
+    return {
+        "format": "imported",
+        "has_timestamps": True,
+        "source_task_id": task.id,
+        "source_filename": task.source_filename,
+        "segments": [
+            {
+                "segment_order": s.segment_order,
+                "text": s.edited_text if s.edited_text else s.raw_text,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+            }
+            for s in segs
+        ],
+        "warnings": [],
+    }
+
+
+@router.post("/transcript-to-audio/generate", response_model=ToolkitTaskResponse)
+def generate_transcript_to_audio(
+    request: TranscriptToAudioGenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """Convert timestamped or continuous transcript segments into speech."""
+    if not request.segments:
+        raise HTTPException(status_code=400, detail="Transcript segments list cannot be empty.")
+
+    clean_mode = request.mode.strip().lower()
+    if clean_mode not in ["narration", "timed"]:
+        clean_mode = "narration"
+
+    if clean_mode == "timed":
+        missing_timing = [s for s in request.segments if s.start_time is None or s.end_time is None]
+        if missing_timing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Timed Mode requires timestamps on all segments. {len(missing_timing)} segment(s) lack start/end times. Please supply timestamps or use Narration Mode.",
+            )
+
+    provider_name = request.provider.strip().lower()
+    voice = request.voice.strip()
+    target_format = request.target_format.lower().lstrip(".")
+    if target_format not in ["mp3", "wav"]:
+        target_format = "mp3"
+
+    if not is_valid_voice_combination(provider_name, voice, db=db):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Global voice '{voice}' with provider '{provider_name}' is not supported or authorized.",
+        )
+
+    # Check if VoxCPM is used anywhere (global or per-segment)
+    needs_voxcpm = provider_name in ("voxcpm", "voxcpm2", "custom") or any(
+        (s.provider or "").lower() in ("voxcpm", "voxcpm2", "custom") for s in request.segments
+    )
+    if needs_voxcpm:
+        vox = VoxCPM2TTSProvider()
+        if not vox.is_worker_online():
+            raise HTTPException(
+                status_code=503,
+                detail="VoxCPM2 GPU inference worker is currently offline. Please ensure the worker is running or switch to Edge/Google TTS.",
+            )
+
+    task_id = str(uuid.uuid4())
+    input_dir = get_toolkit_task_input_dir(task_id)
+    output_dir = get_toolkit_task_output_dir(task_id)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    source_manifest_path = input_dir / "source_transcript.json"
+    source_manifest_path.write_text(
+        json.dumps([s.model_dump() for s in request.segments], indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    source_fname = request.filename or (f"import_{request.source_task_id[:8]}.srt" if request.source_task_id else "transcript.srt")
+    task = ToolkitTask(
+        id=task_id,
+        tool_type="transcript_to_audio",
+        source_type="imported_transcript" if request.source_task_id else "transcript_input",
+        source_project_id=request.source_task_id,
+        source_filename=source_fname,
+        source_file_path=str(source_manifest_path),
+        target_format=target_format,
+        status="processing",
+        progress_percentage=10,
+        source_media_metadata=json.dumps({
+            "mode": clean_mode,
+            "segment_count": len(request.segments),
+            "language": request.language,
+            "provider": provider_name,
+            "voice": voice,
+            "pause_duration_seconds": request.pause_duration_seconds,
+            "source_task_id": request.source_task_id,
+        }),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    segments_objs: List[ToolkitTTSSegment] = []
+    for s_in in request.segments:
+        seg = ToolkitTTSSegment(
+            id=str(uuid.uuid4()),
+            task_id=task.id,
+            segment_order=s_in.segment_order,
+            text=s_in.text.strip(),
+            start_time=s_in.start_time,
+            end_time=s_in.end_time,
+            voice=s_in.voice.strip() if s_in.voice else None,
+            provider=s_in.provider.strip().lower() if s_in.provider else None,
+            status="pending",
+        )
+        db.add(seg)
+        segments_objs.append(seg)
+    db.commit()
+
+    # Synthesize each segment
+    for seg in segments_objs:
+        seg_prov_name = seg.provider or provider_name
+        seg_voice_name = seg.voice or voice
+        prov = get_tts_provider(seg_prov_name)
+        seg_ext = "wav" if seg_prov_name in ("voxcpm", "voxcpm2", "custom") else "mp3"
+        seg_file = output_dir / f"segment_{seg.segment_order:03d}.{seg_ext}"
+
+        try:
+            prov.synthesize(
+                text=seg.text,
+                output_path=seg_file,
+                language=request.language,
+                voice=seg_voice_name,
+            )
+            dur = video_processor.get_audio_duration(seg_file)
+            seg.audio_file_path = str(seg_file)
+            seg.duration_seconds = dur
+            seg.file_size_bytes = seg_file.stat().st_size
+            seg.status = "completed"
+            seg.error_message = None
+            db.commit()
+        except Exception as e:
+            logger.error("Segment %d synthesis failed: %s", seg.segment_order, e)
+            seg.status = "failed"
+            seg.error_message = str(e)
+            db.commit()
+
+    completed_segs = [s for s in segments_objs if s.status == "completed"]
+    if not completed_segs:
+        task.status = "failed"
+        task.error_message = "All transcript segments failed speech synthesis."
+        db.commit()
+        db.refresh(task)
+        return _serialize_task(task)
+
+    # Assemble timeline based on mode
+    primary_out, wav_out, mp3_out, total_dur, conflicts = _assemble_transcript_audio(
+        task_id=task.id,
+        mode=clean_mode,
+        segments=completed_segs,
+        target_format=target_format,
+        pause_duration_seconds=request.pause_duration_seconds,
+    )
+
+    task.status = "completed"
+    task.progress_percentage = 100
+    task.output_file_path = str(primary_out)
+    task.output_filename = primary_out.name
+    task.output_duration_seconds = total_dur
+    task.output_file_size_bytes = primary_out.stat().st_size
+    task.output_media_metadata = json.dumps({
+        "mode": clean_mode,
+        "provider": provider_name,
+        "voice": voice,
+        "language": request.language,
+        "pause_duration_seconds": request.pause_duration_seconds,
+        "duration": total_dur,
+        "wav_path": str(wav_out),
+        "mp3_path": str(mp3_out),
+        "conflicts": conflicts,
+    })
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@router.put("/transcript-to-audio/tasks/{task_id}/segments/{segment_id}", response_model=ToolkitTaskResponse)
+def update_transcript_segment(
+    task_id: str,
+    segment_id: str,
+    request: TranscriptSegmentUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """Update text, timing, or voice override for an individual transcript segment."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id, ToolkitTask.tool_type == "transcript_to_audio").first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Transcript-to-audio task '{task_id}' not found.")
+
+    seg = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.id == segment_id, ToolkitTTSSegment.task_id == safe_id).first()
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found.")
+
+    if request.text is not None:
+        clean_text = request.text.strip()
+        if not clean_text:
+            raise HTTPException(status_code=400, detail="Segment text cannot be empty.")
+        seg.text = clean_text
+
+    if request.start_time is not None:
+        seg.start_time = max(0.0, float(request.start_time))
+    if request.end_time is not None:
+        seg.end_time = max(0.0, float(request.end_time))
+    if seg.start_time is not None and seg.end_time is not None and seg.end_time <= seg.start_time:
+        seg.end_time = seg.start_time + 1.0
+
+    if request.voice is not None:
+        seg.voice = request.voice.strip() if request.voice.strip() else None
+    if request.provider is not None:
+        seg.provider = request.provider.strip().lower() if request.provider.strip() else None
+
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@router.post("/transcript-to-audio/tasks/{task_id}/segments/{segment_id}/regenerate", response_model=ToolkitTaskResponse)
+def regenerate_transcript_segment(
+    task_id: str,
+    segment_id: str,
+    request: TranscriptSegmentUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """Regenerate speech for a single transcript segment and reassemble the narration timeline."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id, ToolkitTask.tool_type == "transcript_to_audio").first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Transcript-to-audio task '{task_id}' not found.")
+
+    seg = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.id == segment_id, ToolkitTTSSegment.task_id == safe_id).first()
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found.")
+
+    if request.text is not None:
+        clean_text = request.text.strip()
+        if not clean_text:
+            raise HTTPException(status_code=400, detail="Segment text cannot be empty.")
+        seg.text = clean_text
+
+    if request.start_time is not None:
+        seg.start_time = max(0.0, float(request.start_time))
+    if request.end_time is not None:
+        seg.end_time = max(0.0, float(request.end_time))
+    if seg.start_time is not None and seg.end_time is not None and seg.end_time <= seg.start_time:
+        seg.end_time = seg.start_time + 1.0
+
+    if request.voice is not None:
+        seg.voice = request.voice.strip() if request.voice.strip() else None
+    if request.provider is not None:
+        seg.provider = request.provider.strip().lower() if request.provider.strip() else None
+
+    db.commit()
+
+    meta = {}
+    if task.output_media_metadata:
+        try:
+            meta = json.loads(task.output_media_metadata)
+        except Exception:
+            pass
+
+    mode = meta.get("mode", "narration")
+    global_prov = meta.get("provider", "gtts")
+    global_voice = meta.get("voice", "default")
+    language = meta.get("language", "km")
+    pause_dur = meta.get("pause_duration_seconds", 0.4)
+
+    seg_prov = seg.provider or global_prov
+    seg_voice = seg.voice or global_voice
+
+    if seg_prov in ("voxcpm", "voxcpm2", "custom"):
+        vox = VoxCPM2TTSProvider()
+        if not vox.is_worker_online():
+            raise HTTPException(
+                status_code=503,
+                detail="VoxCPM2 GPU inference worker is currently offline. Cannot regenerate segment.",
+            )
+
+    provider = get_tts_provider(seg_prov)
+    output_dir = get_toolkit_task_output_dir(safe_id)
+    seg_ext = "wav" if seg_prov in ("voxcpm", "voxcpm2", "custom") else "mp3"
+    seg_file = output_dir / f"segment_{seg.segment_order:03d}.{seg_ext}"
+
+    try:
+        provider.synthesize(
+            text=seg.text,
+            output_path=seg_file,
+            language=language,
+            voice=seg_voice,
+        )
+        dur = video_processor.get_audio_duration(seg_file)
+        seg.audio_file_path = str(seg_file)
+        seg.duration_seconds = dur
+        seg.file_size_bytes = seg_file.stat().st_size
+        seg.status = "completed"
+        seg.error_message = None
+        db.commit()
+    except Exception as e:
+        logger.error("Segment regeneration failed: %s", e)
+        seg.status = "failed"
+        seg.error_message = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Segment regeneration failed: {e}")
+
+    # Reassemble timeline
+    all_segs = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.task_id == safe_id).order_by(ToolkitTTSSegment.segment_order).all()
+    completed_segs = [s for s in all_segs if s.status == "completed"]
+    if completed_segs:
+        primary_out, wav_out, mp3_out, total_dur, conflicts = _assemble_transcript_audio(
+            task_id=safe_id,
+            mode=mode,
+            segments=completed_segs,
+            target_format=task.target_format,
+            pause_duration_seconds=pause_dur,
+        )
+        task.output_file_path = str(primary_out)
+        task.output_filename = primary_out.name
+        task.output_duration_seconds = total_dur
+        task.output_file_size_bytes = primary_out.stat().st_size
+        meta["duration"] = total_dur
+        meta["wav_path"] = str(wav_out)
+        meta["mp3_path"] = str(mp3_out)
+        meta["conflicts"] = conflicts
+        task.output_media_metadata = json.dumps(meta)
+        db.commit()
+
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@router.delete("/transcript-to-audio/tasks/{task_id}/segments/{segment_id}", response_model=ToolkitTaskResponse)
+def delete_transcript_segment(
+    task_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+):
+    """Delete a segment from a transcript-to-audio task, resequence remaining segments, and rebuild the timeline."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id, ToolkitTask.tool_type == "transcript_to_audio").first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Transcript-to-audio task '{task_id}' not found.")
+
+    seg = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.id == segment_id, ToolkitTTSSegment.task_id == safe_id).first()
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found.")
+
+    # Delete segment audio file if exists
+    if seg.audio_file_path:
+        p = Path(seg.audio_file_path)
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    db.delete(seg)
+    db.commit()
+
+    # Resequence remaining segments 1..N
+    remaining = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.task_id == safe_id).order_by(ToolkitTTSSegment.segment_order).all()
+    for idx, s in enumerate(remaining, start=1):
+        s.segment_order = idx
+    db.commit()
+
+    meta = {}
+    if task.output_media_metadata:
+        try:
+            meta = json.loads(task.output_media_metadata)
+        except Exception:
+            pass
+
+    mode = meta.get("mode", "narration")
+    pause_dur = meta.get("pause_duration_seconds", 0.4)
+
+    completed_segs = [s for s in remaining if s.status == "completed"]
+    if completed_segs:
+        primary_out, wav_out, mp3_out, total_dur, conflicts = _assemble_transcript_audio(
+            task_id=safe_id,
+            mode=mode,
+            segments=completed_segs,
+            target_format=task.target_format,
+            pause_duration_seconds=pause_dur,
+        )
+        task.output_file_path = str(primary_out)
+        task.output_filename = primary_out.name
+        task.output_duration_seconds = total_dur
+        task.output_file_size_bytes = primary_out.stat().st_size
+        meta["duration"] = total_dur
+        meta["wav_path"] = str(wav_out)
+        meta["mp3_path"] = str(mp3_out)
+        meta["conflicts"] = conflicts
+        task.output_media_metadata = json.dumps(meta)
+        db.commit()
+    else:
+        task.output_duration_seconds = 0.0
+        task.output_file_size_bytes = 0
+        meta["duration"] = 0.0
+        meta["conflicts"] = []
+        task.output_media_metadata = json.dumps(meta)
+        db.commit()
+
+    db.refresh(task)
+    return _serialize_task(task)
+

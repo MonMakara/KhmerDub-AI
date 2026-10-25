@@ -1000,4 +1000,121 @@ export const api = {
   getToolkitTTSExportUrl(taskId: string, format: string): string {
     return `${API_BASE}/toolkit/tts/tasks/${taskId}/export?format=${format}`;
   },
+
+  async parseTranscriptToAudio(content: string, filename?: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/toolkit/transcript-to-audio/parse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, filename }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Parse transcript failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async importTranscriptFromTask(taskId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/toolkit/transcript-to-audio/import/${taskId}`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Import transcript failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async generateTranscriptToAudio(data: {
+    segments: Array<{
+      segment_order: number;
+      text: string;
+      start_time?: number | null;
+      end_time?: number | null;
+      voice?: string | null;
+      provider?: string | null;
+    }>;
+    mode: 'narration' | 'timed';
+    provider: string;
+    voice: string;
+    language?: string;
+    target_format?: string;
+    pause_duration_seconds?: number;
+    source_task_id?: string;
+    filename?: string;
+  }): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/transcript-to-audio/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Speech generation failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateTranscriptToAudioSegment(
+    taskId: string,
+    segmentId: string,
+    data: {
+      text?: string;
+      start_time?: number | null;
+      end_time?: number | null;
+      voice?: string | null;
+      provider?: string | null;
+    }
+  ): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/transcript-to-audio/tasks/${taskId}/segments/${segmentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Segment update failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async regenerateTranscriptToAudioSegment(
+    taskId: string,
+    segmentId: string,
+    data?: {
+      text?: string;
+      start_time?: number | null;
+      end_time?: number | null;
+      voice?: string | null;
+      provider?: string | null;
+    }
+  ): Promise<ToolkitTask> {
+    const res = await fetch(
+      `${API_BASE}/toolkit/transcript-to-audio/tasks/${taskId}/segments/${segmentId}/regenerate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data || {}),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Segment regeneration failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async deleteTranscriptToAudioSegment(taskId: string, segmentId: string): Promise<ToolkitTask> {
+    const res = await fetch(
+      `${API_BASE}/toolkit/transcript-to-audio/tasks/${taskId}/segments/${segmentId}`,
+      {
+        method: 'DELETE',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Segment deletion failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
 };

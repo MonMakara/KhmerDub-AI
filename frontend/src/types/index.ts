@@ -435,6 +435,10 @@ export interface ToolkitTTSSegment {
   task_id: string;
   segment_order: number;
   text: string;
+  start_time?: number | null;
+  end_time?: number | null;
+  voice?: string | null;
+  provider?: string | null;
   audio_file_path?: string | null;
   duration_seconds?: number | null;
   file_size_bytes?: number | null;
@@ -442,6 +446,39 @@ export interface ToolkitTTSSegment {
   error_message?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface TimingConflictItem {
+  segment_order: number;
+  transcript_segment_id: string;
+  start_time: number;
+  end_time: number;
+  original_duration: number;
+  khmer_duration: number;
+  available_window: number;
+  effective_window: number;
+  tempo_factor: number;
+  overflow_seconds: number;
+  suggested_action: string;
+  message: string;
+}
+
+export interface ParsedTranscriptCue {
+  segment_order: number;
+  text: string;
+  start_time?: number | null;
+  end_time?: number | null;
+  voice?: string | null;
+  provider?: string | null;
+}
+
+export interface ParsedTranscriptResponse {
+  format: string;
+  has_timestamps: boolean;
+  source_task_id?: string;
+  source_filename?: string;
+  segments: ParsedTranscriptCue[];
+  warnings: string[];
 }
 
 export interface TTSVoiceOption {
