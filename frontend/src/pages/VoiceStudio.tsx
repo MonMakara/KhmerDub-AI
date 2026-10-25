@@ -14,6 +14,8 @@ import {
   Upload,
   Clock,
   X,
+  CheckCircle2,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '../services/api';
 import {
@@ -268,6 +270,9 @@ export const VoiceStudio: React.FC = () => {
     }
   };
 
+  const engineStatus = data?.cloning_engine_status || 'Checking...';
+  const isEngineOnline = engineStatus.toLowerCase().includes('online');
+
   return (
     <div className="space-y-8 max-w-7xl mx-auto pb-12">
       {/* Hidden audio elements for playback */}
@@ -317,23 +322,40 @@ export const VoiceStudio: React.FC = () => {
         </div>
       </div>
 
-      {/* Status Notice: Engine Under Research */}
-      <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-4 sm:p-5 flex items-start gap-4">
-        <div className="p-2 rounded-lg bg-amber-100 text-amber-700 shrink-0 mt-0.5">
-          <AlertTriangle className="w-5 h-5" />
+      {/* Dynamic Voice Cloning Engine Status Banner */}
+      <div
+        className={`border rounded-xl p-4 sm:p-5 flex items-start gap-4 transition-all ${
+          isEngineOnline
+            ? 'bg-emerald-50/70 border-emerald-200'
+            : 'bg-amber-50/80 border-amber-200'
+        }`}
+      >
+        <div
+          className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+            isEngineOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+          }`}
+        >
+          {isEngineOnline ? <Sparkles className="w-5 h-5 text-emerald-600" /> : <AlertTriangle className="w-5 h-5" />}
         </div>
-        <div className="space-y-1 text-sm">
-          <div className="flex items-center gap-2 font-semibold text-amber-900">
-            <span>Voice Cloning Engine: Not Configured (Phase 13B Research)</span>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-800">
-              Phase 13A Foundation
+        <div className="space-y-1 text-sm flex-1">
+          <div className="flex flex-wrap items-center gap-2 font-semibold">
+            <span className={isEngineOnline ? 'text-emerald-950 font-bold' : 'text-amber-900 font-bold'}>
+              Voice Cloning Engine: {engineStatus}
+            </span>
+            <span
+              className={`text-[11px] font-mono px-2 py-0.5 rounded-full ${
+                isEngineOnline
+                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                  : 'bg-amber-200/80 text-amber-800'
+              }`}
+            >
+              {isEngineOnline ? 'Phase 13C Operational' : 'Worker Offline'}
             </span>
           </div>
-          <p className="text-amber-800/90 leading-relaxed">
-            Custom voice profiles and authorized Khmer reference recordings are securely stored,
-            inspected, and normalized to 48 kHz mono WAV. AI voice-cloning synthesis (VoxCPM2) is
-            currently undergoing feasibility and benchmark evaluation in Phase 13B. Custom voice
-            speech generation is not yet operational until model benchmarking is approved.
+          <p className={isEngineOnline ? 'text-emerald-900/80 leading-relaxed' : 'text-amber-800/90 leading-relaxed'}>
+            {isEngineOnline
+              ? 'Authorized custom Khmer voice profiles are operational for speech synthesis in dubbing projects using the local openbmb/VoxCPM2 model on the GPU.'
+              : 'The local VoxCPM2 GPU inference worker is offline. Run ./scripts/run_voxcpm_worker.sh to enable custom voice cloning.'}
           </p>
         </div>
       </div>
@@ -497,9 +519,24 @@ export const VoiceStudio: React.FC = () => {
                         {profile.gender.toUpperCase()}
                       </span>
 
-                      <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200/60 flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-amber-600" />
-                        <span>Awaiting Model (Phase 13B)</span>
+                      <span
+                        className={`text-[11px] font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${
+                          isEngineOnline
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-amber-50 text-amber-700 border-amber-200/60'
+                        }`}
+                      >
+                        {isEngineOnline ? (
+                          <>
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Ready to Clone</span>
+                          </>
+                        ) : (
+                          <>
+                            <Clock className="w-3 h-3 text-amber-600" />
+                            <span>Worker Offline</span>
+                          </>
+                        )}
                       </span>
                     </div>
 

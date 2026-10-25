@@ -417,7 +417,7 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
               >
                 Voice Studio
               </a>
-              . (AI cloning engine evaluation in progress for Phase 13B).
+              . Clone authorized custom voices for video dubbing with the local VoxCPM2 model.
             </span>
           </div>
         </div>
