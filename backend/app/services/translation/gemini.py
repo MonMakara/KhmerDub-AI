@@ -8,8 +8,12 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
+from app.core import credentials
 from app.core.config import settings
-from app.core.credentials import get_api_key
+
+def get_api_key(provider: str = "gemini") -> Optional[str]:
+    """Helper wrapper resolving API key through app.core.credentials."""
+    return credentials.get_api_key(provider)
 from app.services.translation.base import (
     TranslationProvider,
     TranslationAlternative,
@@ -35,13 +39,20 @@ from app.services.translation.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 SUPPORTED_GEMINI_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+]
+DEPRECATED_GEMINI_MODELS = {
     "gemini-2.5-flash",
     "gemini-2.5-pro",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
-]
+}
 
 
 class GeminiTranslationProvider(TranslationProvider):
@@ -59,7 +70,16 @@ class GeminiTranslationProvider(TranslationProvider):
         max_retries: int = 3,
     ):
         self._explicit_key = api_key
-        self.model = model or getattr(settings, "GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+        raw_model = model or getattr(settings, "GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+        if raw_model in DEPRECATED_GEMINI_MODELS:
+            logger.warning(
+                "Configured Gemini model '%s' is deprecated by Google. Automatically migrating to '%s'.",
+                raw_model,
+                DEFAULT_GEMINI_MODEL,
+            )
+            self.model = DEFAULT_GEMINI_MODEL
+        else:
+            self.model = raw_model
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -75,7 +95,8 @@ class GeminiTranslationProvider(TranslationProvider):
             raise ProviderAuthenticationError(
                 "Google Gemini API key is missing. Please configure GEMINI_API_KEY in Settings or your environment."
             )
-        return genai.Client(api_key=key)
+        timeout_ms = int(max(self.timeout, 10.0) * 1000)
+        return genai.Client(api_key=key, http_options={"timeout": timeout_ms})
 
     def test_connection(self, api_key: Optional[str] = None) -> Tuple[bool, str]:
         """Test API key authentication and network connectivity to Google Gemini."""
@@ -83,28 +104,44 @@ class GeminiTranslationProvider(TranslationProvider):
         if not key:
             return False, "Google Gemini API key is missing. Please enter a valid API key."
 
+        target_model = self.model
+        if target_model in DEPRECATED_GEMINI_MODELS:
+            target_model = DEFAULT_GEMINI_MODEL
+
         try:
-            client = genai.Client(api_key=key)
+            timeout_ms = int(max(self.timeout, 15.0) * 1000)
+            client = genai.Client(api_key=key, http_options={"timeout": timeout_ms})
             # Lightweight prompt to verify credentials and model accessibility
             response = client.models.generate_content(
-                model=self.model,
+                model=target_model,
                 contents="Ping. Respond with 'OK'.",
                 config=types.GenerateContentConfig(
-                    max_output_tokens=10,
+                    max_output_tokens=50,
                     temperature=0.0,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                 ),
             )
             if response and response.text:
-                return True, f"Successfully connected to Google Gemini API using model '{self.model}'."
+                return True, f"Successfully connected to Google Gemini API using model '{target_model}'."
             return False, "Gemini endpoint responded but output was empty."
 
         except APIError as e:
             code = getattr(e, "code", None)
             msg = str(e)
-            if code in (401, 403) or "API_KEY_INVALID" in msg or "PERMISSION_DENIED" in msg:
+            if "is no longer available to new users" in msg or (code == 404 and target_model in DEPRECATED_GEMINI_MODELS):
+                return False, (
+                    f"Gemini model '{target_model}' is no longer available. "
+                    f"Please switch to '{DEFAULT_GEMINI_MODEL}' or 'gemini-3.8-flash' in Settings."
+                )
+            elif code in (401, 403) or "API_KEY_INVALID" in msg or "PERMISSION_DENIED" in msg:
                 return False, "Authentication failed: Provided Gemini API key is invalid or unauthorized."
             elif code == 429 or "RESOURCE_EXHAUSTED" in msg:
                 return False, "Gemini API rate limit or quota exceeded. Please check your account quota."
+            elif code in (503, 504) or "UNAVAILABLE" in msg or "DEADLINE_EXCEEDED" in msg:
+                return False, (
+                    f"Google Gemini model '{target_model}' is currently experiencing temporary high demand ({code}). "
+                    f"Please try again or select '{DEFAULT_GEMINI_MODEL}'."
+                )
             return False, f"Gemini API error ({code}): {msg}"
         except Exception as e:
             logger.error("Gemini connection test failed: %s", e)

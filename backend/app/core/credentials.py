@@ -110,6 +110,18 @@ def get_provider_credentials(provider: str) -> Dict[str, Any]:
         or stored.get("model")
     )
 
+    # Auto-heal deprecated Gemini models in stored credentials
+    if p_norm == "gemini" and model in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"):
+        model = "gemini-3.5-flash"
+        if isinstance(stored, dict) and stored.get("model") in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"):
+            stored["model"] = "gemini-3.5-flash"
+            creds[p_norm] = stored
+            try:
+                _save_stored_credentials(creds)
+                logger.info("Migrated stored Gemini model to 'gemini-3.5-flash'")
+            except Exception as e:
+                logger.warning("Failed to persist migrated Gemini model: %s", e)
+
     return {
         "api_key": api_key,
         "base_url": base_url,

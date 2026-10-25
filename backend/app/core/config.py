@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     WHISPER_LANGUAGE: str = "en"
     WHISPER_VAD_FILTER: bool = True
 
-    # Translation (NLLB-200)
+    # Translation (NLLB-200 & Cloud AI)
     TRANSLATION_PROVIDER: str = "nllb"
     TRANSLATION_MODEL: str = "facebook/nllb-200-distilled-600M"
     TRANSLATION_SOURCE_LANG: str = "eng_Latn"
@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     TRANSLATION_BATCH_SIZE: int = 1
     TRANSLATION_NUM_BEAMS: int = 2
     TRANSLATION_MAX_INPUT_TOKENS: int = 512
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # Text-to-Speech (gTTS)
     TTS_PROVIDER: str = "gtts"

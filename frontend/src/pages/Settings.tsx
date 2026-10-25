@@ -573,7 +573,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
             <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
               <span className="font-bold text-slate-800">3. Cloud & Custom AI LLMs</span>
               <p className="text-slate-500 leading-relaxed">
-                Google Gemini (<code>gemini-2.5-flash</code>), OpenAI (<code>gpt-4o-mini</code>), Anthropic Claude (<code>claude-3-5-sonnet</code>), and Custom OpenAI endpoints for style-tailored dubbing phrasing.
+                Google Gemini (<code>gemini-3.5-flash</code>), OpenAI (<code>gpt-4o-mini</code>), Anthropic Claude (<code>claude-3-5-sonnet</code>), and Custom OpenAI endpoints for style-tailored dubbing phrasing.
               </p>
             </div>
           </div>

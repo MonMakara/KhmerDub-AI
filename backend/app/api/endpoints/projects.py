@@ -1105,7 +1105,7 @@ def ai_improve_segment(
         explanation=result.explanation,
         style=result.style,
         provider=getattr(provider, "name", "gemini"),
-        model=getattr(provider, "model", "gemini-2.5-flash"),
+        model=getattr(provider, "model", "gemini-3.5-flash"),
     )
 
 

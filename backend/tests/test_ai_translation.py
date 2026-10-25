@@ -360,7 +360,7 @@ def test_project_translation_settings_and_ai_workflow(client: TestClient, db_ses
         explanation="Shortened words to fit 3.0s available speech duration.",
         style="short",
         provider="gemini",
-        model="gemini-2.5-flash",
+        model="gemini-3.5-flash",
     )
     with patch("app.services.translation.gemini.GeminiTranslationProvider.improve_translation", return_value=mock_improve_result):
         improve_res = client.post(
