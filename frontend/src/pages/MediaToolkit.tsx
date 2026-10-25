@@ -1269,42 +1269,82 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
           <button
             onClick={() => setShowLanguageInfo(!showLanguageInfo)}
             className="self-start md:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60 transition-colors shadow-sm cursor-pointer"
+            title="Toggle capabilities overview"
           >
             <Info className="w-4 h-4 text-indigo-400" />
-            <span>AI Capabilities & Languages</span>
+            <span>AI Capabilities Guide</span>
             {showLanguageInfo ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
 
         {/* Expandable Language Capability Matrix */}
         {showLanguageInfo && (
-          <div className="mt-6 pt-6 border-t border-slate-800/80 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-            <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
-              <span className="font-semibold text-slate-200 mb-1.5 flex items-center gap-2">
-                <FileAudio className="w-4 h-4 text-indigo-400" />
-                Audio Extraction (13E.1)
+          <div className="mt-6 pt-6 border-t border-slate-800/80 space-y-4">
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span className="font-semibold uppercase tracking-wider text-slate-300">
+                System AI Capabilities & Supported Formats
               </span>
-              <p className="text-slate-400 leading-relaxed">
-                Universal container support (MP4, MOV, MKV, WebM). Direct stream remuxing for AAC/M4A and high-fidelity 192k MP3 & 16-bit WAV PCM encoding.
-              </p>
+              <button
+                type="button"
+                onClick={() => setShowLanguageInfo(false)}
+                className="hover:text-white p-1 rounded-lg hover:bg-slate-800 text-slate-400 transition-colors cursor-pointer flex items-center gap-1"
+                title="Close guide"
+              >
+                <X className="w-4 h-4" />
+                <span className="text-[11px]">Close</span>
+              </button>
             </div>
-            <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
-              <span className="font-semibold text-slate-200 mb-1.5 flex items-center gap-2">
-                <FileText className="w-4 h-4 text-emerald-400" />
-                Speech-to-Text (13E.2)
-              </span>
-              <p className="text-slate-400 leading-relaxed">
-                English speech transcription powered by Faster-Whisper with word/segment timestamps, plain text extraction, inline editing, and multi-format subtitle exports.
-              </p>
-            </div>
-            <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800">
-              <span className="font-semibold text-slate-200 mb-1.5 flex items-center gap-2">
-                <Mic2 className="w-4 h-4 text-amber-400" />
-                Speech Synthesis (13E.3)
-              </span>
-              <p className="text-slate-400 leading-relaxed">
-                Khmer TTS via Google Khmer, Microsoft Piseth, Microsoft Sreymom, and authorized VoxCPM2 custom voice profiles with prompt cache acceleration.
-              </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3.5 text-xs">
+              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="font-semibold text-slate-200 flex items-center gap-2">
+                  <FileAudio className="w-4 h-4 text-indigo-400" />
+                  Audio Extraction
+                </span>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  MP4, MOV, MKV, WebM. Lossless AAC/M4A remuxing, 192k MP3 & 16-bit WAV PCM encoding.
+                </p>
+              </div>
+
+              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="font-semibold text-slate-200 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-emerald-400" />
+                  Speech-to-Text
+                </span>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  Faster-Whisper English ASR with cue timestamps, plain text, and SRT/VTT/TXT/CSV/JSON exports.
+                </p>
+              </div>
+
+              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="font-semibold text-slate-200 flex items-center gap-2">
+                  <Mic2 className="w-4 h-4 text-amber-400" />
+                  Text-to-Speech
+                </span>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  Google Khmer, Edge Piseth/Sreymom/Aria/Guy, and VoxCPM2 custom voice cloning.
+                </p>
+              </div>
+
+              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="font-semibold text-slate-200 flex items-center gap-2">
+                  <Radio className="w-4 h-4 text-purple-400" />
+                  Transcript to Audio
+                </span>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  Narration & Timed speech alignment, duration overflow detection, and cue regeneration.
+                </p>
+              </div>
+
+              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="font-semibold text-slate-200 flex items-center gap-2">
+                  <Languages className="w-4 h-4 text-blue-400" />
+                  Translation & Converter
+                </span>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  Local Meta NLLB-200 & cloud neural EN↔KM translation with SRT↔VTT subtitle conversion.
+                </p>
+              </div>
             </div>
           </div>
         )}
