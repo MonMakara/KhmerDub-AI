@@ -118,7 +118,7 @@ def test_prompts_glossary_and_style_injection():
 
 def test_gemini_provider_unconfigured_error():
     with patch.dict(os.environ, {}, clear=True), \
-         patch("app.core.credentials.get_api_key", return_value=None):
+         patch("app.services.translation.gemini.get_api_key", return_value=None):
         provider = GeminiTranslationProvider(api_key=None)
         with pytest.raises(ProviderAuthenticationError) as exc_info:
             provider.translate(["Hello world"])

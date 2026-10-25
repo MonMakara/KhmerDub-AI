@@ -35,9 +35,11 @@ from app.schemas.voice import (
 )
 from app.services.tts.registry import (
     list_supported_voices,
+    AVAILABLE_VOICES,
     DEFAULT_PROVIDER,
     DEFAULT_VOICE,
 )
+from app.services.tts.voxcpm import VoxCPM2TTSProvider
 from app.services.voice.inspector import AudioQualityInspector
 from app.services.voice.exceptions import AudioValidationError
 
@@ -58,7 +60,7 @@ LEGAL_CONSENT_TEMPLATE = (
 @router.get("", response_model=VoiceStudioResponse)
 def get_voice_studio(db: Session = Depends(get_db)) -> VoiceStudioResponse:
     """Retrieve all available system voices and registered custom voice profiles."""
-    system_raw = list_supported_voices()
+    system_raw = list(AVAILABLE_VOICES)
     system_voices = [VoiceOptionResponse(**v) for v in system_raw]
 
     profiles = (
@@ -69,11 +71,20 @@ def get_voice_studio(db: Session = Depends(get_db)) -> VoiceStudioResponse:
 
     custom_responses = [VoiceProfileResponse.model_validate(p) for p in profiles]
 
+    # Dynamically probe VoxCPM2 GPU inference worker status
+    vox_provider = VoxCPM2TTSProvider()
+    worker_health = vox_provider.check_worker_health()
+    if worker_health.get("status") == "online":
+        gpu_label = worker_health.get("gpu_name", "CUDA GPU")
+        engine_status = f"Online (VoxCPM2 — {gpu_label})"
+    else:
+        engine_status = "Offline (VoxCPM2 Worker Unavailable)"
+
     return VoiceStudioResponse(
         system_voices=system_voices,
         custom_profiles=custom_responses,
         total_custom_profiles=len(custom_responses),
-        cloning_engine_status="Not Configured (Phase 13B Research)",
+        cloning_engine_status=engine_status,
         default_provider=DEFAULT_PROVIDER,
         default_voice=DEFAULT_VOICE,
     )

@@ -161,40 +161,65 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
             const isSelected =
               selectedVoice.provider === voice.provider && selectedVoice.voice === voice.voice;
             const isPreviewing = previewingVoice === `${voice.provider}-${voice.voice}`;
+            const isUnavailable = voice.is_available === false;
 
             return (
               <div
                 key={`${voice.provider}-${voice.voice}`}
-                onClick={() => onSelectVoice(voice.provider, voice.voice)}
+                onClick={() => {
+                  if (isUnavailable) {
+                    alert('The VoxCPM2 GPU inference worker is currently offline. Please start it on the host via ./scripts/run_voxcpm_worker.sh');
+                    return;
+                  }
+                  onSelectVoice(voice.provider, voice.voice);
+                }}
                 className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between space-y-3 ${
                   isSelected
                     ? 'border-indigo-600 bg-indigo-50/40 shadow-sm'
+                    : isUnavailable
+                    ? 'border-slate-200 bg-slate-50/70 opacity-75 hover:border-slate-300'
                     : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
                 }`}
               >
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-sm text-slate-900">{voice.label}</span>
-                    <span
-                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize ${
-                        voice.gender === 'female'
-                          ? 'bg-purple-100 text-purple-700'
-                          : voice.gender === 'male'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-emerald-100 text-emerald-700'
-                      }`}
-                    >
-                      {voice.gender}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {voice.is_custom && (
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 flex items-center gap-0.5">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          Clone
+                        </span>
+                      )}
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize ${
+                          voice.gender === 'female'
+                            ? 'bg-purple-100 text-purple-700'
+                            : voice.gender === 'male'
+                            ? 'bg-blue-100 text-blue-700'
+                            : 'bg-emerald-100 text-emerald-700'
+                        }`}
+                      >
+                        {voice.gender}
+                      </span>
+                    </div>
                   </div>
 
                   <p className="text-[11px] text-slate-500 leading-relaxed">
                     {voice.description}
                   </p>
 
-                  <span className="text-[10px] font-mono text-slate-400 block uppercase">
-                    Provider: {voice.provider}
-                  </span>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[10px] font-mono text-slate-400 block uppercase">
+                      Provider: {voice.provider}
+                    </span>
+                    {isUnavailable && (
+                      <span className="text-[10px] font-semibold text-rose-600 flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        Worker Offline
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
@@ -202,10 +227,14 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (isUnavailable) {
+                        alert('VoxCPM2 GPU worker is offline. Cannot preview custom voice.');
+                        return;
+                      }
                       onPreviewVoice(voice.provider, voice.voice);
                     }}
-                    disabled={isPreviewing}
-                    className="px-2.5 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-medium flex items-center gap-1 transition"
+                    disabled={isPreviewing || isUnavailable}
+                    className="px-2.5 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-50 text-slate-700 text-xs font-medium flex items-center gap-1 transition"
                   >
                     <Volume2 className={`w-3.5 h-3.5 ${isPreviewing ? 'animate-bounce text-indigo-600' : ''}`} />
                     <span>{isPreviewing ? 'Playing...' : 'Preview Voice'}</span>

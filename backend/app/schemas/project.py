@@ -156,6 +156,9 @@ class VoiceOptionResponse(BaseModel):
     gender: str
     description: str
     sample_rate: Optional[int] = 24000
+    is_custom: Optional[bool] = False
+    profile_id: Optional[str] = None
+    is_available: Optional[bool] = True
 
 
 class VoiceListResponse(BaseModel):

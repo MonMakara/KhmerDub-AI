@@ -118,7 +118,7 @@ def test_voice_studio_get_empty_or_system_voices():
     assert any(v["voice"] == "km-KH-SreymomNeural" for v in data["system_voices"])
     assert "custom_profiles" in data
     assert "cloning_engine_status" in data
-    assert data["cloning_engine_status"] == "Not Configured (Phase 13B Research)"
+    assert any(term in data["cloning_engine_status"] for term in ("Online", "Offline", "VoxCPM2", "Not Configured"))
 
 
 def test_create_voice_profile_missing_consent(tmp_path):

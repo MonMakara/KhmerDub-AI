@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     TTS_MAX_RETRIES: int = 3
     TTS_TIMEOUT: float = 30.0
 
+    # VoxCPM2 Custom Voice Cloning Worker
+    VOXCPM_WORKER_ENABLED: bool = True
+    VOXCPM_WORKER_URL: str = "http://172.18.0.1:8002"
+    VOXCPM_INTERNAL_SECRET: str = "khmerdub-voxcpm-internal-auth-token-2026"
+    VOXCPM_TIMEOUT_SECONDS: float = 60.0
+
     # Limits
     MAX_UPLOAD_SIZE_MB: int = 500
 

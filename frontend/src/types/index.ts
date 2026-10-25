@@ -183,6 +183,9 @@ export interface VoiceOption {
   gender: 'male' | 'female' | 'neutral' | string;
   description: string;
   sample_rate?: number;
+  is_custom?: boolean;
+  profile_id?: string;
+  is_available?: boolean;
 }
 
 export interface VoiceListResponse {

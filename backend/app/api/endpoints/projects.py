@@ -126,7 +126,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     """Create a new dubbing project."""
     tts_provider = (payload.tts_provider or DEFAULT_PROVIDER).strip().lower()
     tts_voice = (payload.tts_voice or DEFAULT_VOICE).strip()
-    if not is_valid_voice_combination(tts_provider, tts_voice):
+    if not is_valid_voice_combination(tts_provider, tts_voice, db=db):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid voice combination: provider='{tts_provider}', voice='{tts_voice}'",
@@ -176,7 +176,7 @@ def update_project_voice(
     provider = (voice_update.tts_provider or DEFAULT_PROVIDER).strip().lower()
     voice = (voice_update.tts_voice or DEFAULT_VOICE).strip()
 
-    if not is_valid_voice_combination(provider, voice):
+    if not is_valid_voice_combination(provider, voice, db=db):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid voice combination: provider='{provider}', voice='{voice}'",
