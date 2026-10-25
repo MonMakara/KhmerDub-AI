@@ -85,6 +85,8 @@ class VoxCPM2TTSProvider(TTSProvider):
         language: str = "km",
         voice: Optional[str] = None,
         slow: bool = False,
+        seed: Optional[int] = None,
+        **kwargs,
     ) -> TTSAudioResult:
         """Convert Khmer text into speech conditioned on an authorized reference voice profile.
 
@@ -188,6 +190,8 @@ class VoxCPM2TTSProvider(TTSProvider):
             "cfg_value": 2.0,
             "inference_timesteps": 10,
         }
+        if seed is not None:
+            payload["seed"] = seed
 
         req = urllib.request.Request(
             f"{active_worker_url}/synthesize",
@@ -290,7 +294,8 @@ class VoxCPM2TTSProvider(TTSProvider):
                 if res.returncode != 0:
                     raise RuntimeError(f"FFmpeg transcode error: {res.stderr}")
             else:
-                shutil.copyfile(str(actual_wav_path), str(output_path))
+                if actual_wav_path.resolve() != output_path.resolve():
+                    shutil.copyfile(str(actual_wav_path), str(output_path))
 
             try:
                 output_path.chmod(0o666)
@@ -309,12 +314,14 @@ class VoxCPM2TTSProvider(TTSProvider):
         if duration <= 0.0:
             duration = float(resp_data.get("duration_seconds", 1.0))
 
+        cache_hit_str = " (cache hit)" if resp_data.get("cache_hit") else ""
         logger.info(
-            "VoxCPM2 synthesized %s (%.2fs) [profile=%s, rtf=%.2fx]",
+            "VoxCPM2 synthesized %s (%.2fs) [profile=%s, rtf=%.2fx%s]",
             output_path.name,
             duration,
             profile_name,
             resp_data.get("generation_time_s", 1.0) / max(0.1, duration),
+            cache_hit_str,
         )
 
         return TTSAudioResult(

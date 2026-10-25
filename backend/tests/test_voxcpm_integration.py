@@ -393,3 +393,114 @@ def test_dubbing_synchronization_with_voxcpm_audio(authorized_profile, tmp_path,
     db_session.query(Project).filter(Project.id == proj_id).delete()
     db_session.commit()
     shutil.rmtree(get_project_output_dir(proj_id), ignore_errors=True)
+
+
+def test_voxcpm_seed_parameter_forwarded_to_worker(authorized_profile: VoiceProfile, tmp_path: Path):
+    """Phase 13D: Verify that seed parameter is forwarded in the request payload to the GPU worker."""
+    provider = VoxCPM2TTSProvider()
+    out_path = tmp_path / "final_test.wav"
+    worker_wav = tmp_path / "worker_out.wav"
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = (
+        b'{"success": true, "duration_seconds": 2.5, "sample_rate": 48000, "generation_time_s": 1.2, "output_audio_path": "'
+        + str(worker_wav).encode("utf-8")
+        + b'", "peak_vram_gb": 5.5, "cache_hit": true}'
+    )
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = None
+
+    captured_payloads = []
+
+    def mock_urlopen(req, *args, **kwargs):
+        if hasattr(req, "data") and req.data:
+            import json
+            captured_payloads.append(json.loads(req.data.decode("utf-8")))
+        return mock_resp
+
+    with patch.object(provider, "check_worker_health", return_value={"status": "online", "url": "http://127.0.0.1:8002"}):
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            # Create dummy worker output file so copy/transcode succeeds
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.5", "-ar", "48000", "-ac", "1", str(worker_wav)],
+                capture_output=True, check=True
+            )
+            result = provider.synthesize(
+                text="សូមស្វាគមន៍",
+                output_path=out_path,
+                voice=authorized_profile.id,
+                seed=998877,
+            )
+
+    assert result.duration_seconds > 0
+    assert out_path.exists()
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["seed"] == 998877
+    assert captured_payloads[0]["text"] == "សូមស្វាគមន៍"
+
+
+def test_multi_segment_project_seed_deterministic_derivation(db_session: Session, authorized_profile: VoiceProfile):
+    """Phase 13D: Verify process_tts derives deterministic seed and synthesizes all segments consistently."""
+    import hashlib
+    from app.workers.tts import process_tts
+
+    proj_id = str(uuid.uuid4())
+    expected_seed = int(hashlib.md5(proj_id.encode("utf-8")).hexdigest()[:8], 16)
+
+    project = Project(
+        id=proj_id,
+        title="Test Multi Segment Determinism",
+        tts_provider="voxcpm",
+        tts_voice=authorized_profile.id,
+        status=ProjectStatus.TRANSLATED,
+    )
+    db_session.add(project)
+
+    t_seg_1 = TranscriptSegment(id=f"{proj_id}-ts-1", project_id=proj_id, segment_order=1, start_time=0.0, end_time=3.0, text="One")
+    t_seg_2 = TranscriptSegment(id=f"{proj_id}-ts-2", project_id=proj_id, segment_order=2, start_time=3.5, end_time=6.5, text="Two")
+    db_session.add_all([t_seg_1, t_seg_2])
+    db_session.flush()
+
+    tr_seg_1 = TranslationSegment(id=f"{proj_id}-tr-1", project_id=proj_id, transcript_segment_id=t_seg_1.id, segment_order=1, khmer_text="មួយ")
+    tr_seg_2 = TranslationSegment(id=f"{proj_id}-tr-2", project_id=proj_id, transcript_segment_id=t_seg_2.id, segment_order=2, khmer_text="ពីរ")
+    db_session.add_all([tr_seg_1, tr_seg_2])
+
+    job = ProcessingJob(id=f"job-{proj_id}", project_id=proj_id, job_type="tts", status=JobStatus.PENDING, progress_percentage=0)
+    db_session.add(job)
+    db_session.commit()
+
+    captured_seeds = []
+
+    def mock_synthesize(text, output_path, voice=None, seed=None, **kwargs):
+        captured_seeds.append(seed)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.0", "-ar", "48000", "-ac", "1", str(output_path)],
+            capture_output=True, check=True
+        )
+        return TTSAudioResult(audio_path=output_path, duration_seconds=2.0, provider_name="voxcpm", voice=voice or "default")
+
+    with patch("app.workers.tts.get_tts_provider") as mock_get_provider:
+        mock_provider = MagicMock()
+        mock_provider.synthesize.side_effect = mock_synthesize
+        mock_get_provider.return_value = mock_provider
+
+        process_tts(proj_id, job.id, db=db_session)
+
+    db_session.refresh(job)
+    db_session.refresh(project)
+    assert job.status == JobStatus.COMPLETED
+    assert project.status == ProjectStatus.VOICE_GENERATED
+    assert len(captured_seeds) == 2
+    assert captured_seeds[0] == expected_seed
+    assert captured_seeds[1] == expected_seed
+
+    # Cleanup
+    db_session.query(GeneratedAudio).filter(GeneratedAudio.project_id == proj_id).delete()
+    db_session.query(TranslationSegment).filter(TranslationSegment.project_id == proj_id).delete()
+    db_session.query(TranscriptSegment).filter(TranscriptSegment.project_id == proj_id).delete()
+    db_session.query(ProcessingJob).filter(ProcessingJob.project_id == proj_id).delete()
+    db_session.query(Project).filter(Project.id == proj_id).delete()
+    db_session.commit()
+    shutil.rmtree(get_project_output_dir(proj_id), ignore_errors=True)

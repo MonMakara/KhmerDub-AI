@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from datetime import datetime
 from typing import Optional
@@ -27,6 +28,7 @@ def synthesize_segment_audio(
     provider: Optional[TTSProvider] = None,
     db: Optional[Session] = None,
     voice: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> GeneratedAudio:
     """Helper to synthesize audio for a single translation segment and update the database."""
     if db is None:
@@ -40,11 +42,16 @@ def synthesize_segment_audio(
         provider = get_tts_provider(provider_name)
 
     output_path = get_audio_segment_path(project_id, segment.id)
+    kwargs = {}
+    if seed is not None:
+        kwargs["seed"] = seed
+
     result = provider.synthesize(
         text=segment.khmer_text,
         output_path=output_path,
         language="km",
         voice=chosen_voice,
+        **kwargs,
     )
 
     audio_record = (
@@ -131,6 +138,9 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
             voice_name,
         )
 
+        # Deterministic project seed for consistent acoustic rendering across cuts
+        project_seed = int(hashlib.md5(project_id.encode("utf-8")).hexdigest()[:8], 16)
+
         for idx, seg in enumerate(translation_segments):
             if not seg.khmer_text or not seg.khmer_text.strip():
                 logger.warning(
@@ -146,6 +156,7 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
                     provider=provider,
                     db=db,
                     voice=voice_name,
+                    seed=project_seed,
                 )
             except Exception as e:
                 logger.error(

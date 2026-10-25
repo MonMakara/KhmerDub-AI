@@ -41,6 +41,7 @@ _model = None
 _model_lock = asyncio.Lock()
 _load_lock = asyncio.Lock()
 _is_busy = False
+_prompt_cache_store = {}
 
 app = FastAPI(
     title="KhmerDub AI VoxCPM2 Inference Worker",
@@ -55,6 +56,7 @@ class SynthesizeRequest(BaseModel):
     output_audio_path: Optional[str] = Field(None, description="Optional container or host destination path")
     cfg_value: float = Field(2.0, ge=1.0, le=5.0)
     inference_timesteps: int = Field(10, ge=5, le=50)
+    seed: Optional[int] = Field(None, description="Optional RNG seed for consistent speaker tone and diffusion noise")
 
 
 class SynthesizeResponse(BaseModel):
@@ -64,6 +66,7 @@ class SynthesizeResponse(BaseModel):
     generation_time_s: float
     output_audio_path: str
     peak_vram_gb: float
+    cache_hit: bool = Field(False, description="Whether reference prompt cache was reused")
 
 
 def resolve_path(path_str: str) -> Path:
@@ -287,6 +290,8 @@ async def synthesize_khmer_speech(
 
     # Protect VRAM: automatically optimize reference audio duration (safe 15s conditioning slice)
     conditioning_ref_path = get_optimized_reference_path(ref_host_path, max_duration_sec=15.0)
+    ref_stat = conditioning_ref_path.stat()
+    prompt_cache_key = (str(conditioning_ref_path), ref_stat.st_mtime, ref_stat.st_size)
 
     # Determine output destination path
     if payload.output_audio_path:
@@ -325,18 +330,56 @@ async def synthesize_khmer_speech(
                 torch.cuda.reset_peak_memory_stats()
             t_gen_start = time.time()
 
-            logger.info("Starting synthesis: '%s' (ref: %s)", clean_text[:40], conditioning_ref_path.name)
+            # Efficient Prompt Cache Management: build once per reference recording and reuse across segments
+            prompt_cache = _prompt_cache_store.get(prompt_cache_key)
+            cache_hit = prompt_cache is not None
+            if not cache_hit:
+                logger.info("Encoding and caching reference prompt for '%s'...", conditioning_ref_path.name)
+
+                def _build_cache():
+                    with torch.inference_mode():
+                        return model.tts_model.build_prompt_cache(
+                            reference_wav_path=str(conditioning_ref_path),
+                        )
+
+                prompt_cache = await asyncio.to_thread(_build_cache)
+                if len(_prompt_cache_store) >= 6:
+                    evict_k = next(iter(_prompt_cache_store))
+                    del _prompt_cache_store[evict_k]
+                _prompt_cache_store[prompt_cache_key] = prompt_cache
+            else:
+                logger.info("Reusing cached reference prompt for '%s' (AudioVAE re-encoding avoided).", conditioning_ref_path.name)
+
+            logger.info(
+                "Starting synthesis: '%s' (ref: %s, cache_hit=%s, seed=%s)",
+                clean_text[:40],
+                conditioning_ref_path.name,
+                cache_hit,
+                payload.seed,
+            )
+
+            from voxcpm.core import next_and_close
 
             def _run_inference():
                 with torch.inference_mode():
+                    if payload.seed is not None:
+                        torch.manual_seed(payload.seed)
+                        if torch.cuda.is_available():
+                            torch.cuda.manual_seed(payload.seed)
+                            torch.cuda.manual_seed_all(payload.seed)
                     try:
-                        return model.generate(
-                            text=clean_text,
-                            reference_wav_path=str(conditioning_ref_path),
-                            cfg_value=payload.cfg_value,
+                        gen_result = model.tts_model._generate_with_prompt_cache(
+                            target_text=clean_text,
+                            prompt_cache=prompt_cache,
+                            min_len=2,
+                            max_len=2000,
                             inference_timesteps=payload.inference_timesteps,
-                            normalize=False,
+                            cfg_value=payload.cfg_value,
+                            retry_badcase=True,
+                            streaming=False,
                         )
+                        wav, _, _ = next_and_close(gen_result)
+                        return wav.squeeze(0).cpu().numpy()
                     except torch.cuda.OutOfMemoryError as initial_oom:
                         logger.warning(
                             "Transient CUDA OOM during VoxCPM2 generation (%s). Purging cache and attempting immediate retry...",
@@ -346,13 +389,23 @@ async def synthesize_khmer_speech(
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
                         time.sleep(0.3)
-                        return model.generate(
-                            text=clean_text,
-                            reference_wav_path=str(conditioning_ref_path),
-                            cfg_value=payload.cfg_value,
+                        if payload.seed is not None:
+                            torch.manual_seed(payload.seed)
+                            if torch.cuda.is_available():
+                                torch.cuda.manual_seed(payload.seed)
+                                torch.cuda.manual_seed_all(payload.seed)
+                        gen_result = model.tts_model._generate_with_prompt_cache(
+                            target_text=clean_text,
+                            prompt_cache=prompt_cache,
+                            min_len=2,
+                            max_len=2000,
                             inference_timesteps=payload.inference_timesteps,
-                            normalize=False,
+                            cfg_value=payload.cfg_value,
+                            retry_badcase=True,
+                            streaming=False,
                         )
+                        wav, _, _ = next_and_close(gen_result)
+                        return wav.squeeze(0).cpu().numpy()
 
             wav = await asyncio.to_thread(_run_inference)
             gen_time = round(time.time() - t_gen_start, 3)
@@ -377,11 +430,12 @@ async def synthesize_khmer_speech(
             peak_vram = round(torch.cuda.max_memory_allocated(0) / (1024**3), 3)
 
             logger.info(
-                "Synthesis successful: %s (%ss audio in %ss | Peak VRAM: %s GB)",
+                "Synthesis successful: %s (%ss audio in %ss | Peak VRAM: %s GB | Cache Hit: %s)",
                 out_host_path.name,
                 duration,
                 gen_time,
                 peak_vram,
+                cache_hit,
             )
 
             return SynthesizeResponse(
@@ -391,6 +445,7 @@ async def synthesize_khmer_speech(
                 generation_time_s=gen_time,
                 output_audio_path=payload.output_audio_path or str(out_host_path),
                 peak_vram_gb=peak_vram,
+                cache_hit=cache_hit,
             )
 
         except torch.cuda.OutOfMemoryError as oom:
@@ -421,9 +476,10 @@ async def release_gpu_memory(
 ):
     """Clear CUDA cache and optionally unload the VoxCPM2 checkpoint from VRAM."""
     verify_internal_auth(x_internal_token)
-    global _model
+    global _model, _prompt_cache_store
 
     async with _model_lock:
+        _prompt_cache_store.clear()
         if unload_model:
             logger.info("Unloading VoxCPM2 model from VRAM...")
             _model = None

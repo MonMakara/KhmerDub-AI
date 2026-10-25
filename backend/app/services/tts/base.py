@@ -24,6 +24,7 @@ class TTSProvider(ABC):
         language: str = "km",
         voice: Optional[str] = None,
         slow: bool = False,
+        **kwargs,
     ) -> TTSAudioResult:
         """Convert text into an audio file."""
         pass

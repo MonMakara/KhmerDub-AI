@@ -62,6 +62,7 @@ class GoogleTTSProvider(TTSProvider):
         language: str = "km",
         voice: Optional[str] = None,
         slow: bool = False,
+        **kwargs,
     ) -> TTSAudioResult:
         """Convert text into speech MP3 using Google gTTS with exponential backoff retry.
 
