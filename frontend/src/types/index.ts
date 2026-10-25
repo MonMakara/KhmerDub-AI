@@ -494,13 +494,51 @@ export interface TTSVoiceOption {
   is_available: boolean;
 }
 
+export interface ToolkitTranslationSegment {
+  id: string;
+  task_id: string;
+  segment_order: number;
+  start_time?: number | null;
+  end_time?: number | null;
+  source_text: string;
+  translated_text: string;
+  edited_text?: string | null;
+  text: string;
+  is_edited: boolean;
+  status: 'pending' | 'translating' | 'completed' | 'failed' | string;
+  error_message?: string | null;
+  estimated_duration_seconds?: number | null;
+  is_overflow_risk?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TranslationLanguagePair {
+  source_lang: string;
+  target_lang: string;
+  source_name: string;
+  target_name: string;
+  verified: boolean;
+}
+
+export interface SubtitleConvertResponse {
+  success: boolean;
+  source_format: string;
+  target_format: string;
+  segment_count: number;
+  filename: string;
+  content: string;
+}
+
 export interface ToolkitTask {
   id: string;
   tool_type: string;
-  source_type: 'upload' | 'project' | 'direct_text';
+  source_type: 'upload' | 'project' | 'direct_text' | 'imported_transcript' | 'imported_translation' | string;
   source_project_id?: string | null;
+  source_task_id?: string | null;
+  is_outdated?: boolean;
   source_filename: string;
-  target_format: ToolkitTargetFormat;
+  target_format: ToolkitTargetFormat | string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress_percentage: number;
   output_filename?: string | null;
@@ -513,6 +551,7 @@ export interface ToolkitTask {
   updated_at: string;
   segments?: ToolkitTranscriptSegment[];
   tts_segments?: ToolkitTTSSegment[];
+  translation_segments?: ToolkitTranslationSegment[];
   full_text?: string | null;
 }
 

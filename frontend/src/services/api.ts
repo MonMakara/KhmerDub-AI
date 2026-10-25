@@ -30,6 +30,10 @@ import {
   ToolkitTranscriptSegment,
   ToolkitCapabilities,
   TTSVoiceOption,
+  ToolkitTranslationSegment,
+  TranslationLanguagePair,
+  SubtitleConvertResponse,
+  TranslationProviderInfo,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -1114,6 +1118,126 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Segment deletion failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getTaskBundleUrl(taskId: string): string {
+    return `${API_BASE}/toolkit/tasks/${taskId}/bundle`;
+  },
+
+  async getTranslationLanguages(): Promise<TranslationLanguagePair[]> {
+    const res = await fetch(`${API_BASE}/toolkit/translation/languages`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch translation languages: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getToolkitTranslationProviders(): Promise<TranslationProviderInfo[]> {
+    const res = await fetch(`${API_BASE}/toolkit/translation/providers`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch translation providers: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async translateText(data: {
+    text: string;
+    source_lang?: string;
+    target_lang?: string;
+    provider?: string;
+    source_task_id?: string;
+  }): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/translation/translate-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Translation failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async translateTranscript(data: {
+    segments?: {
+      segment_order: number;
+      text: string;
+      start_time?: number | null;
+      end_time?: number | null;
+    }[];
+    source_lang?: string;
+    target_lang?: string;
+    provider?: string;
+    source_task_id?: string;
+    filename?: string;
+  }): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/translation/translate-transcript`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Transcript translation failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateToolkitTranslationSegment(
+    taskId: string,
+    segmentId: string,
+    data: { text: string }
+  ): Promise<ToolkitTranslationSegment> {
+    const res = await fetch(
+      `${API_BASE}/toolkit/translation/tasks/${taskId}/segments/${segmentId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Segment update failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async retryToolkitTranslationSegment(
+    taskId: string,
+    segmentId: string
+  ): Promise<ToolkitTranslationSegment> {
+    const res = await fetch(
+      `${API_BASE}/toolkit/translation/tasks/${taskId}/segments/${segmentId}/retry`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Segment re-translation failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async convertSubtitle(data: {
+    content?: string;
+    source_task_id?: string;
+    source_format: string;
+    target_format: string;
+    filename?: string;
+  }): Promise<SubtitleConvertResponse> {
+    const res = await fetch(`${API_BASE}/toolkit/subtitle/convert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Subtitle conversion failed: ${res.statusText}`);
     }
     return res.json();
   },

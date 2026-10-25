@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,7 +34,12 @@ from app.core.storage import (
 )
 from app.database.session import get_db
 from app.models.project import Project
-from app.models.toolkit import ToolkitTask, ToolkitTranscriptSegment, ToolkitTTSSegment
+from app.models.toolkit import (
+    ToolkitTask,
+    ToolkitTranscriptSegment,
+    ToolkitTTSSegment,
+    ToolkitTranslationSegment,
+)
 from app.schemas.project import VoiceOptionResponse
 from app.services.subtitles.generator import (
     SubtitleCue,
@@ -51,6 +57,11 @@ from app.services.dubbing.synchronizer import (
     TimingConflict,
 )
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
+from app.services.translation.registry import (
+    get_translation_provider,
+    list_translation_providers,
+    validate_translation_provider,
+)
 from app.services.tts.registry import (
     get_tts_provider,
     is_valid_voice_combination,
@@ -141,6 +152,7 @@ class TTSGenerateRequest(BaseModel):
     language: str = "km"
     target_format: str = "mp3"
     pause_duration_seconds: float = 0.4
+    source_task_id: Optional[str] = None
 
 
 class TTSSegmentRegenerateRequest(BaseModel):
@@ -192,11 +204,71 @@ class ResetEditsRequest(BaseModel):
     segment_id: Optional[str] = None
 
 
+class ToolkitTranslationSegmentResponse(BaseModel):
+    id: str
+    task_id: str
+    segment_order: int
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    source_text: str
+    translated_text: str
+    edited_text: Optional[str] = None
+    text: str
+    is_edited: bool
+    status: str
+    error_message: Optional[str] = None
+    estimated_duration_seconds: Optional[float] = None
+    is_overflow_risk: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TranslateTextRequest(BaseModel):
+    text: str
+    source_lang: str = "en"
+    target_lang: str = "km"
+    provider: str = "nllb"
+    source_task_id: Optional[str] = None
+
+
+class TranslateTranscriptSegmentInput(BaseModel):
+    segment_order: int
+    text: str
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+
+
+class TranslateTranscriptRequest(BaseModel):
+    segments: Optional[List[TranslateTranscriptSegmentInput]] = None
+    content: Optional[str] = None
+    source_lang: str = "en"
+    target_lang: str = "km"
+    provider: str = "nllb"
+    source_task_id: Optional[str] = None
+    filename: Optional[str] = "transcript.srt"
+
+
+class TranslationSegmentUpdateRequest(BaseModel):
+    text: str
+
+
+class SubtitleConvertRequest(BaseModel):
+    content: Optional[str] = None
+    source_task_id: Optional[str] = None
+    source_format: str = "srt"
+    target_format: str = "vtt"
+    filename: Optional[str] = "subtitles.vtt"
+
+
 class ToolkitTaskResponse(BaseModel):
     id: str
     tool_type: str
     source_type: str
     source_project_id: Optional[str] = None
+    source_task_id: Optional[str] = None
+    is_outdated: bool = False
     source_filename: str
     target_format: str
     status: str
@@ -211,6 +283,7 @@ class ToolkitTaskResponse(BaseModel):
     updated_at: datetime
     segments: Optional[List[ToolkitTranscriptSegmentResponse]] = None
     tts_segments: Optional[List[ToolkitTTSSegmentResponse]] = None
+    translation_segments: Optional[List[ToolkitTranslationSegmentResponse]] = None
     full_text: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -255,6 +328,32 @@ def _serialize_tts_segment(seg: ToolkitTTSSegment) -> Dict[str, Any]:
     }
 
 
+def _serialize_translation_segment(seg: ToolkitTranslationSegment) -> Dict[str, Any]:
+    """Helper to convert translation segment model to dict."""
+    active_text = seg.edited_text if seg.edited_text is not None else seg.translated_text
+    avail_window = (seg.end_time - seg.start_time) if (seg.start_time is not None and seg.end_time is not None) else None
+    est_dur = round(len(active_text.strip()) / 12.0, 2) if active_text else 0.0
+    is_overflow_risk = bool(avail_window is not None and avail_window > 0 and est_dur > (avail_window * 1.15))
+    return {
+        "id": seg.id,
+        "task_id": seg.task_id,
+        "segment_order": seg.segment_order,
+        "start_time": seg.start_time,
+        "end_time": seg.end_time,
+        "source_text": seg.source_text,
+        "translated_text": seg.translated_text,
+        "edited_text": seg.edited_text,
+        "text": active_text,
+        "is_edited": seg.edited_text is not None and seg.edited_text != seg.translated_text,
+        "status": seg.status,
+        "error_message": seg.error_message,
+        "estimated_duration_seconds": est_dur,
+        "is_overflow_risk": is_overflow_risk,
+        "created_at": seg.created_at,
+        "updated_at": seg.updated_at,
+    }
+
+
 def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
     """Helper to convert task SQLAlchemy model to dict with parsed JSON metadata and segments."""
     src_meta = None
@@ -287,6 +386,14 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
             if s.text and s.text.strip():
                 full_text_parts.append(s.text.strip())
 
+    serialized_translation_segments: List[Dict[str, Any]] = []
+    if hasattr(task, "translation_segments") and task.translation_segments:
+        for s in sorted(task.translation_segments, key=lambda seg: seg.segment_order):
+            seg_dict = _serialize_translation_segment(s)
+            serialized_translation_segments.append(seg_dict)
+            if seg_dict["text"].strip():
+                full_text_parts.append(seg_dict["text"].strip())
+
     full_text = "\n\n".join(full_text_parts) if full_text_parts else None
 
     return {
@@ -294,6 +401,8 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
         "tool_type": task.tool_type,
         "source_type": task.source_type,
         "source_project_id": task.source_project_id,
+        "source_task_id": task.source_task_id,
+        "is_outdated": bool(task.is_outdated),
         "source_filename": task.source_filename,
         "target_format": task.target_format,
         "status": task.status,
@@ -308,6 +417,7 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
         "updated_at": task.updated_at,
         "segments": serialized_segments or None,
         "tts_segments": serialized_tts_segments or None,
+        "translation_segments": serialized_translation_segments or None,
         "full_text": full_text,
     }
 
@@ -371,6 +481,162 @@ def _generate_transcript_files_on_disk(
         "csv": csv_path,
         "json": json_path,
     }
+
+
+def _generate_translation_files_on_disk(
+    task_id: str,
+    source_stem: str,
+    segments: List[ToolkitTranslationSegment],
+) -> Dict[str, Path]:
+    """Generate TXT, SRT, VTT, JSON, and CSV translation files in task output directory."""
+    output_dir = get_toolkit_task_output_dir(task_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sorted_segs = sorted(segments, key=lambda s: s.segment_order)
+
+    # 1. TXT
+    lines = []
+    for s in sorted_segs:
+        t = (s.edited_text if s.edited_text is not None else s.translated_text) or ""
+        if t.strip():
+            lines.append(t.strip())
+    txt_content = "\n\n".join(lines)
+    txt_path = output_dir / f"{source_stem}_translated.txt"
+    txt_path.write_text(txt_content, encoding="utf-8")
+
+    # 2. JSON
+    json_data = [
+        {
+            "segment_order": s.segment_order,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "source_text": s.source_text,
+            "translated_text": s.translated_text,
+            "edited_text": s.edited_text,
+            "text": s.edited_text if s.edited_text is not None else s.translated_text,
+        }
+        for s in sorted_segs
+    ]
+    json_path = output_dir / f"{source_stem}_translated.json"
+    json_path.write_text(json.dumps(json_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # 3. Cues for SRT, VTT, CSV
+    cues: List[SubtitleCue] = []
+    for s in sorted_segs:
+        st = s.start_time if s.start_time is not None else 0.0
+        et = s.end_time if s.end_time is not None else (st + 2.0)
+        t = (s.edited_text if s.edited_text is not None else s.translated_text) or ""
+        cues.append(SubtitleCue(sequence=s.segment_order, start_time=st, end_time=et, text=t))
+
+    srt_path = output_dir / f"{source_stem}_translated.srt"
+    vtt_path = output_dir / f"{source_stem}_translated.vtt"
+    csv_path = output_dir / f"{source_stem}_translated.csv"
+
+    srt_path.write_text(generate_srt(cues), encoding="utf-8")
+    vtt_path.write_text(generate_vtt(cues), encoding="utf-8")
+    csv_path.write_text(generate_csv(cues), encoding="utf-8")
+
+    return {
+        "txt": txt_path,
+        "srt": srt_path,
+        "vtt": vtt_path,
+        "csv": csv_path,
+        "json": json_path,
+    }
+
+
+def validate_task_provenance(
+    source_task_id: Optional[str],
+    current_task_id: Optional[str],
+    db: Session,
+) -> Optional[ToolkitTask]:
+    """Validate that source_task_id exists and does not cause a cyclic lineage dependency."""
+    if not source_task_id:
+        return None
+    source = db.query(ToolkitTask).filter(ToolkitTask.id == source_task_id.strip()).first()
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Source task '{source_task_id}' not found.")
+
+    if current_task_id and source.id == current_task_id:
+        raise HTTPException(status_code=400, detail="A task cannot have itself as source (cycle detected).")
+
+    visited = {current_task_id} if current_task_id else set()
+    curr: Optional[ToolkitTask] = source
+    while curr:
+        if curr.id in visited:
+            raise HTTPException(status_code=400, detail="Cyclic task provenance lineage detected.")
+        visited.add(curr.id)
+        if curr.source_task_id:
+            curr = db.query(ToolkitTask).filter(ToolkitTask.id == curr.source_task_id).first()
+        else:
+            curr = None
+    return source
+
+
+def build_task_bundle_zip(task: ToolkitTask, db: Session) -> Path:
+    """Consolidate original transcripts, translations, and generated audio into a secure ZIP archive."""
+    task_id = task.id
+    output_dir = get_toolkit_task_output_dir(task_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = output_dir / f"{Path(task.source_filename).stem}_bundle.zip"
+
+    lineage_tasks: List[ToolkitTask] = []
+
+    # 1. Source parent
+    if task.source_task_id:
+        parent = db.query(ToolkitTask).filter(ToolkitTask.id == task.source_task_id).first()
+        if parent:
+            lineage_tasks.append(parent)
+
+    # 2. Current task
+    lineage_tasks.append(task)
+
+    # 3. Downstream children
+    children = db.query(ToolkitTask).filter(ToolkitTask.source_task_id == task_id).all()
+    lineage_tasks.extend(children)
+
+    added_files: set = set()
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for t in lineage_tasks:
+            t_out_dir = get_toolkit_task_output_dir(t.id)
+            if not t_out_dir.exists():
+                continue
+
+            for f in t_out_dir.iterdir():
+                if not f.is_file() or f.name.endswith(".zip"):
+                    continue
+                if f.resolve() in added_files:
+                    continue
+
+                folder = "general"
+                suffix = f.suffix.lower()
+                name_lower = f.name.lower()
+                if "translated" in name_lower or t.tool_type in ["text_translation", "transcript_translation"]:
+                    folder = "translated"
+                elif suffix in [".mp3", ".wav", ".m4a"] or t.tool_type in ["text_to_speech", "transcript_to_audio"]:
+                    folder = "audio"
+                elif suffix in [".srt", ".vtt", ".txt", ".csv", ".json"] or t.tool_type in [
+                    "video_to_transcript", "audio_to_transcript", "video_to_text", "audio_to_text"
+                ]:
+                    folder = "original"
+
+                safe_arcname = f"{folder}/{f.name}"
+                zf.write(f, arcname=safe_arcname)
+                added_files.add(f.resolve())
+
+        manifest_text = (
+            f"KhmerDub AI - Task Bundle Archive\n"
+            f"Generated At: {datetime.utcnow().isoformat()}Z\n"
+            f"Task ID: {task.id}\n"
+            f"Tool Type: {task.tool_type}\n"
+            f"Source Filename: {task.source_filename}\n"
+            f"Source Task ID: {task.source_task_id or 'None'}\n"
+            f"Lineage Task Count: {len(lineage_tasks)}\n"
+        )
+        zf.writestr("README.txt", manifest_text)
+
+    return zip_path
 
 
 @router.get("/capabilities")
@@ -441,6 +707,24 @@ def get_toolkit_capabilities():
                 "status": "available",
                 "phase": "13E.4",
                 "supported_formats": ["mp3", "wav"],
+            },
+            {
+                "id": "text_translation",
+                "title": "Translation Studio",
+                "description": "Translate plain text or timestamped subtitle transcripts between English and Khmer using local NLLB-200 or cloud neural models.",
+                "category": "Translation",
+                "status": "available",
+                "phase": "13E.5",
+                "supported_formats": ["txt", "srt", "vtt", "json", "csv"],
+            },
+            {
+                "id": "subtitle_conversion",
+                "title": "Subtitle Converter",
+                "description": "Convert subtitle cue files seamlessly between SubRip (.srt) and WebVTT (.vtt) formats while preserving timing and formatting.",
+                "category": "Conversion",
+                "status": "available",
+                "phase": "13E.5",
+                "supported_formats": ["srt", "vtt", "txt"],
             },
         ],
         "language_capabilities": {
@@ -980,6 +1264,13 @@ def update_transcript_segment(
     stem = Path(task.source_filename).stem
     _generate_transcript_files_on_disk(safe_task_id, stem, all_segments)
 
+    # Mark downstream tasks as outdated
+    downstream_tasks = db.query(ToolkitTask).filter(ToolkitTask.source_task_id == safe_task_id).all()
+    for dt in downstream_tasks:
+        dt.is_outdated = True
+    if downstream_tasks:
+        db.commit()
+
     return _serialize_segment(segment)
 
 
@@ -1019,6 +1310,13 @@ def reset_transcript_edits(
     stem = Path(task.source_filename).stem
     _generate_transcript_files_on_disk(safe_task_id, stem, all_segments)
 
+    # Mark downstream tasks as outdated
+    downstream_tasks = db.query(ToolkitTask).filter(ToolkitTask.source_task_id == safe_task_id).all()
+    for dt in downstream_tasks:
+        dt.is_outdated = True
+    if downstream_tasks:
+        db.commit()
+
     return {
         "success": True,
         "reset_count": len(segments),
@@ -1032,7 +1330,7 @@ def export_toolkit_transcript(
     format: str,
     db: Session = Depends(get_db),
 ):
-    """Export transcript in specified format: txt, srt, vtt, json, csv."""
+    """Export transcript or translation in specified format: txt, srt, vtt, json, csv."""
     safe_task_id = sanitize_toolkit_task_id(task_id)
     task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_task_id).first()
     if not task:
@@ -1045,6 +1343,28 @@ def export_toolkit_transcript(
             detail=f"Unsupported export format '{format}'. Supported formats: {', '.join(EXPORT_MIME_TYPES.keys())}.",
         )
 
+    # Check for translation segments first
+    translation_segments = (
+        db.query(ToolkitTranslationSegment)
+        .filter(ToolkitTranslationSegment.task_id == safe_task_id)
+        .order_by(ToolkitTranslationSegment.segment_order)
+        .all()
+    )
+    if translation_segments:
+        stem = Path(task.source_filename).stem
+        files_on_disk = _generate_translation_files_on_disk(safe_task_id, stem, translation_segments)
+        target_file = files_on_disk[clean_fmt]
+        mime_type = EXPORT_MIME_TYPES[clean_fmt]
+        filename = f"{stem}_translated.{clean_fmt}"
+        if clean_fmt in ["srt", "vtt"]:
+            filename = f"{stem}_translated_subtitles.{clean_fmt}"
+        return FileResponse(
+            path=str(target_file),
+            media_type=mime_type,
+            filename=filename,
+            content_disposition_type="attachment",
+        )
+
     all_segments = (
         db.query(ToolkitTranscriptSegment)
         .filter(ToolkitTranscriptSegment.task_id == safe_task_id)
@@ -1054,7 +1374,7 @@ def export_toolkit_transcript(
     if not all_segments:
         raise HTTPException(
             status_code=404,
-            detail="This task does not have any transcript segments to export.",
+            detail="This task does not have any transcript or translation segments to export.",
         )
 
     stem = Path(task.source_filename).stem
@@ -1412,6 +1732,9 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
             )
 
     task_id = str(uuid.uuid4())
+    if request.source_task_id:
+        validate_task_provenance(request.source_task_id, task_id, db)
+
     task_dir = get_toolkit_task_dir(task_id)
     input_dir = get_toolkit_task_input_dir(task_id)
     output_dir = get_toolkit_task_output_dir(task_id)
@@ -1424,7 +1747,8 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
     task = ToolkitTask(
         id=task_id,
         tool_type="text_to_speech",
-        source_type="direct_text",
+        source_type="imported_translation" if request.source_task_id else "direct_text",
+        source_task_id=request.source_task_id,
         source_filename=f"tts_{request.language}_{provider_name}_{voice[:8]}.txt",
         source_file_path=str(text_source_path),
         target_format=target_format,
@@ -1891,6 +2215,9 @@ def generate_transcript_to_audio(
             )
 
     task_id = str(uuid.uuid4())
+    if request.source_task_id:
+        validate_task_provenance(request.source_task_id, task_id, db)
+
     input_dir = get_toolkit_task_input_dir(task_id)
     output_dir = get_toolkit_task_output_dir(task_id)
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -1908,6 +2235,7 @@ def generate_transcript_to_audio(
         tool_type="transcript_to_audio",
         source_type="imported_transcript" if request.source_task_id else "transcript_input",
         source_project_id=request.source_task_id,
+        source_task_id=request.source_task_id,
         source_filename=source_fname,
         source_file_path=str(source_manifest_path),
         target_format=target_format,
@@ -2237,4 +2565,453 @@ def delete_transcript_segment(
 
     db.refresh(task)
     return _serialize_task(task)
+
+
+# ==============================================================================
+# Phase 13E.5: Translation Studio, Subtitle Converter & Connected Workflows
+# ==============================================================================
+
+SUPPORTED_LANGUAGE_PAIRS = [
+    {"source_lang": "en", "target_lang": "km", "source_name": "English", "target_name": "Khmer", "verified": True},
+    {"source_lang": "km", "target_lang": "en", "source_name": "Khmer", "target_name": "English", "verified": True},
+]
+
+
+@router.get("/translation/languages")
+def get_translation_languages():
+    """Return verified supported language pairs for translation."""
+    return SUPPORTED_LANGUAGE_PAIRS
+
+
+@router.get("/translation/providers")
+def get_translation_providers():
+    """Return available translation providers with configuration status."""
+    return list_translation_providers()
+
+
+@router.post("/translation/translate-text", response_model=ToolkitTaskResponse)
+def translate_text(request: TranslateTextRequest, db: Session = Depends(get_db)):
+    """Translate standalone text between English and Khmer using local NLLB or cloud neural models."""
+    clean_text = (request.text or "").strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    provider_name = request.provider.strip().lower()
+    validate_translation_provider(provider_name)
+
+    if not any(p["source_lang"] == request.source_lang and p["target_lang"] == request.target_lang for p in SUPPORTED_LANGUAGE_PAIRS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported language pair {request.source_lang} -> {request.target_lang}. Verified pairs: en <-> km.",
+        )
+
+    task_id = str(uuid.uuid4())
+    if request.source_task_id:
+        validate_task_provenance(request.source_task_id, task_id, db)
+
+    chunks = split_tts_text(clean_text, language=request.source_lang, max_chars=300)
+    if not chunks:
+        chunks = [clean_text]
+
+    try:
+        provider = get_translation_provider(provider_name)
+        translated_chunks = provider.translate(
+            texts=chunks,
+            source_lang=request.source_lang,
+            target_lang=request.target_lang,
+        )
+    except Exception as e:
+        logger.error("Text translation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
+
+    task_dir = get_toolkit_task_dir(task_id)
+    input_dir = get_toolkit_task_input_dir(task_id)
+    output_dir = get_toolkit_task_output_dir(task_id)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    src_file = input_dir / "source_text.txt"
+    src_file.write_text(clean_text, encoding="utf-8")
+
+    task = ToolkitTask(
+        id=task_id,
+        tool_type="text_translation",
+        source_type="direct_text",
+        source_task_id=request.source_task_id,
+        is_outdated=False,
+        source_filename=f"translation_{request.source_lang}_{request.target_lang}_{task_id[:8]}.txt",
+        source_file_path=str(src_file),
+        target_format="txt",
+        status="completed",
+        progress_percentage=100,
+        source_media_metadata=json.dumps({
+            "character_count": len(clean_text),
+            "source_lang": request.source_lang,
+            "target_lang": request.target_lang,
+            "provider": provider_name,
+            "segment_count": len(chunks),
+        }),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    seg_models: List[ToolkitTranslationSegment] = []
+    for idx, (orig, trans) in enumerate(zip(chunks, translated_chunks), start=1):
+        seg = ToolkitTranslationSegment(
+            id=str(uuid.uuid4()),
+            task_id=task.id,
+            segment_order=idx,
+            start_time=None,
+            end_time=None,
+            source_text=orig,
+            translated_text=trans,
+            edited_text=None,
+            status="completed",
+        )
+        db.add(seg)
+        seg_models.append(seg)
+    db.commit()
+
+    stem = Path(task.source_filename).stem
+    files_on_disk = _generate_translation_files_on_disk(task_id, stem, seg_models)
+    task.output_file_path = str(files_on_disk["txt"])
+    task.output_filename = files_on_disk["txt"].name
+    task.output_file_size_bytes = files_on_disk["txt"].stat().st_size
+    task.output_media_metadata = json.dumps({
+        "translated_character_count": sum(len(s.translated_text) for s in seg_models),
+        "segment_count": len(seg_models),
+        "source_lang": request.source_lang,
+        "target_lang": request.target_lang,
+        "provider": provider_name,
+    })
+    db.commit()
+    db.refresh(task)
+
+    return _serialize_task(task)
+
+
+@router.post("/translation/translate-transcript", response_model=ToolkitTaskResponse)
+def translate_transcript(request: TranslateTranscriptRequest, db: Session = Depends(get_db)):
+    """Translate timestamped transcript cues while strictly preserving start/end timing."""
+    provider_name = request.provider.strip().lower()
+    validate_translation_provider(provider_name)
+
+    if not any(p["source_lang"] == request.source_lang and p["target_lang"] == request.target_lang for p in SUPPORTED_LANGUAGE_PAIRS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported language pair {request.source_lang} -> {request.target_lang}. Verified pairs: en <-> km.",
+        )
+
+    task_id = str(uuid.uuid4())
+    if request.source_task_id:
+        validate_task_provenance(request.source_task_id, task_id, db)
+
+    raw_segments: List[Dict[str, Any]] = []
+    if request.segments and len(request.segments) > 0:
+        for s in request.segments:
+            raw_segments.append({
+                "segment_order": s.segment_order,
+                "text": s.text.strip(),
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+            })
+    elif request.source_task_id:
+        source_task = db.query(ToolkitTask).filter(ToolkitTask.id == request.source_task_id.strip()).first()
+        if not source_task:
+            raise HTTPException(status_code=404, detail=f"Source task '{request.source_task_id}' not found.")
+        src_segs = (
+            db.query(ToolkitTranscriptSegment)
+            .filter(ToolkitTranscriptSegment.task_id == source_task.id)
+            .order_by(ToolkitTranscriptSegment.segment_order)
+            .all()
+        )
+        for s in src_segs:
+            raw_segments.append({
+                "segment_order": s.segment_order,
+                "text": (s.edited_text if s.edited_text is not None else s.raw_text).strip(),
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+            })
+    else:
+        raise HTTPException(status_code=400, detail="No transcript segments provided for translation.")
+
+    if not raw_segments:
+        raise HTTPException(status_code=400, detail="Transcript has 0 segments.")
+
+    texts_to_translate = [s["text"] for s in raw_segments]
+    try:
+        provider = get_translation_provider(provider_name)
+        translated_texts = provider.translate(
+            texts=texts_to_translate,
+            source_lang=request.source_lang,
+            target_lang=request.target_lang,
+        )
+    except Exception as e:
+        logger.error("Transcript translation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
+
+    task_dir = get_toolkit_task_dir(task_id)
+    input_dir = get_toolkit_task_input_dir(task_id)
+    output_dir = get_toolkit_task_output_dir(task_id)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    source_fname = request.filename or f"transcript_{task_id[:8]}.srt"
+    manifest_file = input_dir / "source_manifest.json"
+    manifest_file.write_text(json.dumps(raw_segments, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    task = ToolkitTask(
+        id=task_id,
+        tool_type="transcript_translation",
+        source_type="imported_transcript" if request.source_task_id else "transcript_input",
+        source_task_id=request.source_task_id,
+        is_outdated=False,
+        source_filename=source_fname,
+        source_file_path=str(manifest_file),
+        target_format="srt",
+        status="completed",
+        progress_percentage=100,
+        source_media_metadata=json.dumps({
+            "segment_count": len(raw_segments),
+            "source_lang": request.source_lang,
+            "target_lang": request.target_lang,
+            "provider": provider_name,
+        }),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    seg_models: List[ToolkitTranslationSegment] = []
+    for idx, (raw_seg, trans) in enumerate(zip(raw_segments, translated_texts), start=1):
+        seg = ToolkitTranslationSegment(
+            id=str(uuid.uuid4()),
+            task_id=task.id,
+            segment_order=raw_seg.get("segment_order", idx),
+            start_time=raw_seg.get("start_time"),
+            end_time=raw_seg.get("end_time"),
+            source_text=raw_seg["text"],
+            translated_text=trans,
+            edited_text=None,
+            status="completed",
+        )
+        db.add(seg)
+        seg_models.append(seg)
+    db.commit()
+
+    stem = Path(source_fname).stem
+    files_on_disk = _generate_translation_files_on_disk(task_id, stem, seg_models)
+    task.output_file_path = str(files_on_disk["srt"])
+    task.output_filename = files_on_disk["srt"].name
+    task.output_file_size_bytes = files_on_disk["srt"].stat().st_size
+    task.output_media_metadata = json.dumps({
+        "segment_count": len(seg_models),
+        "source_lang": request.source_lang,
+        "target_lang": request.target_lang,
+        "provider": provider_name,
+        "has_timestamps": True,
+    })
+    db.commit()
+    db.refresh(task)
+
+    return _serialize_task(task)
+
+
+@router.put("/translation/tasks/{task_id}/segments/{segment_id}", response_model=ToolkitTranslationSegmentResponse)
+def update_translation_segment(
+    task_id: str,
+    segment_id: str,
+    body: TranslationSegmentUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """Update edited text of a specific translation segment. Flags downstream tasks as outdated."""
+    safe_task_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
+
+    seg = (
+        db.query(ToolkitTranslationSegment)
+        .filter(
+            ToolkitTranslationSegment.id == segment_id.strip(),
+            ToolkitTranslationSegment.task_id == safe_task_id,
+        )
+        .first()
+    )
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"Translation segment '{segment_id}' not found.")
+
+    new_text = body.text.strip()
+    seg.edited_text = new_text
+    seg.updated_at = datetime.utcnow()
+    task.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(seg)
+
+    all_segs = (
+        db.query(ToolkitTranslationSegment)
+        .filter(ToolkitTranslationSegment.task_id == safe_task_id)
+        .order_by(ToolkitTranslationSegment.segment_order)
+        .all()
+    )
+    stem = Path(task.source_filename).stem
+    _generate_translation_files_on_disk(safe_task_id, stem, all_segs)
+
+    # Mark downstream tasks outdated
+    downstream = db.query(ToolkitTask).filter(ToolkitTask.source_task_id == safe_task_id).all()
+    for dt in downstream:
+        dt.is_outdated = True
+    if downstream:
+        db.commit()
+
+    return _serialize_translation_segment(seg)
+
+
+@router.post("/translation/tasks/{task_id}/segments/{segment_id}/retry", response_model=ToolkitTranslationSegmentResponse)
+def retry_translation_segment(
+    task_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+):
+    """Re-translate a single segment using its source text."""
+    safe_task_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
+
+    seg = (
+        db.query(ToolkitTranslationSegment)
+        .filter(
+            ToolkitTranslationSegment.id == segment_id.strip(),
+            ToolkitTranslationSegment.task_id == safe_task_id,
+        )
+        .first()
+    )
+    if not seg:
+        raise HTTPException(status_code=404, detail=f"Translation segment '{segment_id}' not found.")
+
+    meta = {}
+    if task.source_media_metadata:
+        try:
+            meta = json.loads(task.source_media_metadata)
+        except Exception:
+            pass
+
+    provider_name = meta.get("provider", "nllb")
+    source_lang = meta.get("source_lang", "en")
+    target_lang = meta.get("target_lang", "km")
+
+    try:
+        provider = get_translation_provider(provider_name)
+        new_trans = provider.translate(
+            texts=[seg.source_text],
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        seg.translated_text = new_trans[0]
+        seg.edited_text = None
+        seg.status = "completed"
+        seg.error_message = None
+        seg.updated_at = datetime.utcnow()
+        task.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(seg)
+    except Exception as e:
+        logger.error("Segment re-translation failed: %s", e)
+        seg.status = "failed"
+        seg.error_message = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Segment re-translation failed: {e}")
+
+    all_segs = (
+        db.query(ToolkitTranslationSegment)
+        .filter(ToolkitTranslationSegment.task_id == safe_task_id)
+        .order_by(ToolkitTranslationSegment.segment_order)
+        .all()
+    )
+    stem = Path(task.source_filename).stem
+    _generate_translation_files_on_disk(safe_task_id, stem, all_segs)
+
+    # Mark downstream tasks outdated
+    downstream = db.query(ToolkitTask).filter(ToolkitTask.source_task_id == safe_task_id).all()
+    for dt in downstream:
+        dt.is_outdated = True
+    if downstream:
+        db.commit()
+
+    return _serialize_translation_segment(seg)
+
+
+@router.post("/subtitle/convert")
+def convert_subtitles(request: SubtitleConvertRequest, db: Session = Depends(get_db)):
+    """Convert subtitles between SRT, WebVTT, and plain text formats."""
+    content = (request.content or "").strip()
+    if not content and request.source_task_id:
+        src_task = db.query(ToolkitTask).filter(ToolkitTask.id == request.source_task_id.strip()).first()
+        if not src_task:
+            raise HTTPException(status_code=404, detail=f"Source task '{request.source_task_id}' not found.")
+        out_dir = get_toolkit_task_output_dir(src_task.id)
+        candidates = list(out_dir.glob("*.srt")) + list(out_dir.glob("*.vtt")) + list(out_dir.glob("*.txt"))
+        if candidates:
+            content = candidates[0].read_text(encoding="utf-8")
+        else:
+            raise HTTPException(status_code=404, detail="No subtitle content found for source task.")
+
+    if not content:
+        raise HTTPException(status_code=400, detail="No subtitle content provided.")
+
+    target_fmt = request.target_format.lower().strip().lstrip(".")
+    if target_fmt not in ["srt", "vtt", "txt"]:
+        raise HTTPException(status_code=400, detail=f"Unsupported target format '{request.target_format}'. Supported: srt, vtt, txt.")
+
+    try:
+        parsed = parse_transcript_content(content, filename=request.filename)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse subtitle content: {e}")
+
+    cues: List[SubtitleCue] = []
+    for seg in parsed.segments:
+        st = seg.start_time if seg.start_time is not None else 0.0
+        et = seg.end_time if seg.end_time is not None else (st + 2.0)
+        cues.append(SubtitleCue(sequence=seg.segment_order, start_time=st, end_time=et, text=seg.text))
+
+    if target_fmt == "vtt":
+        converted = generate_vtt(cues)
+    elif target_fmt == "srt":
+        converted = generate_srt(cues)
+    else:
+        converted = generate_txt(cues)
+
+    stem = Path(request.filename or "converted_subtitles").stem
+    out_filename = f"{stem}.{target_fmt}"
+
+    return {
+        "success": True,
+        "source_format": parsed.format,
+        "target_format": target_fmt,
+        "segment_count": len(cues),
+        "filename": out_filename,
+        "content": converted,
+    }
+
+
+@router.get("/tasks/{task_id}/bundle")
+def download_task_bundle(task_id: str, db: Session = Depends(get_db)):
+    """Download consolidated ZIP archive containing related inputs, transcripts, translations, and audio."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
+
+    zip_file = build_task_bundle_zip(task, db)
+    if not zip_file.exists() or zip_file.stat().st_size == 0:
+        raise HTTPException(status_code=500, detail="Failed to create bundle archive.")
+
+    return FileResponse(
+        path=str(zip_file),
+        media_type="application/zip",
+        filename=zip_file.name,
+        content_disposition_type="attachment",
+    )
 

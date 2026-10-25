@@ -8,6 +8,10 @@ import {
   FileCode,
   Mic2,
   Radio,
+  Languages,
+  Layers,
+  Archive,
+  ArrowRight,
   Upload,
   FolderGit2,
   Play,
@@ -44,6 +48,9 @@ import {
   TTSVoiceOption,
   ParsedTranscriptCue,
   TimingConflictItem,
+  TranslationLanguagePair,
+  SubtitleConvertResponse,
+  TranslationProviderInfo,
 } from '../types';
 
 interface MediaToolkitProps {
@@ -125,6 +132,39 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [ttaSourceFilename, setTtaSourceFilename] = useState<string>('transcript.srt');
   const [ttaSourceTaskId, setTtaSourceTaskId] = useState<string | null>(null);
   const ttaFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Translation Studio State (Phase 13E.5)
+  const [transMode, setTransMode] = useState<'text' | 'transcript'>('text');
+  const [transInputTab, setTransInputTab] = useState<'paste' | 'upload' | 'import'>('paste');
+  const [transText, setTransText] = useState<string>(
+    'Hello everyone, welcome to KhmerDub AI. Today we are testing high-quality automated translation.'
+  );
+  const [transSourceLang, setTransSourceLang] = useState<string>('en');
+  const [transTargetLang, setTransTargetLang] = useState<string>('km');
+  const [transProvider, setTransProvider] = useState<string>('nllb');
+  const [transProviders, setTransProviders] = useState<TranslationProviderInfo[]>([]);
+  const [transLanguagePairs, setTransLanguagePairs] = useState<TranslationLanguagePair[]>([]);
+  const [transImportTaskId, setTransImportTaskId] = useState<string>('');
+  const [transSelectedFile, setTransSelectedFile] = useState<File | null>(null);
+  const [transPastedSrt, setTransPastedSrt] = useState<string>(
+    `1\n00:00:01,000 --> 00:00:04,500\nHello everyone, welcome to KhmerDub AI.\n\n2\n00:00:05,000 --> 00:00:08,200\nToday we are translating speech with timestamps.`
+  );
+  const [transIsTranslating, setTransIsTranslating] = useState<boolean>(false);
+  const [transEditingSegId, setTransEditingSegId] = useState<string | null>(null);
+  const [transEditingSegText, setTransEditingSegText] = useState<string>('');
+  const [transRetryingSegId, setTransRetryingSegId] = useState<string | null>(null);
+  const transFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Subtitle Converter State (Phase 13E.5)
+  const [convSourceFormat, setConvSourceFormat] = useState<string>('srt');
+  const [convTargetFormat, setConvTargetFormat] = useState<string>('vtt');
+  const [convContent, setConvContent] = useState<string>(
+    `1\n00:00:01,000 --> 00:00:03,500\nសួស្តីបងប្អូនទាំងអស់គ្នា\n\n2\n00:00:04,000 --> 00:00:06,000\nសូមស្វាគមន៍`
+  );
+  const [convResult, setConvResult] = useState<SubtitleConvertResponse | null>(null);
+  const [convIsConverting, setConvIsConverting] = useState<boolean>(false);
+  const [convCopied, setConvCopied] = useState<boolean>(false);
+  const convFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Active Task & History
   const [activeTask, setActiveTask] = useState<ToolkitTask | null>(null);
@@ -214,6 +254,22 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       fetchTtsVoices(ttsLanguage);
     }
   }, [selectedTool, ttsLanguage, fetchTtsVoices]);
+
+  // Load Translation Providers & Supported Pairs (Phase 13E.5)
+  useEffect(() => {
+    api.getToolkitTranslationProviders()
+      .then((data) => {
+        setTransProviders(data);
+        if (data.length > 0 && !data.some((p) => p.id === transProvider)) {
+          setTransProvider(data[0].id);
+        }
+      })
+      .catch((e) => console.warn('Could not load translation providers:', e));
+
+    api.getTranslationLanguages()
+      .then((data) => setTransLanguagePairs(data))
+      .catch((e) => console.warn('Could not load translation language pairs:', e));
+  }, []);
 
   // Initial parse for Transcript to Audio pasted sample if empty
   useEffect(() => {
@@ -471,8 +527,16 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const full = await api.getToolkitTask(task.id);
       setActiveTask(full);
       // Auto-switch selected tool if matching
-      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech', 'transcript_to_audio'].includes(full.tool_type)) {
-        setSelectedTool(full.tool_type);
+      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech', 'transcript_to_audio', 'text_translation', 'transcript_translation', 'subtitle_conversion'].includes(full.tool_type)) {
+        if (full.tool_type === 'transcript_translation') {
+          setSelectedTool('text_translation');
+          setTransMode('transcript');
+        } else if (full.tool_type === 'text_translation') {
+          setSelectedTool('text_translation');
+          setTransMode('text');
+        } else {
+          setSelectedTool(full.tool_type);
+        }
         if (full.tool_type === 'text_to_speech' && full.full_text) {
           setTtsText(full.full_text);
         }
@@ -850,6 +914,218 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
   };
 
+  // Translation Studio Handlers (Phase 13E.5)
+  const handleTranslateText = async () => {
+    setError(null);
+    if (!transText.trim()) {
+      setError('Please enter or paste text to translate.');
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      setTransIsTranslating(true);
+      setStatusMessage('Translating text with neural AI model...');
+      const result = await api.translateText({
+        text: transText.trim(),
+        source_lang: transSourceLang,
+        target_lang: transTargetLang,
+        provider: transProvider,
+      });
+      setActiveTask(result);
+      setStatusMessage('Translation completed successfully!');
+      await fetchTasks();
+    } catch (err: any) {
+      setError(err.message || 'Translation failed.');
+    } finally {
+      setIsProcessing(false);
+      setTransIsTranslating(false);
+    }
+  };
+
+  const handleTranslateTranscript = async () => {
+    setError(null);
+    try {
+      setIsProcessing(true);
+      setTransIsTranslating(true);
+      setStatusMessage('Translating transcript segments with timing preservation...');
+
+      const payload: any = {
+        source_lang: transSourceLang,
+        target_lang: transTargetLang,
+        provider: transProvider,
+      };
+
+      if (transInputTab === 'import') {
+        if (!transImportTaskId) {
+          setError('Please select a completed transcription task to import.');
+          setIsProcessing(false);
+          setTransIsTranslating(false);
+          return;
+        }
+        payload.source_task_id = transImportTaskId;
+      } else if (transInputTab === 'upload') {
+        if (!transSelectedFile) {
+          setError('Please select a subtitle file (.srt or .vtt) to translate.');
+          setIsProcessing(false);
+          setTransIsTranslating(false);
+          return;
+        }
+        const text = await transSelectedFile.text();
+        const parsed = await api.parseTranscriptToAudio(text, transSelectedFile.name);
+        payload.segments = parsed.segments.map((s: ParsedTranscriptCue) => ({
+          segment_order: s.segment_order,
+          text: s.text,
+          start_time: s.start_time,
+          end_time: s.end_time,
+        }));
+        payload.filename = transSelectedFile.name;
+      } else {
+        if (!transPastedSrt.trim()) {
+          setError('Please paste subtitle content with timestamps.');
+          setIsProcessing(false);
+          setTransIsTranslating(false);
+          return;
+        }
+        const parsed = await api.parseTranscriptToAudio(transPastedSrt, 'pasted.srt');
+        payload.segments = parsed.segments.map((s: ParsedTranscriptCue) => ({
+          segment_order: s.segment_order,
+          text: s.text,
+          start_time: s.start_time,
+          end_time: s.end_time,
+        }));
+        payload.filename = 'pasted_transcript.srt';
+      }
+
+      const result = await api.translateTranscript(payload);
+      setActiveTask(result);
+      setStatusMessage('Transcript translated successfully!');
+      await fetchTasks();
+    } catch (err: any) {
+      setError(err.message || 'Transcript translation failed.');
+    } finally {
+      setIsProcessing(false);
+      setTransIsTranslating(false);
+    }
+  };
+
+  const handleSaveTranslationSegment = async (segId: string) => {
+    if (!activeTask) return;
+    try {
+      const updated = await api.updateToolkitTranslationSegment(activeTask.id, segId, {
+        text: transEditingSegText,
+      });
+      if (activeTask.translation_segments) {
+        const nextSegs = activeTask.translation_segments.map((s) =>
+          s.id === segId ? updated : s
+        );
+        setActiveTask({ ...activeTask, translation_segments: nextSegs });
+      }
+      setTransEditingSegId(null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to update segment.');
+    }
+  };
+
+  const handleRetryTranslationSegment = async (segId: string) => {
+    if (!activeTask) return;
+    try {
+      setTransRetryingSegId(segId);
+      const retried = await api.retryToolkitTranslationSegment(activeTask.id, segId);
+      if (activeTask.translation_segments) {
+        const nextSegs = activeTask.translation_segments.map((s) =>
+          s.id === segId ? retried : s
+        );
+        setActiveTask({ ...activeTask, translation_segments: nextSegs });
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to retry segment translation.');
+    } finally {
+      setTransRetryingSegId(null);
+    }
+  };
+
+  const handleConvertSubtitle = async () => {
+    setError(null);
+    if (!convContent.trim()) {
+      setError('Please provide subtitle content to convert.');
+      return;
+    }
+    try {
+      setConvIsConverting(true);
+      const res = await api.convertSubtitle({
+        content: convContent,
+        source_format: convSourceFormat,
+        target_format: convTargetFormat,
+      });
+      setConvResult(res);
+      setStatusMessage(`Successfully converted ${res.segment_count} cues to ${res.target_format.toUpperCase()}!`);
+    } catch (err: any) {
+      setError(err.message || 'Subtitle conversion failed.');
+    } finally {
+      setConvIsConverting(false);
+    }
+  };
+
+  // Connected Workflows Handoffs (Phase 13E.5)
+  const handleSendToTranslation = (task: ToolkitTask) => {
+    setSelectedTool('text_translation');
+    setTransMode('transcript');
+    setTransInputTab('import');
+    setTransImportTaskId(task.id);
+    setError(null);
+  };
+
+  const handleSendToTTS = (task: ToolkitTask) => {
+    setSelectedTool('text_to_speech');
+    if (task.full_text) {
+      setTtsText(task.full_text);
+    }
+    setError(null);
+  };
+
+  const handleSendToTranscriptToAudio = (task: ToolkitTask) => {
+    setSelectedTool('transcript_to_audio');
+    setTtaInputTab('import');
+    setTtaImportTaskId(task.id);
+    setTtaMode('timed');
+    setError(null);
+  };
+
+  const handleSendTranslationToTTS = (task: ToolkitTask) => {
+    setSelectedTool('text_to_speech');
+    if (task.full_text) {
+      setTtsText(task.full_text);
+    } else if (task.translation_segments) {
+      const txt = task.translation_segments
+        .map((s) => s.edited_text || s.translated_text)
+        .filter(Boolean)
+        .join('\n\n');
+      setTtsText(txt);
+    }
+    setError(null);
+  };
+
+  const handleSendTranslationToTranscriptToAudio = (task: ToolkitTask) => {
+    setSelectedTool('transcript_to_audio');
+    setTtaInputTab('paste');
+    setTtaMode('timed');
+    if (task.translation_segments) {
+      const cues: ParsedTranscriptCue[] = task.translation_segments.map((s) => ({
+        segment_order: s.segment_order,
+        text: s.edited_text || s.translated_text,
+        start_time: s.start_time,
+        end_time: s.end_time,
+      }));
+      setTtaParsedCues(cues);
+      setTtaHasTimestamps(true);
+      setTtaParsedFormat('SRT');
+      setTtaSourceFilename(`${task.source_filename}_translated.srt`);
+      setTtaSourceTaskId(task.id);
+    }
+    setError(null);
+  };
+
   // Helpers
   const formatBytes = (bytes?: number | null) => {
     if (!bytes || bytes === 0) return '0 B';
@@ -929,6 +1205,22 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: Radio,
       status: 'available' as const,
       phase: 'Phase 13E.4',
+    },
+    {
+      id: 'text_translation',
+      title: 'Translation Studio',
+      desc: 'Translate plain text or timestamped subtitle transcripts between English and Khmer using NLLB or cloud neural models.',
+      icon: Languages,
+      status: 'available' as const,
+      phase: 'Phase 13E.5',
+    },
+    {
+      id: 'subtitle_conversion',
+      title: 'Subtitle Converter',
+      desc: 'Convert subtitle files seamlessly between SubRip (.srt) and WebVTT (.vtt) while preserving timestamps.',
+      icon: Layers,
+      status: 'available' as const,
+      phase: 'Phase 13E.5',
     },
   ];
 
@@ -1679,6 +1971,53 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   </div>
                 </div>
 
+                {/* Connected Workflows Toolbar */}
+                <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 font-semibold text-indigo-900">
+                    <Sparkles className="w-4 h-4 text-indigo-600" />
+                    <span>Connected Workflows:</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSendToTranslation(activeTask)}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                      title="Translate this transcript to Khmer or English"
+                    >
+                      <Languages className="w-3.5 h-3.5" />
+                      <span>Translate Transcript</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSendToTTS(activeTask)}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-indigo-200 hover:bg-indigo-50 text-indigo-700 font-semibold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                      title="Generate continuous speech narration from this transcript"
+                    >
+                      <Mic2 className="w-3.5 h-3.5" />
+                      <span>Send to Text-to-Speech</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSendToTranscriptToAudio(activeTask)}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-indigo-200 hover:bg-indigo-50 text-indigo-700 font-semibold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                      title="Convert timestamped segments to synchronized speech"
+                    >
+                      <Radio className="w-3.5 h-3.5" />
+                      <span>Send to Transcript-to-Audio</span>
+                    </button>
+                    <a
+                      href={api.getTaskBundleUrl(activeTask.id)}
+                      download={`${activeTask.source_filename || 'task'}_bundle.zip`}
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                      title="Download complete ZIP archive with transcripts, translations, and audio"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>Download All (ZIP)</span>
+                    </a>
+                  </div>
+                </div>
+
                 {/* View Mode: Timestamped Segments */}
                 {transcriptViewMode === 'segments' && (
                   <div className="space-y-4">
@@ -2230,6 +2569,15 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>WAV (PCM)</span>
+                    </a>
+                    <a
+                      href={api.getTaskBundleUrl(activeTask.id)}
+                      download={`${activeTask.source_filename || 'narration'}_bundle.zip`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors shadow-xs cursor-pointer"
+                      title="Download complete ZIP archive"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>Bundle (ZIP)</span>
                     </a>
                   </div>
                 </div>
@@ -2868,6 +3216,15 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       <Download className="w-3.5 h-3.5" />
                       <span>Download WAV</span>
                     </a>
+                    <a
+                      href={api.getTaskBundleUrl(activeTask.id)}
+                      download={`${activeTask.source_filename || 'narration'}_bundle.zip`}
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+                      title="Download complete ZIP archive"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>Bundle (ZIP)</span>
+                    </a>
                   </div>
                 </div>
 
@@ -3304,6 +3661,741 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             )}
           </div>
         </div>
+      ) : selectedTool === 'text_translation' ? (
+        /* Standalone Translation Studio (Phase 13E.5) */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          {/* Left Column: Input Configuration */}
+          <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Languages className="w-5 h-5 text-indigo-600" />
+                  Translation Studio
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Translate plain text or timestamped subtitle transcripts between English & Khmer.
+                </p>
+              </div>
+            </div>
+
+            {error && (
+              <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-semibold">Error:</span> {error}
+                </div>
+              </div>
+            )}
+
+            {/* Translation Mode Tabs: Plain Text vs Subtitle Transcript */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
+                Workflow Mode
+              </label>
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setTransMode('text')}
+                  className={`py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                    transMode === 'text'
+                      ? 'bg-white text-indigo-700 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-900'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Plain Text</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTransMode('transcript')}
+                  className={`py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                    transMode === 'transcript'
+                      ? 'bg-white text-indigo-700 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-900'
+                  }`}
+                >
+                  <ListMusic className="w-3.5 h-3.5" />
+                  <span>Subtitle Transcript</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Language Pair Selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
+                Language Direction
+              </label>
+              <div className="flex items-center gap-2">
+                {transLanguagePairs.length > 0 ? (
+                  transLanguagePairs.map((pair) => {
+                    const isSelected =
+                      transSourceLang === pair.source_lang && transTargetLang === pair.target_lang;
+                    return (
+                      <button
+                        key={`${pair.source_lang}-${pair.target_lang}`}
+                        type="button"
+                        onClick={() => {
+                          setTransSourceLang(pair.source_lang);
+                          setTransTargetLang(pair.target_lang);
+                        }}
+                        className={`flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-indigo-50 border-indigo-400 text-indigo-700 shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        <span>{pair.source_name} ({pair.source_lang.toUpperCase()})</span>
+                        <ArrowRight className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>{pair.target_name} ({pair.target_lang.toUpperCase()})</span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTransSourceLang('en');
+                        setTransTargetLang('km');
+                      }}
+                      className={`flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        transSourceLang === 'en' && transTargetLang === 'km'
+                          ? 'bg-indigo-50 border-indigo-400 text-indigo-700 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                      }`}
+                    >
+                      <span>English (EN)</span>
+                      <ArrowRight className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Khmer (KM)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTransSourceLang('km');
+                        setTransTargetLang('en');
+                      }}
+                      className={`flex-1 py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        transSourceLang === 'km' && transTargetLang === 'en'
+                          ? 'bg-indigo-50 border-indigo-400 text-indigo-700 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                      }`}
+                    >
+                      <span>Khmer (KM)</span>
+                      <ArrowRight className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>English (EN)</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Translation Provider Selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
+                AI Translation Provider
+              </label>
+              <select
+                value={transProvider}
+                onChange={(e) => setTransProvider(e.target.value)}
+                className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+              >
+                {transProviders.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} {p.type === 'local' ? '(Local CPU · Zero Cost)' : '(Cloud Neural)'}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Mode Specific Inputs */}
+            {transMode === 'text' ? (
+              /* Plain Text Input */
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                    Source Text ({transSourceLang.toUpperCase()})
+                  </label>
+                  <span className="text-[11px] text-slate-400">
+                    {transText.length} characters
+                  </span>
+                </div>
+                <textarea
+                  rows={7}
+                  value={transText}
+                  onChange={(e) => setTransText(e.target.value)}
+                  placeholder="Paste or type text to translate..."
+                  className="w-full p-3.5 rounded-xl border border-slate-200 text-xs text-slate-800 leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-normal"
+                />
+              </div>
+            ) : (
+              /* Subtitle Transcript Input */
+              <div className="space-y-3">
+                <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setTransInputTab('import')}
+                    className={`flex-1 py-1.5 px-2.5 rounded-lg transition-all cursor-pointer ${
+                      transInputTab === 'import'
+                        ? 'bg-white text-indigo-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-900'
+                    }`}
+                  >
+                    Import Task
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTransInputTab('upload')}
+                    className={`flex-1 py-1.5 px-2.5 rounded-lg transition-all cursor-pointer ${
+                      transInputTab === 'upload'
+                        ? 'bg-white text-indigo-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-900'
+                    }`}
+                  >
+                    Upload File
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTransInputTab('paste')}
+                    className={`flex-1 py-1.5 px-2.5 rounded-lg transition-all cursor-pointer ${
+                      transInputTab === 'paste'
+                        ? 'bg-white text-indigo-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-900'
+                    }`}
+                  >
+                    Paste Cues
+                  </button>
+                </div>
+
+                {transInputTab === 'import' ? (
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-semibold text-slate-600">
+                      Select Completed Transcription Task:
+                    </label>
+                    <select
+                      value={transImportTaskId}
+                      onChange={(e) => setTransImportTaskId(e.target.value)}
+                      className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="">-- Choose a Completed Task --</option>
+                      {tasks
+                        .filter((t) => t.status === 'completed' && (t.segments?.length || 0) > 0)
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.source_filename} ({t.segments?.length || 0} segments · {formatDuration(t.output_duration_seconds)})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                ) : transInputTab === 'upload' ? (
+                  <div
+                    onClick={() => transFileInputRef.current?.click()}
+                    className="p-5 border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-xl bg-slate-50/50 hover:bg-indigo-50/20 text-center cursor-pointer transition-all space-y-2"
+                  >
+                    <input
+                      type="file"
+                      ref={transFileInputRef}
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) {
+                          setTransSelectedFile(e.target.files[0]);
+                        }
+                      }}
+                      accept=".srt,.vtt,.txt"
+                      className="hidden"
+                    />
+                    <Upload className="w-6 h-6 text-indigo-600 mx-auto" />
+                    <div className="text-xs font-semibold text-slate-700">
+                      {transSelectedFile ? transSelectedFile.name : 'Click to select SRT or WebVTT file'}
+                    </div>
+                    <p className="text-[11px] text-slate-400">Supports .srt, .vtt subtitle files</p>
+                  </div>
+                ) : (
+                  <textarea
+                    rows={7}
+                    value={transPastedSrt}
+                    onChange={(e) => setTransPastedSrt(e.target.value)}
+                    placeholder="1&#10;00:00:01,000 --> 00:00:04,500&#10;Subtitle text here..."
+                    className="w-full p-3.5 rounded-xl border border-slate-200 font-mono text-xs text-slate-800 leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Submit Translate Button */}
+            <button
+              type="button"
+              onClick={transMode === 'text' ? handleTranslateText : handleTranslateTranscript}
+              disabled={transIsTranslating || isProcessing}
+              className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+            >
+              {transIsTranslating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Translating with AI...</span>
+                </>
+              ) : (
+                <>
+                  <Languages className="w-4 h-4" />
+                  <span>
+                    {transMode === 'text' ? 'Translate Plain Text' : 'Translate Subtitle Transcript'}
+                  </span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Right Column: Results & Interactive Workspace */}
+          <div className="lg:col-span-7 space-y-6">
+            {activeTask && activeTask.status === 'completed' && activeTask.translation_segments ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+                {/* Header Summary */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <h4 className="font-bold text-slate-900 text-base">
+                        {activeTask.source_filename}
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 uppercase">
+                        {activeTask.tool_type === 'transcript_translation' ? 'Transcript Translation' : 'Text Translation'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span>{activeTask.translation_segments.length} segments</span>
+                      <span>•</span>
+                      <span>Format: {activeTask.target_format.toUpperCase()}</span>
+                      {activeTask.is_outdated && (
+                        <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-semibold border border-amber-200">
+                          Outdated
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(
+                        activeTask.translation_segments
+                          ?.map((s) => s.edited_text || s.translated_text)
+                          .join('\n\n') || ''
+                      )}
+                      className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      {copiedFullText ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedFullText ? 'Copied' : 'Copy All'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Outdated Upstream Banner */}
+                {activeTask.is_outdated && (
+                  <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1 text-xs text-amber-900">
+                      <h5 className="font-bold">Source Transcript Was Edited</h5>
+                      <p className="leading-relaxed">
+                        The upstream transcript segments have changed since this translation was generated. Your current translation edits are preserved. You can re-translate when ready.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Connected Workflows Actions & Export Bar */}
+                <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 font-semibold text-indigo-900">
+                    <Sparkles className="w-4 h-4 text-indigo-600" />
+                    <span>Connected Workflows:</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeTask.tool_type === 'text_translation' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleSendTranslationToTTS(activeTask)}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                        title="Send translated text directly to Text-to-Speech Studio"
+                      >
+                        <Mic2 className="w-3.5 h-3.5" />
+                        <span>Send to Text-to-Speech</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleSendTranslationToTranscriptToAudio(activeTask)}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                        title="Send timestamped translated transcript to Transcript-to-Audio Studio"
+                      >
+                        <Radio className="w-3.5 h-3.5" />
+                        <span>Send to Transcript-to-Audio</span>
+                      </button>
+                    )}
+
+                    {/* Export formats */}
+                    {['srt', 'vtt', 'txt', 'csv', 'json'].map((fmt) => (
+                      <a
+                        key={fmt}
+                        href={api.getToolkitExportUrl(activeTask.id, fmt)}
+                        download
+                        className="px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 hover:border-indigo-400 hover:text-indigo-600 font-semibold text-slate-700 shadow-2xs transition-all uppercase text-[11px] cursor-pointer"
+                      >
+                        {fmt}
+                      </a>
+                    ))}
+
+                    <a
+                      href={api.getTaskBundleUrl(activeTask.id)}
+                      download={`${activeTask.source_filename || 'task'}_bundle.zip`}
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
+                      title="Download complete ZIP archive with original transcripts, translations, and audio"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>Download All (ZIP)</span>
+                    </a>
+                  </div>
+                </div>
+
+                {/* Segments Cards List */}
+                <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+                  {activeTask.translation_segments.map((seg) => {
+                    const isEditing = transEditingSegId === seg.id;
+                    const isRetrying = transRetryingSegId === seg.id;
+
+                    return (
+                      <div
+                        key={seg.id}
+                        className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-3 shadow-xs"
+                      >
+                        {/* Header: Segment badge, timestamps, overflow risk */}
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-700 text-[11px]">
+                              #{seg.segment_order}
+                            </span>
+                            {seg.start_time !== null && seg.start_time !== undefined && seg.end_time !== null && seg.end_time !== undefined && (
+                              <span className="font-mono text-indigo-700 font-semibold text-[11px]">
+                                {formatTimestamp(seg.start_time)} → {formatTimestamp(seg.end_time)}
+                              </span>
+                            )}
+                            {seg.is_overflow_risk && (
+                              <span
+                                className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1"
+                                title="Speech estimated to exceed the available time window."
+                              >
+                                <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                Duration Overflow (~{seg.estimated_duration_seconds}s)
+                              </span>
+                            )}
+                            {seg.is_edited && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700">
+                                Edited
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            {!isEditing && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTransEditingSegId(seg.id);
+                                  setTransEditingSegText(seg.edited_text || seg.translated_text);
+                                }}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                title="Edit Translation"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleRetryTranslationSegment(seg.id)}
+                              disabled={isRetrying}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer disabled:opacity-50"
+                              title="Re-translate segment"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin text-indigo-600' : ''}`} />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleCopyText(seg.edited_text || seg.translated_text, seg.id)}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                              title="Copy translated text"
+                            >
+                              {copiedSegmentId === seg.id ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Source Text Box */}
+                        <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100 text-slate-600 text-xs leading-relaxed">
+                          <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-wider">
+                            Source ({transSourceLang.toUpperCase()})
+                          </span>
+                          {seg.source_text}
+                        </div>
+
+                        {/* Translated Text or Edit Area */}
+                        {isEditing ? (
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">
+                              Edit Translation ({transTargetLang.toUpperCase()})
+                            </label>
+                            <textarea
+                              rows={3}
+                              value={transEditingSegText}
+                              onChange={(e) => setTransEditingSegText(e.target.value)}
+                              className="w-full p-2.5 rounded-lg border border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs text-slate-800 leading-relaxed"
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setTransEditingSegId(null)}
+                                className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSaveTranslationSegment(seg.id)}
+                                className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Save className="w-3.5 h-3.5" />
+                                <span>Save Edit</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-slate-900 text-sm font-medium leading-relaxed pl-1">
+                            {seg.edited_text || seg.translated_text}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* Empty State */
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-12 text-center text-slate-400 space-y-4">
+                <Languages className="w-14 h-14 text-slate-300 mx-auto" />
+                <div className="space-y-1">
+                  <h4 className="font-semibold text-slate-700 text-base">Translation Studio Ready</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                    Translate between English and Khmer using local NLLB-200 or cloud models with strict timestamp preservation and duration overflow alerts.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3 max-w-sm mx-auto text-left text-[11px] text-slate-500 pt-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>English & Khmer Verified</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Preserves Cue Timestamps</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Direct Handoff to Speech</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Full ZIP Bundle Export</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : selectedTool === 'subtitle_conversion' ? (
+        /* Subtitle Converter (Phase 13E.5) */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          {/* Left Column: Conversion Controls */}
+          <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-indigo-600" />
+                  Subtitle Converter
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Convert subtitle cues between SubRip (.srt) and WebVTT (.vtt) while strictly preserving timing.
+                </p>
+              </div>
+            </div>
+
+            {error && (
+              <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-semibold">Error:</span> {error}
+                </div>
+              </div>
+            )}
+
+            {/* Source & Target Formats */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
+                  Source Format
+                </label>
+                <select
+                  value={convSourceFormat}
+                  onChange={(e) => setConvSourceFormat(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                >
+                  <option value="srt">SubRip (.srt)</option>
+                  <option value="vtt">WebVTT (.vtt)</option>
+                  <option value="txt">Plain Text (.txt)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
+                  Target Format
+                </label>
+                <select
+                  value={convTargetFormat}
+                  onChange={(e) => setConvTargetFormat(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                >
+                  <option value="vtt">WebVTT (.vtt)</option>
+                  <option value="srt">SubRip (.srt)</option>
+                  <option value="txt">Plain Text (.txt)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Subtitle Input Textarea */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                  Subtitle Content
+                </label>
+                <button
+                  type="button"
+                  onClick={() => convFileInputRef.current?.click()}
+                  className="text-xs text-indigo-600 hover:text-indigo-700 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Upload className="w-3 h-3" />
+                  <span>Upload File</span>
+                </button>
+                <input
+                  type="file"
+                  ref={convFileInputRef}
+                  onChange={async (e) => {
+                    if (e.target.files?.[0]) {
+                      const text = await e.target.files[0].text();
+                      setConvContent(text);
+                    }
+                  }}
+                  accept=".srt,.vtt,.txt"
+                  className="hidden"
+                />
+              </div>
+              <textarea
+                rows={9}
+                value={convContent}
+                onChange={(e) => setConvContent(e.target.value)}
+                placeholder="Paste subtitle content here..."
+                className="w-full p-3 rounded-xl border border-slate-200 font-mono text-xs text-slate-800 leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleConvertSubtitle}
+              disabled={convIsConverting}
+              className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+            >
+              {convIsConverting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Converting Subtitles...</span>
+                </>
+              ) : (
+                <>
+                  <Layers className="w-4 h-4" />
+                  <span>Convert to {convTargetFormat.toUpperCase()}</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Right Column: Converted Output Preview */}
+          <div className="lg:col-span-6 space-y-6">
+            {convResult ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                      <h4 className="font-bold text-slate-900 text-sm">Converted Successfully</h4>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 uppercase">
+                        {convResult.target_format}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      {convResult.segment_count} cues processed with full timing fidelity
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(convResult.content);
+                        setConvCopied(true);
+                        setTimeout(() => setConvCopied(false), 2000);
+                      }}
+                      className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      {convCopied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{convCopied ? 'Copied' : 'Copy'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const blob = new Blob([convResult.content], { type: 'text/plain;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = convResult.filename;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download</span>
+                    </button>
+                  </div>
+                </div>
+
+                <textarea
+                  readOnly
+                  rows={13}
+                  value={convResult.content}
+                  className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 font-mono text-xs text-slate-800 leading-relaxed focus:outline-none"
+                />
+              </div>
+            ) : (
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-12 text-center text-slate-400 space-y-3">
+                <Layers className="w-12 h-12 text-slate-300 mx-auto" />
+                <h4 className="font-semibold text-slate-700 text-sm">No Converted Output Yet</h4>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  Paste subtitle cues or upload an SRT or WebVTT file and click Convert to generate the converted output with precise timestamp formatting.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
       ) : null}
 
       {/* Task Workspace History Section */}
@@ -3363,7 +4455,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       </span>
                     </td>
                     <td className="py-3 px-3 font-medium text-slate-900 max-w-[200px] truncate" title={task.source_filename}>
-                      {task.source_filename}
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate">{task.source_filename}</span>
+                        {task.is_outdated && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 shrink-0">
+                            Outdated
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-3">
                       <span className="font-semibold uppercase px-2 py-0.5 rounded text-[10px] bg-slate-100 text-slate-700">
@@ -3418,6 +4517,15 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               title="Download Output File"
                             >
                               <Download className="w-4 h-4" />
+                            </a>
+
+                            <a
+                              href={api.getTaskBundleUrl(task.id)}
+                              download={`${task.source_filename || 'task'}_bundle.zip`}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                              title="Download All (ZIP Bundle)"
+                            >
+                              <Archive className="w-4 h-4" />
                             </a>
                           </>
                         )}
