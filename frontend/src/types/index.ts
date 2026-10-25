@@ -393,4 +393,67 @@ export interface UpdateVoiceProfilePayload {
   reference_transcript?: string;
 }
 
+export type ToolkitTargetFormat = 'mp3' | 'wav' | 'm4a';
+
+export interface ToolkitAudioMetadata {
+  duration_seconds: number;
+  codec_name: string;
+  sample_rate: number;
+  channels: number;
+  bit_rate?: number | null;
+  channel_layout?: string | null;
+  file_size_bytes?: number;
+}
+
+export interface ToolkitVideoMetadata {
+  duration_seconds: number;
+  width: number;
+  height: number;
+  video_codec?: string;
+  audio_codec?: string;
+  audio_sample_rate?: number;
+  audio_channels?: number;
+  file_size_bytes?: number;
+}
+
+export interface ToolkitTask {
+  id: string;
+  tool_type: string;
+  source_type: 'upload' | 'project';
+  source_project_id?: string | null;
+  source_filename: string;
+  target_format: ToolkitTargetFormat;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  progress_percentage: number;
+  output_filename?: string | null;
+  output_duration_seconds?: number | null;
+  output_file_size_bytes?: number | null;
+  source_media_metadata?: ToolkitVideoMetadata | null;
+  output_media_metadata?: ToolkitAudioMetadata | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ToolkitToolItem {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  status: 'available' | 'planned';
+  phase: string;
+  supported_formats: string[];
+}
+
+export interface ToolkitCapabilities {
+  version: string;
+  tools: ToolkitToolItem[];
+  language_capabilities: {
+    transcription: Record<string, string>;
+    translation: Record<string, string>;
+    speech_synthesis: Record<string, string>;
+  };
+}
+
+
 

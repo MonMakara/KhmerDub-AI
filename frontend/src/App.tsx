@@ -5,6 +5,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Projects } from './pages/Projects';
 import { Settings } from './pages/Settings';
 import { VoiceStudio } from './pages/VoiceStudio';
+import { MediaToolkit } from './pages/MediaToolkit';
 import { ProjectWorkspace } from './pages/ProjectWorkspace';
 import { api } from './services/api';
 import { HealthResponse, ProjectSummary } from './types';
@@ -16,7 +17,7 @@ export const App: React.FC = () => {
       const pid = hash.replace('project/', '').trim();
       return { tab: 'projects', projectId: pid || null };
     }
-    if (hash === 'projects' || hash === 'settings' || hash === 'dashboard' || hash === 'voices') {
+    if (hash === 'projects' || hash === 'settings' || hash === 'dashboard' || hash === 'voices' || hash === 'toolkit') {
       return { tab: hash, projectId: null };
     }
     return { tab: 'dashboard', projectId: null };
@@ -161,6 +162,8 @@ export const App: React.FC = () => {
               onProjectUpdated={fetchProjects}
             />
           )}
+
+          {currentTab === 'toolkit' && <MediaToolkit projects={projects} />}
 
           {currentTab === 'voices' && <VoiceStudio />}
 

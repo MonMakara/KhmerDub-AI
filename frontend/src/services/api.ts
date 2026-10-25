@@ -26,6 +26,8 @@ import {
   VoiceStudioData,
   CreateVoiceProfilePayload,
   UpdateVoiceProfilePayload,
+  ToolkitTask,
+  ToolkitCapabilities,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -804,5 +806,65 @@ export const api = {
 
   getVoiceProfileAudioUrl(profileId: string): string {
     return `${API_BASE}/voices/${profileId}/audio`;
+  },
+
+  // Media Toolkit API methods
+  async getToolkitCapabilities(): Promise<ToolkitCapabilities> {
+    const res = await fetch(`${API_BASE}/toolkit/capabilities`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch toolkit capabilities: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async extractAudio(formData: FormData): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/extract-audio`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Audio extraction failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async listToolkitTasks(toolType?: string): Promise<ToolkitTask[]> {
+    const url = toolType
+      ? `${API_BASE}/toolkit/tasks?tool_type=${encodeURIComponent(toolType)}`
+      : `${API_BASE}/toolkit/tasks`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to list toolkit tasks: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getToolkitTask(taskId: string): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/tasks/${taskId}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to fetch toolkit task: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async deleteToolkitTask(taskId: string): Promise<{ success: boolean; task_id: string }> {
+    const res = await fetch(`${API_BASE}/toolkit/tasks/${taskId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to delete toolkit task: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getToolkitAudioStreamUrl(taskId: string): string {
+    return `${API_BASE}/toolkit/tasks/${taskId}/stream`;
+  },
+
+  getToolkitAudioDownloadUrl(taskId: string): string {
+    return `${API_BASE}/toolkit/tasks/${taskId}/download`;
   },
 };

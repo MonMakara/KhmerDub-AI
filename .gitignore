@@ -33,6 +33,8 @@ data/projects/*
 !data/projects/.gitkeep
 data/voice_profiles/*
 !data/voice_profiles/.gitkeep
+data/toolkit/*
+!data/toolkit/.gitkeep
 data/model_cache/*
 !data/model_cache/.gitkeep
 scratch/.venv*

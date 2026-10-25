@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from app.services.video.base import VideoProcessor, VideoMetadata
+from app.services.video.base import VideoProcessor, VideoMetadata, AudioStreamMetadata
 from app.services.video.exceptions import (
     VideoProcessingError,
     CorruptedVideoError,
@@ -33,7 +33,7 @@ class FFmpegVideoProcessor(VideoProcessor):
         cmd = [
             self.ffprobe_bin,
             "-v", "error",
-            "-show_entries", "stream=index,codec_type,codec_name,width,height,duration:format=duration,size,format_name",
+            "-show_entries", "stream=index,codec_type,codec_name,width,height,duration,sample_rate,channels,bit_rate,channel_layout:format=duration,size,format_name",
             "-of", "json",
             str(video_path),
         ]
@@ -90,6 +90,17 @@ class FFmpegVideoProcessor(VideoProcessor):
 
         has_audio = audio_stream is not None
         audio_codec = audio_stream.get("codec_name") if audio_stream else None
+        audio_sr: Optional[int] = None
+        audio_ch: Optional[int] = None
+        if audio_stream:
+            try:
+                audio_sr = int(audio_stream.get("sample_rate")) if audio_stream.get("sample_rate") else None
+            except (ValueError, TypeError):
+                pass
+            try:
+                audio_ch = int(audio_stream.get("channels")) if audio_stream.get("channels") else None
+            except (ValueError, TypeError):
+                pass
 
         # Resolve duration
         duration_seconds = 0.0
@@ -112,7 +123,217 @@ class FFmpegVideoProcessor(VideoProcessor):
             has_audio=has_audio,
             video_codec=video_codec,
             audio_codec=audio_codec,
+            audio_sample_rate=audio_sr,
+            audio_channels=audio_ch,
         )
+
+    def get_audio_metadata(self, audio_or_video_path: Path) -> AudioStreamMetadata:
+        """Extract detailed audio stream metadata using ffprobe."""
+        if not audio_or_video_path.exists():
+            raise FileNotFoundError(f"Media file does not exist: {audio_or_video_path}")
+        if audio_or_video_path.stat().st_size == 0:
+            raise CorruptedVideoError("Media file is empty (0 bytes)")
+
+        cmd = [
+            self.ffprobe_bin,
+            "-v", "error",
+            "-show_entries", "stream=codec_type,codec_name,duration,sample_rate,channels,bit_rate,channel_layout:format=duration,size,bit_rate",
+            "-of", "json",
+            str(audio_or_video_path),
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except Exception as e:
+            raise VideoProcessingError(f"Error executing ffprobe: {e}") from e
+
+        if res.returncode != 0:
+            err = res.stderr.strip() or "Unknown error"
+            raise CorruptedVideoError(f"Unable to parse media file or file is corrupted: {err}")
+
+        try:
+            data = json.loads(res.stdout)
+        except json.JSONDecodeError as e:
+            raise CorruptedVideoError(f"ffprobe returned invalid JSON: {e}") from e
+
+        audio_stream = None
+        for s in data.get("streams", []):
+            if s.get("codec_type") == "audio":
+                audio_stream = s
+                break
+
+        if not audio_stream:
+            raise NoAudioTrackError("Media file does not contain an audio track.")
+
+        fmt_info = data.get("format", {})
+
+        # Resolve duration
+        duration_s = 0.0
+        for dur_val in [fmt_info.get("duration"), audio_stream.get("duration")]:
+            if dur_val is not None:
+                try:
+                    duration_s = float(dur_val)
+                    if duration_s > 0.0:
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        # Resolve sample rate and channels
+        sr = 44100
+        ch = 2
+        try:
+            if audio_stream.get("sample_rate"):
+                sr = int(audio_stream["sample_rate"])
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if audio_stream.get("channels"):
+                ch = int(audio_stream["channels"])
+        except (ValueError, TypeError):
+            pass
+
+        # Resolve bit rate
+        bit_rate = None
+        for br_val in [audio_stream.get("bit_rate"), fmt_info.get("bit_rate")]:
+            if br_val is not None:
+                try:
+                    bit_rate = int(br_val)
+                    if bit_rate > 0:
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        codec_name = audio_stream.get("codec_name", "unknown")
+        channel_layout = audio_stream.get("channel_layout")
+
+        return AudioStreamMetadata(
+            duration_seconds=round(duration_s, 2),
+            codec_name=codec_name,
+            sample_rate=sr,
+            channels=ch,
+            bit_rate=bit_rate,
+            channel_layout=channel_layout,
+        )
+
+    def extract_audio_format(
+        self, video_path: Path, output_audio_path: Path, target_format: str = "mp3"
+    ) -> Path:
+        """Extract audio track from video in specified format (mp3, wav, m4a) with optimal remuxing/transcoding.
+
+        - Preserves full audio duration.
+        - If source audio format matches requested format without transcoding need (e.g. AAC in MP4 -> M4A),
+          remuxes via stream copy (-c:a copy) to preserve original fidelity and ensure instantaneous execution.
+        - Otherwise, applies high-quality encoding defaults:
+          - MP3: libmp3lame 192k CBR/VBR high fidelity
+          - WAV: 16-bit PCM uncompressed studio WAV
+          - M4A: AAC 192k standard MP4 audio
+        """
+        metadata = self.get_metadata(video_path)
+        if not metadata.has_audio:
+            raise NoAudioTrackError("Uploaded video does not contain an audio track.")
+
+        clean_format = target_format.lower().lstrip(".")
+        if clean_format not in ["mp3", "wav", "m4a"]:
+            raise ValueError(f"Unsupported target format: '{target_format}'. Supported formats are: mp3, wav, m4a.")
+
+        output_audio_path.parent.mkdir(parents=True, exist_ok=True)
+
+        src_codec = (metadata.audio_codec or "").lower()
+
+        # Build optimal FFmpeg command
+        if clean_format == "m4a":
+            if src_codec in ["aac", "mp4a"]:
+                # Stream copy: direct lossless container remuxing
+                logger.info("Source audio is already AAC (%s). Remuxing to M4A without lossy re-encoding.", src_codec)
+                cmd = [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(video_path),
+                    "-vn",
+                    "-c:a", "copy",
+                    str(output_audio_path),
+                ]
+            else:
+                cmd = [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(video_path),
+                    "-vn",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    str(output_audio_path),
+                ]
+        elif clean_format == "mp3":
+            if src_codec == "mp3":
+                # Stream copy: direct lossless copy
+                logger.info("Source audio is already MP3. Copying without re-encoding.")
+                cmd = [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(video_path),
+                    "-vn",
+                    "-c:a", "copy",
+                    str(output_audio_path),
+                ]
+            else:
+                cmd = [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(video_path),
+                    "-vn",
+                    "-c:a", "libmp3lame",
+                    "-b:a", "192k",
+                    str(output_audio_path),
+                ]
+        elif clean_format == "wav":
+            if src_codec in ["pcm_s16le", "pcm_s24le", "pcm_s32le"]:
+                cmd = [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(video_path),
+                    "-vn",
+                    "-c:a", "copy",
+                    str(output_audio_path),
+                ]
+            else:
+                cmd = [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(video_path),
+                    "-vn",
+                    "-c:a", "pcm_s16le",
+                    str(output_audio_path),
+                ]
+        else:
+            raise ValueError(f"Unsupported format: {clean_format}")
+
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except Exception as e:
+            logger.error("Failed to execute ffmpeg audio extraction: %s", e)
+            raise VideoProcessingError(f"Error executing ffmpeg: {e}") from e
+
+        if res.returncode != 0:
+            err = res.stderr.strip() or "Unknown error"
+            logger.error("FFmpeg audio extraction failed (returncode %d): %s", res.returncode, err)
+            raise VideoProcessingError(f"FFmpeg audio extraction failed: {err}")
+
+        if not output_audio_path.exists() or output_audio_path.stat().st_size == 0:
+            raise VideoProcessingError("Extracted audio file is missing or zero bytes.")
+
+        try:
+            output_audio_path.chmod(0o666)
+        except OSError:
+            pass
+
+        logger.info(
+            "Successfully extracted %s audio from %s -> %s (%d bytes)",
+            clean_format.upper(),
+            video_path.name,
+            output_audio_path.name,
+            output_audio_path.stat().st_size,
+        )
+        return output_audio_path
 
     def get_audio_duration(self, audio_path: Path) -> float:
         """Measure audio duration in seconds using ffprobe."""

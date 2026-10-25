@@ -267,3 +267,75 @@ def delete_voice_profile_storage(profile_id: str) -> Dict[str, Any]:
         "deleted_count": len(deleted_paths),
     }
 
+
+def sanitize_toolkit_task_id(task_id: str) -> str:
+    """Validate and sanitize toolkit task_id to prevent path traversal."""
+    if not task_id:
+        raise ValueError("Invalid task_id: empty or None")
+    stripped = task_id.strip()
+    if "/" in stripped or "\\" in stripped or ".." in stripped:
+        raise ValueError(f"Path traversal characters detected in task_id: '{task_id}'")
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "", stripped)
+    if not sanitized:
+        raise ValueError(f"Invalid task_id: '{task_id}'")
+    return sanitized
+
+
+def get_toolkit_base_dir() -> Path:
+    """Return root directory for AI Media Toolkit workspaces: data/toolkit/."""
+    d = settings.DATA_DIR / "toolkit"
+    return _ensure_writable_dir(d)
+
+
+def get_toolkit_task_dir(task_id: str) -> Path:
+    """Return directory path for specific toolkit task workspace: data/toolkit/{task_id}/."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    return get_toolkit_base_dir() / safe_id
+
+
+def get_toolkit_task_input_dir(task_id: str) -> Path:
+    """Return directory for uploaded/source media in toolkit task: data/toolkit/{task_id}/input/."""
+    d = get_toolkit_task_dir(task_id) / "input"
+    return _ensure_writable_dir(d)
+
+
+def get_toolkit_task_output_dir(task_id: str) -> Path:
+    """Return directory for generated output files in toolkit task: data/toolkit/{task_id}/output/."""
+    d = get_toolkit_task_dir(task_id) / "output"
+    return _ensure_writable_dir(d)
+
+
+def delete_toolkit_task_storage(task_id: str) -> Dict[str, Any]:
+    """Safely delete storage directory belonging to a toolkit task.
+
+    Strictly prevents path traversal and ensures only task subdirectories under data/toolkit are removed.
+    """
+    safe_id = sanitize_toolkit_task_id(task_id)
+    base_dir = get_toolkit_base_dir().resolve()
+    target_dir = base_dir / safe_id
+
+    deleted_paths = []
+
+    if target_dir.is_symlink():
+        try:
+            target_dir.unlink()
+            deleted_paths.append(str(target_dir))
+            logger.info("Unlinked toolkit task symlink: %s", target_dir)
+        except Exception as e:
+            logger.warning("Failed to unlink toolkit task symlink %s: %s", target_dir, e)
+    elif target_dir.exists() and target_dir.is_dir():
+        resolved = target_dir.resolve()
+        if resolved.parent == base_dir and resolved.name == safe_id:
+            try:
+                shutil.rmtree(target_dir, ignore_errors=False)
+                deleted_paths.append(str(target_dir))
+                logger.info("Deleted toolkit task directory: %s", target_dir)
+            except Exception as e:
+                logger.warning("Failed to delete toolkit task directory %s: %s", target_dir, e)
+
+    return {
+        "task_id": safe_id,
+        "deleted_paths": deleted_paths,
+        "deleted_count": len(deleted_paths),
+    }
+
