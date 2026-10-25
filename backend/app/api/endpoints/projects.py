@@ -589,6 +589,7 @@ def get_project_audio(project_id: str, db: Session = Depends(get_db)):
         video.extracted_audio_path,
         media_type="audio/wav",
         filename="extracted_audio.wav",
+        content_disposition_type="inline",
     )
 
 
@@ -1444,13 +1445,13 @@ def regenerate_audio_segment(
     return _enrich_generated_audio(audio_record, project_id)
 
 
-@router.get("/{project_id}/tts/{segment_id}/audio")
+@router.api_route("/{project_id}/tts/{segment_id}/audio", methods=["GET", "HEAD"])
 def stream_audio_segment(
     project_id: str,
     segment_id: str,
     db: Session = Depends(get_db),
 ):
-    """Stream synthesized MP3 audio for browser playback."""
+    """Stream synthesized MP3 audio for browser playback with Range request support."""
     audio_record = (
         db.query(GeneratedAudio)
         .filter(
@@ -1470,6 +1471,7 @@ def stream_audio_segment(
         path=str(file_path),
         media_type="audio/mpeg",
         filename=f"tts_{project_id}_{segment_id}.mp3",
+        content_disposition_type="inline",
     )
 
 

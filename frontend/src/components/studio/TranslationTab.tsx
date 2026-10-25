@@ -526,7 +526,8 @@ export const TranslationTab: React.FC<TranslationTabProps> = ({
                         <div className="pt-1 flex items-center justify-between border-t border-indigo-100/60">
                           <audio
                             controls
-                            src={`/api/tts/stream/${audio.id}`}
+                            preload="metadata"
+                            src={`${audio.audio_url || `/api/projects/${projectId}/tts/${seg.id}/audio`}?t=${audio.updated_at ? new Date(audio.updated_at).getTime() : ''}`}
                             className="w-full max-w-xs h-7"
                           />
                           {audio.is_outdated && (

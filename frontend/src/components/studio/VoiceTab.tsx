@@ -344,7 +344,8 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
                   {audio ? (
                     <audio
                       controls
-                      src={`/api/tts/stream/${audio.id}`}
+                      preload="metadata"
+                      src={`${audio.audio_url || `/api/projects/${audio.project_id}/tts/${seg.id}/audio`}?t=${audio.updated_at ? new Date(audio.updated_at).getTime() : ''}`}
                       className="w-full sm:w-64 h-8 shrink-0"
                     />
                   ) : (

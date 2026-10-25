@@ -324,7 +324,23 @@ def test_tts_stream_audio_endpoints(client: TestClient, db_session: Session, tmp
     stream_res = client.get(f"/api/projects/{project.id}/tts/{t_seg.id}/audio")
     assert stream_res.status_code == 200
     assert "audio/mpeg" in stream_res.headers.get("content-type", "")
+    assert "inline" in stream_res.headers.get("content-disposition", "")
     assert stream_res.content == b"MP3_STREAM_CONTENT_BYTES"
+
+    # Test HEAD request on project streaming endpoint (Safari/Chrome browser capability probe)
+    head_res = client.head(f"/api/projects/{project.id}/tts/{t_seg.id}/audio")
+    assert head_res.status_code == 200
+    assert "audio/mpeg" in head_res.headers.get("content-type", "")
+
+    # Test direct /api/tts/stream/{audio.id} endpoint
+    direct_res = client.get(f"/api/tts/stream/{audio.id}")
+    assert direct_res.status_code == 200
+    assert "audio/mpeg" in direct_res.headers.get("content-type", "")
+    assert "inline" in direct_res.headers.get("content-disposition", "")
+    assert direct_res.content == b"MP3_STREAM_CONTENT_BYTES"
+
+    direct_head_res = client.head(f"/api/tts/stream/{audio.id}")
+    assert direct_head_res.status_code == 200
 
 
 def test_real_gtts_synthesis_integration(tmp_path: Path):
