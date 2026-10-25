@@ -22,16 +22,77 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
+# Workspace and storage boundaries
+WORKSPACE_ROOT = Path("/home/mark/Documents/MyDocuments/Projects/KhmerDub-AI").resolve()
+DATA_DIR = (WORKSPACE_ROOT / "data").resolve()
+LOGS_DIR = (DATA_DIR / "logs").resolve()
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+WORKER_LOG_FILE = LOGS_DIR / "voxcpm_worker.log"
+
+
+class SafeOutputWrapper:
+    """Safely wraps stdout/stderr to prevent [Errno 5] Input/output error if terminal is closed or detached."""
+
+    def __init__(self, original_stream, log_file_path=None):
+        self.original_stream = original_stream
+        self.log_file = None
+        if log_file_path:
+            try:
+                self.log_file = open(log_file_path, "a", encoding="utf-8")
+            except Exception:
+                pass
+
+    def write(self, s):
+        if self.log_file:
+            try:
+                self.log_file.write(s)
+                self.log_file.flush()
+            except Exception:
+                pass
+        try:
+            return self.original_stream.write(s)
+        except (OSError, IOError):
+            return len(s)
+
+    def flush(self):
+        if self.log_file:
+            try:
+                self.log_file.flush()
+            except Exception:
+                pass
+        try:
+            return self.original_stream.flush()
+        except (OSError, IOError):
+            pass
+
+    def isatty(self):
+        try:
+            return self.original_stream.isatty()
+        except Exception:
+            return False
+
+    def fileno(self):
+        try:
+            return self.original_stream.fileno()
+        except Exception:
+            raise OSError("No fileno")
+
+
+# Protect stdout and stderr against detached TTY I/O errors
+sys.stdout = SafeOutputWrapper(sys.stdout, WORKER_LOG_FILE)
+sys.stderr = SafeOutputWrapper(sys.stderr, WORKER_LOG_FILE)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [VoxCPM-Worker] %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(WORKER_LOG_FILE, encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger("voxcpm_worker")
 
-# Workspace and storage boundaries
-WORKSPACE_ROOT = Path("/home/mark/Documents/MyDocuments/Projects/KhmerDub-AI").resolve()
-DATA_DIR = (WORKSPACE_ROOT / "data").resolve()
 MODEL_DIR = (DATA_DIR / "model_cache" / "voxcpm2").resolve()
 DEFAULT_SECRET = "khmerdub-voxcpm-internal-auth-token-2026"
 INTERNAL_SECRET = os.environ.get("VOXCPM_INTERNAL_SECRET", DEFAULT_SECRET)

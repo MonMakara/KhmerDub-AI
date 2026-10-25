@@ -1432,11 +1432,16 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
 
     completed_segs = [s for s in segments_objs if s.status == "completed"]
     if not completed_segs:
+        failed_msgs = [s.error_message for s in segments_objs if s.error_message]
+        first_err = failed_msgs[0] if failed_msgs else "Unknown synthesis error"
         task.status = "failed"
-        task.error_message = "All text segments failed to synthesize."
+        task.error_message = f"Text-to-speech synthesis failed: {first_err}"
         db.commit()
         db.refresh(task)
-        raise HTTPException(status_code=500, detail="Text-to-speech synthesis failed for all segments.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Text-to-speech synthesis failed: {first_err}",
+        )
 
     try:
         primary_out, wav_out, mp3_out, total_dur = assemble_tts_narration(

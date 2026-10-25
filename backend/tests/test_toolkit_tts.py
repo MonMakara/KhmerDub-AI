@@ -302,3 +302,35 @@ def test_tts_task_cascade_deletion(db_session: Session):
 
     # Verify workspace directory is deleted
     assert not get_toolkit_task_dir(task_id).exists()
+
+
+def test_tts_generate_voxcpm_custom_voice(db_session: Session):
+    """Verify generating speech using an authorized VoxCPM2 custom cloned voice."""
+    voices_resp = client.get("/api/toolkit/tts/voices")
+    assert voices_resp.status_code == 200
+    custom_voices = [v for v in voices_resp.json() if v.get("is_custom") and v.get("is_available")]
+    if not custom_voices:
+        pytest.skip("No online authorized VoxCPM2 custom voices registered in database.")
+
+    chosen_voice = custom_voices[0]
+    resp = client.post(
+        "/api/toolkit/tts/generate",
+        json={
+            "text": "សួស្តី នេះជាសំឡេងក្លូន VoxCPM2។",
+            "provider": "voxcpm",
+            "voice": chosen_voice["voice"],
+            "language": "km",
+            "target_format": "mp3",
+            "pause_duration_seconds": 0.4,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "completed"
+    assert data["output_filename"] == "narration.mp3"
+    assert data["output_duration_seconds"] > 0
+    assert len(data["tts_segments"]) >= 1
+    assert data["tts_segments"][0]["status"] == "completed"
+
+    # Clean up
+    client.delete(f"/api/toolkit/tasks/{data['id']}")
