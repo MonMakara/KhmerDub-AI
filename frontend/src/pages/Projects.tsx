@@ -12,6 +12,9 @@ import {
   List as ListIcon,
 } from 'lucide-react';
 import { ProjectSummary, ProjectStatus } from '../types';
+import { ProjectActionMenu } from '../components/common/ProjectActionMenu';
+import { RenameProjectModal } from '../components/common/RenameProjectModal';
+import { DeleteProjectModal } from '../components/common/DeleteProjectModal';
 
 interface ProjectsProps {
   projects: ProjectSummary[];
@@ -37,6 +40,8 @@ export const Projects: React.FC<ProjectsProps> = ({
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   const [sortBy, setSortBy] = useState<SortOption>('newest');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [renamingProject, setRenamingProject] = useState<ProjectSummary | null>(null);
+  const [deletingProject, setDeletingProject] = useState<ProjectSummary | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -278,12 +283,19 @@ export const Projects: React.FC<ProjectsProps> = ({
                 {/* Top Section */}
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <span className="font-bold text-slate-900 text-sm group-hover:text-indigo-600 transition-colors line-clamp-1">
+                    <span className="font-bold text-slate-900 text-sm group-hover:text-indigo-600 transition-colors line-clamp-1 flex-1">
                       {proj.title}
                     </span>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${statusInfo.color}`}>
-                      {statusInfo.label}
-                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${statusInfo.color}`}>
+                        {statusInfo.label}
+                      </span>
+                      <ProjectActionMenu
+                        onOpenStudio={() => onSelectProject(proj.id)}
+                        onRename={() => setRenamingProject(proj)}
+                        onDelete={() => setDeletingProject(proj)}
+                      />
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -390,16 +402,23 @@ export const Projects: React.FC<ProjectsProps> = ({
                         {new Date(proj.created_at).toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onSelectProject(proj.id);
-                          }}
-                          className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white rounded-lg text-xs font-semibold transition-all inline-flex items-center gap-1"
-                        >
-                          <Play className="w-3 h-3" />
-                          <span>Open Studio</span>
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectProject(proj.id);
+                            }}
+                            className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white rounded-lg text-xs font-semibold transition-all inline-flex items-center gap-1 shadow-2xs"
+                          >
+                            <Play className="w-3 h-3" />
+                            <span>Open Studio</span>
+                          </button>
+                          <ProjectActionMenu
+                            onOpenStudio={() => onSelectProject(proj.id)}
+                            onRename={() => setRenamingProject(proj)}
+                            onDelete={() => setDeletingProject(proj)}
+                          />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -409,6 +428,25 @@ export const Projects: React.FC<ProjectsProps> = ({
           </div>
         </div>
       )}
+      {/* Rename Modal */}
+      <RenameProjectModal
+        isOpen={!!renamingProject}
+        project={renamingProject}
+        onClose={() => setRenamingProject(null)}
+        onRenamed={() => {
+          onRefresh();
+        }}
+      />
+
+      {/* Delete Modal */}
+      <DeleteProjectModal
+        isOpen={!!deletingProject}
+        project={deletingProject}
+        onClose={() => setDeletingProject(null)}
+        onDeleted={() => {
+          onRefresh();
+        }}
+      />
     </div>
   );
 };

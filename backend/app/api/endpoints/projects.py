@@ -5,6 +5,7 @@ import shutil
 import logging
 from pathlib import Path
 from typing import List
+from datetime import datetime
 
 from fastapi import (
     APIRouter,
@@ -24,6 +25,7 @@ from app.core.storage import (
     get_timeline_audio_path,
     get_exported_video_path,
     get_project_output_dir,
+    delete_project_storage,
 )
 from app.database.session import get_db
 from app.models.project import (
@@ -38,6 +40,8 @@ from app.models.project import (
 )
 from app.schemas.project import (
     ProjectCreate,
+    ProjectUpdate,
+    ProjectDeleteResponse,
     ProjectResponse,
     ProjectSummaryResponse,
     ProcessingJobResponse,
@@ -157,6 +161,12 @@ def update_project_voice(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     provider = (voice_update.tts_provider or DEFAULT_PROVIDER).strip().lower()
     voice = (voice_update.tts_voice or DEFAULT_VOICE).strip()
 
@@ -192,6 +202,12 @@ def update_project_translation_settings(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     provider_id = (payload.translation_provider or "nllb").strip().lower()
     style_id = (payload.translation_style or "natural").strip().lower()
 
@@ -221,7 +237,118 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> ProjectRespon
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
     return project
+
+
+@router.patch("/{project_id}", response_model=ProjectResponse)
+def update_project(
+    project_id: str,
+    payload: ProjectUpdate,
+    db: Session = Depends(get_db),
+) -> ProjectResponse:
+    """Rename an existing project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot rename a project that is being deleted",
+        )
+
+    project.title = payload.title
+    project.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.delete("/{project_id}", response_model=ProjectDeleteResponse)
+def delete_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+) -> ProjectDeleteResponse:
+    """
+    Safely delete a project and all associated files and database records.
+    Precondition: Project must not have active background processing jobs.
+    Two-stage deletion:
+      Stage 1: Mark project status as 'deleting' to block new jobs.
+      Stage 2: Safely remove files and cascade-delete database records.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
+    # 1. Check for active background processing jobs
+    active_job = (
+        db.query(ProcessingJob)
+        .filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+        )
+        .first()
+    )
+    active_project_statuses = [
+        ProjectStatus.TRANSCRIBING,
+        ProjectStatus.TRANSLATING,
+        ProjectStatus.GENERATING_VOICE,
+        ProjectStatus.SYNCHRONIZING,
+    ]
+    if active_job or project.status in active_project_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete project with active background processing jobs. Please wait for the job to complete or fail before deleting.",
+        )
+
+    title = project.title
+
+    # 2. Stage 1: Mark project as deleting to prevent new incoming jobs
+    project.status = ProjectStatus.DELETING
+    db.commit()
+
+    # 3. Stage 2: Clean up project files on disk
+    deleted_files_count = 0
+    try:
+        storage_info = delete_project_storage(project_id)
+        deleted_files_count = storage_info.get("deleted_count", 0)
+    except Exception as e:
+        logger.error(f"Error deleting storage for project {project_id}: {e}")
+
+    # 4. Safe explicit database cleanup in foreign-key dependency order
+    try:
+        db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).delete(synchronize_session=False)
+        db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).delete(synchronize_session=False)
+        db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete(synchronize_session=False)
+        db.query(Video).filter(Video.project_id == project_id).delete(synchronize_session=False)
+        db.query(ProcessingJob).filter(ProcessingJob.project_id == project_id).delete(synchronize_session=False)
+        db.delete(project)
+        db.commit()
+    except Exception as db_err:
+        db.rollback()
+        logger.error(f"Failed to delete database records for project {project_id}: {db_err}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error during project deletion: {str(db_err)}",
+        )
+
+    return ProjectDeleteResponse(
+        message=f"Project '{title}' and all associated assets have been successfully deleted.",
+        id=project_id,
+        deleted_files_count=deleted_files_count,
+    )
 
 
 @router.post("/{project_id}/upload", response_model=ProjectResponse)
@@ -235,6 +362,12 @@ async def upload_video(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Empty filename provided")
@@ -361,6 +494,12 @@ def trigger_audio_extraction(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     video = db.query(Video).filter(Video.project_id == project_id).first()
     if not video or not video.file_path or not Path(video.file_path).exists():
         raise HTTPException(
@@ -402,6 +541,12 @@ def get_project_jobs(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     jobs = (
         db.query(ProcessingJob)
@@ -457,6 +602,12 @@ def start_transcription(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     video = db.query(Video).filter(Video.project_id == project_id).first()
     if (
         not video
@@ -507,6 +658,12 @@ def get_transcript(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     segments = (
         db.query(TranscriptSegment)
         .filter(TranscriptSegment.project_id == project_id)
@@ -534,6 +691,12 @@ def update_transcript_segment(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     segment = (
         db.query(TranscriptSegment)
@@ -612,6 +775,12 @@ def start_translation(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     # Verify transcript segments exist
     transcript_count = (
         db.query(TranscriptSegment)
@@ -663,6 +832,12 @@ def get_translations(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     segments = (
         db.query(TranslationSegment)
         .filter(TranslationSegment.project_id == project_id)
@@ -693,6 +868,12 @@ def update_translation_segment(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     segment = (
         db.query(TranslationSegment)
@@ -736,6 +917,12 @@ def retranslate_segment(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     segment = (
         db.query(TranslationSegment)
@@ -829,6 +1016,12 @@ def ai_improve_segment(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     segment = (
         db.query(TranslationSegment)
@@ -925,6 +1118,12 @@ def get_translation_alternatives(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     segment = (
         db.query(TranslationSegment)
@@ -1025,6 +1224,12 @@ def apply_translation_suggestion(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     segment = (
         db.query(TranslationSegment)
         .filter(
@@ -1103,6 +1308,12 @@ def start_tts(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     translation_count = (
         db.query(TranslationSegment)
         .filter(TranslationSegment.project_id == project_id)
@@ -1152,6 +1363,12 @@ def get_generated_audio(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
     audios = (
         db.query(GeneratedAudio)
         .join(TranslationSegment, GeneratedAudio.translation_segment_id == TranslationSegment.id)
@@ -1184,6 +1401,12 @@ def regenerate_audio_segment(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     segment = (
         db.query(TranslationSegment)
@@ -1259,6 +1482,12 @@ def start_dubbing_export(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     video = project.video
     if not video or not video.file_path or not Path(video.file_path).exists():
@@ -1339,6 +1568,12 @@ def get_export_status(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     video = project.video
     dub_job = (
@@ -1464,6 +1699,12 @@ def download_exported_video(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
 
     video = project.video
     if not video or not video.exported_video_path or not Path(video.exported_video_path).exists():

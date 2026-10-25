@@ -99,6 +99,17 @@ curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLA
 curl -X POST "http://localhost:8000/api/projects/$PROJ_ID/translations/$TRANSLATION_SEGMENT_ID/retranslate"
 ```
 
+### Project Management via cURL (Phase 10.2)
+```bash
+# 1. Rename an existing project
+curl -X PATCH "http://localhost:8000/api/projects/$PROJ_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Renamed Video Project"}'
+
+# 2. Safely delete a project (two-stage cascading deletion)
+curl -X DELETE "http://localhost:8000/api/projects/$PROJ_ID"
+```
+
 ### Testing AI Translation API & LLM Features via cURL (Phase 9)
 ```bash
 # 1. List translation providers (NLLB, Gemini, OpenAI, Claude, Custom) and styles
@@ -296,3 +307,13 @@ Follow this checklist to verify the full platform in your browser at [http://loc
    - If speech fits within the timing window, export completes, and the dubbed video preview player renders with synchronized Khmer speech.
    - If speech is too long, the **Export Guard** prevents corruption, displaying the Timing Conflict alert with exact speedup needed and word trimming advice.
    - Click **"Download Dubbed Video (MP4)"** to download the final video file.
+7. **Project Management (Rename & Safe Deletion)**:
+   - In the Dubbing Studio header, click the pencil rename icon next to the title, enter a new title, and save. Verify the title updates immediately and persists across browser refresh.
+   - On the Projects page, click the three-dot action menu (`...`) on any project card (Grid view) or row (Table view).
+   - Test **"Rename Project"**: change the title and verify it updates in real time.
+   - Test **"Delete Project"**:
+     - Verify the safety dialog displays the project name and checklist of items to be removed.
+     - Verify the Delete button is disabled until the exact project title is typed.
+     - Click **"Cancel"** — confirm the project remains intact.
+     - Reopen dialog, type the exact project title, and click **"Permanently Delete Project"**.
+     - Verify the project card disappears from the Projects page and Dashboard counters decrement immediately.

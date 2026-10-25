@@ -30,17 +30,6 @@ export const App: React.FC = () => {
   const [projectsLoading, setProjectsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Sync state on hash change (back/forward button or manual URL navigation)
-  useEffect(() => {
-    const onHashChange = () => {
-      const { tab, projectId } = parseHash();
-      setCurrentTab(tab);
-      setSelectedProjectId(projectId);
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
-
   const fetchHealth = useCallback(async () => {
     try {
       setHealthLoading(true);
@@ -68,6 +57,20 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  // Sync state on hash change (back/forward button or manual URL navigation)
+  useEffect(() => {
+    const onHashChange = () => {
+      const { tab, projectId } = parseHash();
+      setCurrentTab(tab);
+      setSelectedProjectId(projectId);
+      if (!projectId) {
+        fetchProjects();
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [fetchProjects]);
+
   useEffect(() => {
     fetchHealth();
     fetchProjects();
@@ -87,6 +90,7 @@ export const App: React.FC = () => {
     setCurrentTab(tab);
     setSelectedProjectId(null);
     window.location.hash = tab;
+    fetchProjects();
   };
 
   const handleSelectProject = (projectId: string) => {
@@ -131,6 +135,7 @@ export const App: React.FC = () => {
               onCreateProject={handleCreateProject}
               onNavigateProjects={() => handleTabChange('projects')}
               onSelectProject={handleSelectProject}
+              onRefresh={fetchProjects}
             />
           )}
 
@@ -150,6 +155,7 @@ export const App: React.FC = () => {
               onBack={() => {
                 setSelectedProjectId(null);
                 window.location.hash = 'projects';
+                fetchProjects();
               }}
               onProjectUpdated={fetchProjects}
             />

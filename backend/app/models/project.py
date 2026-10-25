@@ -30,6 +30,7 @@ class ProjectStatus(str, enum.Enum):
     SYNCHRONIZING = "synchronizing"
     COMPLETED = "completed"
     FAILED = "failed"
+    DELETING = "deleting"
 
 
 class JobStatus(str, enum.Enum):

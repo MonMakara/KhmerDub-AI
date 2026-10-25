@@ -25,6 +25,21 @@
    - **Structured Alternatives**: Instant generation of 3 distinct translation styles (Natural, Simple, Short) with 1-click apply and automated audio invalidation.
    - **Secure Key Storage**: Client credentials encrypted with Fernet (AES-128-CBC + HMAC-SHA256) at `/app/data/.secrets/credentials.enc`, never exposed to the browser or committed to Git.
    - **Meta NLLB-200**: Preserved as the default free local offline translation provider.
+10. **Professional UI/UX Redesign & Modular Dubbing Studio** *(Phase 10 Complete)*:
+   - Modern Dashboard with live metrics (total, in-progress, completed, attention) and recent project quick-actions.
+   - Advanced Projects view with real-time search, status filter pills, sorting options, and Grid/Table view switcher.
+   - 5-stage tabbed Dubbing Studio (`Media`, `Transcript`, `Translation`, `Voice`, `Export`) replacing monolithic vertical scrolling.
+   - Persistent docked video preview player across all studio stages with click-to-seek timestamp navigation.
+   - Unsaved edit protection with `beforeunload` listeners and keyboard save shortcuts (`Cmd/Ctrl+Enter`).
+11. **Project Management Improvements** *(Phase 10.2 Complete)*:
+   - **Project Renaming (`PATCH /api/projects/{id}`)**: Validated in-place renaming (1-255 characters, non-empty, whitespace stripped) preserving project ID and media assets.
+   - **Two-Stage Safe Cascading Deletion (`DELETE /api/projects/{id}`)**:
+     - Active background job check returning HTTP 409 Conflict if jobs are pending or running.
+     - Stage 1: Marks project status as `deleting` to lock down subsequent operations.
+     - Stage 2: Safely deletes project files (`projects/{id}`, `uploads/{id}`, `temp/tts_{id}_*`) with strict path traversal prevention (`sanitize_project_id`, resolved parent verification), and cascade-deletes related database records.
+   - **Project Action Menu**: Three-dot dropdown menu (`ProjectActionMenu`) on project cards, table rows, and dashboard cards.
+   - **Safety Confirmation Modals**: `RenameProjectModal` and `DeleteProjectModal` requiring users to type the exact project name before permanent deletion is enabled.
+   - **Real-Time Dashboard & List Synchronization**: Instant state update without page reload.
 
 ---
 

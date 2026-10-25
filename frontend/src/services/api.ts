@@ -19,6 +19,7 @@ import {
   AlternativesResponse,
   ApplyTranslationRequest,
   ProjectTranslationSettingsUpdate,
+  ProjectDeleteResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -64,6 +65,44 @@ export const api = {
     const res = await fetch(`${API_BASE}/projects/${projectId}`);
     if (!res.ok) {
       throw new Error(`Failed to fetch project ${projectId}: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async renameProject(projectId: string, title: string): Promise<ProjectDetail> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      let detail = `Failed to rename project: ${res.statusText}`;
+      try {
+        const data = await res.json();
+        if (data && data.detail) {
+          detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+      } catch {}
+      throw new Error(detail);
+    }
+    return res.json();
+  },
+
+  async deleteProject(projectId: string): Promise<ProjectDeleteResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      let detail = `Failed to delete project: ${res.statusText}`;
+      try {
+        const data = await res.json();
+        if (data && data.detail) {
+          detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+      } catch {}
+      throw new Error(detail);
     }
     return res.json();
   },

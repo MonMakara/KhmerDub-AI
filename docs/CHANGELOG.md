@@ -2,6 +2,46 @@
 
 All notable changes to the KhmerDub AI project will be documented in this file.
 
+## [0.10.2] - Phase 10.2 Complete: Project Management Improvements (2026-10-25)
+
+### Added
+- **Project Renaming API (`PATCH /api/projects/{project_id}`)**:
+  - Validation: Non-empty string, whitespace stripping, length 1 to 255 characters.
+  - Preserves project ID, video records, transcripts, translations, and directory structure.
+  - Updates database timestamp and returns refreshed `ProjectResponse`.
+- **Two-Stage Safe Cascading Project Deletion (`DELETE /api/projects/{project_id}`)**:
+  - Pre-flight check: Rejects deletion with HTTP 409 Conflict if any processing job is pending/running or project is active.
+  - Stage 1: Marks project status as `ProjectStatus.DELETING` to reject new incoming background jobs.
+  - Stage 2: Safely deletes project files (`data/projects/{safe_id}`, `data/uploads/{safe_id}`, and `data/temp/tts_{safe_id}_*`).
+  - Database cleanup: Explicit child deletion in foreign-key dependency order (`GeneratedAudio`, `TranslationSegment`, `TranscriptSegment`, `Video`, `ProcessingJob`, `Project`).
+- **Path Traversal Security (`backend/app/core/storage.py`)**:
+  - `sanitize_project_id`: Strictly rejects `..`, `/`, `\` characters.
+  - `delete_project_storage`: Strictly verifies resolved paths remain direct children of `settings.DATA_DIR / "projects"` and `settings.UPLOADS_DIR`.
+  - Zero risk of touching shared model weights (`/root/.cache`), `.secrets`, `khmerdub.db`, or other projects' assets.
+- **Frontend Project Management**:
+  - `ProjectActionMenu.tsx`: Accessible 3-dot dropdown menu on Grid cards, Table rows, and Dashboard Recent Projects.
+  - `RenameProjectModal.tsx`: Interactive dialog with validation and autofocus.
+  - `DeleteProjectModal.tsx`: Destructive action warning dialog with asset checklist and type-to-confirm input requiring the user to type the exact project title.
+  - `StudioHeader.tsx`: In-place rename pencil icon button directly inside the studio.
+  - Live state synchronization updating dashboard statistics immediately without page reload.
+- **Automated Testing & Verification**:
+  - 13 automated backend tests in `tests/test_project_management.py` (119 backend tests total passing across repository, 100% pass rate).
+  - Browser automation via geckodriver verifying creation, rename, refresh persistence, 3-dot menu, cancel delete, type-to-confirm delete, and dashboard synchronization.
+
+## [0.10.0] - Phase 10 Complete: Professional UI/UX Redesign (2026-10-25)
+
+### Added
+- **Modular 5-Stage Dubbing Studio (`frontend/src/components/studio/`)**:
+  - 5 workflow tabs: `MediaTab`, `TranscriptTab`, `TranslationTab`, `VoiceTab`, `ExportTab`.
+  - `StudioHeader`: Stepper navigation bar with progress indicators and conflict badges.
+  - `PersistentVideoPlayer`: Docked player across all stages with playhead tracking and click-to-seek timestamp seeking.
+- **Dashboard & Project Management UI**:
+  - Real-time statistics counters (`total`, `in_progress`, `completed`, `attention`).
+  - Search, status filter pills, sorting options, and Grid/Table view switcher on `Projects.tsx`.
+- **Protected State**:
+  - `beforeunload` warning listeners preventing accidental loss of unsaved transcript/translation edits.
+  - URL hash synchronization (`#dashboard`, `#projects`, `#project/<id>`, `#settings`).
+
 ## [0.9.0] - Phase 9 Complete: Flexible Multi-Provider AI Translation (2026-10-25)
 
 ### Added

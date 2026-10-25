@@ -10,6 +10,7 @@ import { TranslationTab } from '../components/studio/TranslationTab';
 import { VoiceTab } from '../components/studio/VoiceTab';
 import { ExportTab } from '../components/studio/ExportTab';
 import { AIImproveModal } from '../components/studio/AIImproveModal';
+import { RenameProjectModal } from '../components/common/RenameProjectModal';
 import { api } from '../services/api';
 import {
   ProjectDetail,
@@ -83,6 +84,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // Global AI Modal (opened from Voice or Export tab)
   const [activeAIModalSegment, setActiveAIModalSegment] = useState<TranslationSegment | null>(null);
+  const [isRenameModalOpen, setIsRenameModalOpen] = useState<boolean>(false);
 
   // Compute active segment based on current playback time
   const activeSegmentId = useMemo(() => {
@@ -520,6 +522,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         isGeneratingVoice={isGeneratingVoice}
         isExporting={isExporting}
         timingConflictsCount={timingConflicts.length}
+        onRename={() => setIsRenameModalOpen(true)}
       />
 
       {/* Two-Column Studio Layout: Main Stage Editor (Left) + Persistent Video Preview (Right) */}
@@ -656,6 +659,17 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           initialMode="improve"
         />
       )}
+
+      {/* Rename Project Modal */}
+      <RenameProjectModal
+        isOpen={isRenameModalOpen}
+        project={project ? { id: project.id, title: project.title } : null}
+        onClose={() => setIsRenameModalOpen(false)}
+        onRenamed={(_id, newTitle) => {
+          setProject((prev) => (prev ? { ...prev, title: newTitle } : null));
+          onProjectUpdated?.();
+        }}
+      />
     </div>
   );
 };

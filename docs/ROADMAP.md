@@ -2,7 +2,7 @@
 
 ## Project Status
 
-- **Current Phase**: Phase 10 Complete — Professional UI/UX Redesign & Modular Dubbing Studio
+- **Current Phase**: Phase 10.2 Complete — Project Management Improvements (Rename & Safe Cascading Deletion)
 - **Overall Status**: Version 1 Complete & Verified
 
 ---
@@ -161,6 +161,31 @@
 - [x] Reorganized Settings Workspace (`Settings.tsx`): Tabbed configuration sections for AI Translation Providers & API Keys, Voice Providers, AI Models, Hardware, Storage, and Developer CLI.
 - [x] Modular Component Extraction (`frontend/src/components/studio/`): AIImproveModal, ExportTab, MediaTab, PersistentVideoPlayer, StudioHeader, TranscriptTab, TranslationTab, VoiceTab.
 - [x] Automated Verification: 106 backend tests passing (100%), TypeScript typecheck passing (0 errors), and Vite production build verified.
+
+### [x] Phase 10.2: Project Management Improvements (Rename & Safe Cascading Deletion)
+- [x] Project Rename API (`PATCH /api/projects/{project_id}`): Validated title updates (1 to 255 characters, non-empty, stripped whitespace) preserving project ID, metadata, and directory paths.
+- [x] Two-Stage Safe Project Deletion (`DELETE /api/projects/{project_id}`):
+  - Active background job check: returns HTTP 409 Conflict if jobs are pending or running, or if project is active (`transcribing`, `translating`, `generating_voice`, `synchronizing`).
+  - Stage 1: Mark project status as `ProjectStatus.DELETING` to reject new operations.
+  - Stage 2: Safely remove project files and cascade-delete database records.
+- [x] Strict Path Traversal Prevention (`delete_project_storage`):
+  - Reject `..`, `/`, and `\` in `sanitize_project_id`.
+  - Validate resolved directory ownership under `DATA_DIR/projects` and `UPLOADS_DIR`.
+  - Never touches shared model weights, `.secrets`, `khmerdub.db`, or other projects' files.
+- [x] Project Three-Dot Action Menu (`ProjectActionMenu.tsx`):
+  - Accessible on project cards (Grid view), table rows (Table view), and Recent Projects on the Dashboard.
+  - Actions: Open Studio, Rename Project, Delete Project.
+- [x] Studio In-Place Renaming (`StudioHeader.tsx`): Quick rename pencil button next to the project title in Dubbing Studio.
+- [x] Interactive Confirmation Modals:
+  - `RenameProjectModal.tsx`: Focus management, character count, validation error handling, and save/cancel actions.
+  - `DeleteProjectModal.tsx`: Warning breakdown of assets to be deleted, and type-to-confirm input requiring the user to type the exact project title before the deletion button is unlocked.
+- [x] Dashboard Real-Time Synchronization:
+  - Deleting or renaming immediately updates metric cards (Total, In Progress, Exported MP4, Attention) and Recent Projects list without page reload.
+- [x] Automated Testing:
+  - 13 automated backend tests in `tests/test_project_management.py` covering rename, empty title, too long title, delete success, active job 409 conflict, active status 409 conflict, other project preservation, path traversal prevention, duplicate delete 404, and deleting status mutation blocks.
+  - Total backend test suite expanded to 119 passing tests (100%).
+- [x] Full Browser Automation Verification:
+  - Verified in real Firefox headless via geckodriver across all 7 workflows (create disposable project, rename, refresh persistence, 3-dot menu, cancel delete, type-to-confirm delete, and dashboard count sync).
 
 ---
 

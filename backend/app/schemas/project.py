@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from app.models.project import ProjectStatus, JobStatus
 
 
@@ -275,6 +275,28 @@ class ProjectCreate(BaseModel):
     translation_style: Optional[str] = "natural"
     tts_provider: Optional[str] = "gtts"
     tts_voice: Optional[str] = "default"
+
+
+class ProjectUpdate(BaseModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("Project title cannot be empty")
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Project title cannot be empty")
+        if len(stripped) > 255:
+            raise ValueError("Project title cannot exceed 255 characters")
+        return stripped
+
+
+class ProjectDeleteResponse(BaseModel):
+    message: str
+    id: str
+    deleted_files_count: int = 0
 
 
 class ProjectSummaryResponse(BaseModel):

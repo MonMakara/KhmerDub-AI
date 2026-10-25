@@ -10,7 +10,8 @@ export type ProjectStatus =
   | 'voice_generated'
   | 'synchronizing'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'deleting';
 
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -286,4 +287,10 @@ export interface ApplyTranslationRequest {
 export interface ProjectTranslationSettingsUpdate {
   translation_provider: string;
   translation_style: string;
+}
+
+export interface ProjectDeleteResponse {
+  message: string;
+  id: string;
+  deleted_files_count: number;
 }

@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Globe2,
+  Edit3,
 } from 'lucide-react';
 import { ProjectDetail } from '../../types';
 
@@ -33,6 +34,7 @@ interface StudioHeaderProps {
   isGeneratingVoice: boolean;
   isExporting: boolean;
   timingConflictsCount: number;
+  onRename?: () => void;
 }
 
 export const StudioHeader: React.FC<StudioHeaderProps> = ({
@@ -53,6 +55,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
   isGeneratingVoice,
   isExporting,
   timingConflictsCount,
+  onRename,
 }) => {
   const steps: {
     id: StudioTab;
@@ -121,6 +124,17 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-bold text-slate-900 truncate">{project.title}</h2>
+              {onRename && (
+                <button
+                  type="button"
+                  onClick={onRename}
+                  className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors"
+                  title="Rename Project"
+                  aria-label="Rename Project"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                </button>
+              )}
               <span className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200 shrink-0">
                 <Globe2 className="w-3 h-3 text-indigo-500" />
                 {project.original_language.toUpperCase()} → {project.target_language.toUpperCase()}

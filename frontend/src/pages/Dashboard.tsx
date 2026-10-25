@@ -14,6 +14,9 @@ import {
   Play,
 } from 'lucide-react';
 import { HealthResponse, ProjectSummary, ProjectStatus } from '../types';
+import { ProjectActionMenu } from '../components/common/ProjectActionMenu';
+import { RenameProjectModal } from '../components/common/RenameProjectModal';
+import { DeleteProjectModal } from '../components/common/DeleteProjectModal';
 
 interface DashboardProps {
   health: HealthResponse | null;
@@ -21,6 +24,7 @@ interface DashboardProps {
   onCreateProject: (title: string) => Promise<string | void>;
   onNavigateProjects: () => void;
   onSelectProject: (projectId: string) => void;
+  onRefresh?: () => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -28,10 +32,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onCreateProject,
   onNavigateProjects,
   onSelectProject,
+  onRefresh,
 }) => {
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
   const [showQuickCreate, setShowQuickCreate] = useState(false);
+  const [renamingProject, setRenamingProject] = useState<ProjectSummary | null>(null);
+  const [deletingProject, setDeletingProject] = useState<ProjectSummary | null>(null);
 
   // Compute real metrics
   const totalProjects = projects.length;
@@ -280,17 +287,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       </div>
                     </div>
 
-                    <div className="shrink-0 flex items-center gap-2">
+                    <div className="shrink-0 flex items-center gap-1.5">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onSelectProject(proj.id);
                         }}
-                        className="px-3 py-1.5 rounded-lg bg-indigo-50 group-hover:bg-indigo-600 text-indigo-700 group-hover:text-white text-xs font-semibold transition-all flex items-center gap-1.5 shadow-sm"
+                        className="px-3 py-1.5 rounded-lg bg-indigo-50 group-hover:bg-indigo-600 text-indigo-700 group-hover:text-white text-xs font-semibold transition-all flex items-center gap-1.5 shadow-xs"
                       >
                         <Play className="w-3.5 h-3.5" />
                         <span>Continue Studio</span>
                       </button>
+                      <ProjectActionMenu
+                        onOpenStudio={() => onSelectProject(proj.id)}
+                        onRename={() => setRenamingProject(proj)}
+                        onDelete={() => setDeletingProject(proj)}
+                      />
                     </div>
                   </div>
                 );
@@ -365,6 +377,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Rename Modal */}
+      <RenameProjectModal
+        isOpen={!!renamingProject}
+        project={renamingProject}
+        onClose={() => setRenamingProject(null)}
+        onRenamed={() => {
+          onRefresh?.();
+        }}
+      />
+
+      {/* Delete Modal */}
+      <DeleteProjectModal
+        isOpen={!!deletingProject}
+        project={deletingProject}
+        onClose={() => setDeletingProject(null)}
+        onDeleted={() => {
+          onRefresh?.();
+        }}
+      />
     </div>
   );
 };
