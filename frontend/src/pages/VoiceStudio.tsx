@@ -15,7 +15,6 @@ import {
   Clock,
   X,
   CheckCircle2,
-  Sparkles,
 } from 'lucide-react';
 import { api } from '../services/api';
 import {
@@ -322,43 +321,15 @@ export const VoiceStudio: React.FC = () => {
         </div>
       </div>
 
-      {/* Dynamic Voice Cloning Engine Status Banner */}
-      <div
-        className={`border rounded-xl p-4 sm:p-5 flex items-start gap-4 transition-all ${
-          isEngineOnline
-            ? 'bg-emerald-50/70 border-emerald-200'
-            : 'bg-amber-50/80 border-amber-200'
-        }`}
-      >
-        <div
-          className={`p-2 rounded-lg shrink-0 mt-0.5 ${
-            isEngineOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-          }`}
-        >
-          {isEngineOnline ? <Sparkles className="w-5 h-5 text-emerald-600" /> : <AlertTriangle className="w-5 h-5" />}
-        </div>
-        <div className="space-y-1 text-sm flex-1">
-          <div className="flex flex-wrap items-center gap-2 font-semibold">
-            <span className={isEngineOnline ? 'text-emerald-950 font-bold' : 'text-amber-900 font-bold'}>
-              Voice Cloning Engine: {engineStatus}
-            </span>
-            <span
-              className={`text-[11px] font-mono px-2 py-0.5 rounded-full ${
-                isEngineOnline
-                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                  : 'bg-amber-200/80 text-amber-800'
-              }`}
-            >
-              {isEngineOnline ? 'Phase 13C Operational' : 'Worker Offline'}
-            </span>
-          </div>
-          <p className={isEngineOnline ? 'text-emerald-900/80 leading-relaxed' : 'text-amber-800/90 leading-relaxed'}>
-            {isEngineOnline
-              ? 'Authorized custom Khmer voice profiles are operational for speech synthesis in dubbing projects using the local openbmb/VoxCPM2 model on the GPU.'
-              : 'The local VoxCPM2 GPU inference worker is offline. Run ./scripts/run_voxcpm_worker.sh to enable custom voice cloning.'}
+      {/* Offline Alert when Voice Cloning Engine is Unavailable */}
+      {!isEngineOnline && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-xs text-amber-800 flex items-center gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+          <p className="flex-1">
+            Voice cloning engine is currently offline. Standard system voices remain fully available. Reconnect the service to use custom voice profiles.
           </p>
         </div>
-      </div>
+      )}
 
       {/* Global Error Banner */}
       {error && (

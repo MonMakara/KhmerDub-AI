@@ -63,9 +63,6 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="sm:hidden">KhmerDub AI</span>
               <span className="hidden sm:inline">KhmerDub AI Workspace</span>
             </h1>
-            <span className="hidden sm:inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 whitespace-nowrap">
-              Local Docker Dev
-            </span>
           </div>
         </div>
 
@@ -83,7 +80,7 @@ export const Header: React.FC<HeaderProps> = ({
             ) : isHealthy ? (
               <span className="flex items-center gap-1 text-emerald-600 font-semibold">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                Connected (v{health?.version})
+                Connected
               </span>
             ) : (
               <span className="flex items-center gap-1 text-rose-600 font-semibold">
@@ -231,7 +228,9 @@ export const Header: React.FC<HeaderProps> = ({
                   <Info className="w-4 h-4 text-slate-400" />
                   Environment
                 </span>
-                <span className="font-semibold text-slate-800">Local Docker Dev</span>
+                <span className="font-semibold text-slate-800">
+                  {health?.environment ? health.environment.charAt(0).toUpperCase() + health.environment.slice(1) : 'Production'}
+                </span>
               </div>
             </div>
 

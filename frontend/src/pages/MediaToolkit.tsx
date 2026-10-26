@@ -48,7 +48,6 @@ import { api } from '../services/api';
 import { DeleteToolkitTaskModal } from '../components/common/DeleteToolkitTaskModal';
 import {
   ProjectSummary,
-  ToolkitCapabilities,
   ToolkitTask,
   ToolkitTranscriptSegment,
   TTSVoiceOption,
@@ -124,7 +123,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const initialRoute = parseToolkitRoute(typeof window !== 'undefined' ? window.location.hash : '');
   const [viewMode, setViewMode] = useState<ToolkitViewMode>(initialRoute.mode);
   const [selectedTool, setSelectedTool] = useState<string>(initialRoute.toolId || 'video_to_audio');
-  const [capabilities, setCapabilities] = useState<ToolkitCapabilities | null>(null);
   const [showLanguageInfo, setShowLanguageInfo] = useState<boolean>(false);
   const [overviewCategory, setOverviewCategory] = useState<'all' | 'audio_asr' | 'speech' | 'translation'>('all');
 
@@ -274,16 +272,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
   }, [selectedTool]);
 
-  // Fetch capabilities & recent tasks on mount
-  const fetchCapabilities = useCallback(async () => {
-    try {
-      const data = await api.getToolkitCapabilities();
-      setCapabilities(data);
-    } catch (err: any) {
-      console.warn('Failed to load toolkit capabilities:', err);
-    }
-  }, []);
-
   const fetchTasks = useCallback(async () => {
     try {
       setTasksLoading(true);
@@ -372,9 +360,8 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   };
 
   useEffect(() => {
-    fetchCapabilities();
     fetchTasks();
-  }, [fetchCapabilities, fetchTasks]);
+  }, [fetchTasks]);
 
   // Load TTS voices when language or tool changes (Phase 13E.3)
   const fetchTtsVoices = useCallback(async (lang: string) => {
@@ -1314,82 +1301,73 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     {
       id: 'video_to_audio',
       title: 'Video to Audio',
-      desc: 'Extract pristine audio track into MP3, WAV, or M4A with direct lossless remuxing.',
+      desc: 'Extract audio from videos in MP3, WAV, or M4A.',
       icon: Video,
       status: 'available' as const,
-      phase: 'Phase 13E.1',
       category: 'audio_asr' as const,
     },
     {
       id: 'video_to_transcript',
       title: 'Video to Transcript',
-      desc: 'Generate timestamped segment transcripts from video speeches with Faster-Whisper.',
+      desc: 'Generate timestamped subtitle transcripts from videos.',
       icon: FileText,
       status: 'available' as const,
-      phase: 'Phase 13E.2',
       category: 'audio_asr' as const,
     },
     {
       id: 'video_to_text',
       title: 'Video to Text',
-      desc: 'Extract plain continuous transcripts without timestamps for articles and summaries.',
+      desc: 'Extract plain text transcripts from videos.',
       icon: AlignLeft,
       status: 'available' as const,
-      phase: 'Phase 13E.2',
       category: 'audio_asr' as const,
     },
     {
       id: 'audio_to_transcript',
       title: 'Audio to Transcript',
-      desc: 'Transcribe voice memos, podcasts, and recordings into structured timestamps.',
+      desc: 'Transcribe audio recordings into timestamped segments.',
       icon: ListMusic,
       status: 'available' as const,
-      phase: 'Phase 13E.2',
       category: 'audio_asr' as const,
     },
     {
       id: 'audio_to_text',
       title: 'Audio to Text',
-      desc: 'Fast voice-to-text transcription for notes and document drafting.',
+      desc: 'Transcribe audio recordings into plain text.',
       icon: FileCode,
       status: 'available' as const,
-      phase: 'Phase 13E.2',
       category: 'audio_asr' as const,
     },
     {
       id: 'text_to_speech',
       title: 'Text to Speech Studio',
-      desc: 'Generate natural Khmer & English speech using Google Khmer, Edge Piseth/Sreymom/Aria/Guy, or VoxCPM2 voice cloning.',
+      desc: 'Convert text into natural Khmer or English speech.',
       icon: Mic2,
       status: 'available' as const,
-      phase: 'Phase 13E.3',
       category: 'speech' as const,
     },
     {
       id: 'transcript_to_audio',
       title: 'Transcript to Audio',
-      desc: 'Transform subtitle transcripts into continuous audio narration or synchronized tracks.',
+      desc: 'Generate spoken audio from subtitle transcripts.',
       icon: Radio,
       status: 'available' as const,
-      phase: 'Phase 13E.4',
       category: 'speech' as const,
     },
     {
       id: 'text_translation',
       title: 'Translation Studio',
-      desc: 'Translate plain text or timestamped subtitle transcripts between English and Khmer using NLLB or cloud neural models.',
+      desc: 'Translate text or subtitle transcripts between English and Khmer.',
       icon: Languages,
       status: 'available' as const,
-      phase: 'Phase 13E.5',
       category: 'translation' as const,
     },
     {
       id: 'subtitle_conversion',
       title: 'Subtitle Converter',
-      desc: 'Convert subtitle files seamlessly between SubRip (.srt) and WebVTT (.vtt) while preserving timestamps.',
+      desc: 'Convert subtitle files between SRT and WebVTT formats.',
       icon: Layers,
       status: 'available' as const,
-      phase: 'Phase 13E.5',
       category: 'translation' as const,
     },
   ];
@@ -1464,15 +1442,12 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                     <Sparkles className="w-3.5 h-3.5" />
                     AI Media Toolkit
                   </span>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {capabilities?.version ? `v${capabilities.version}` : 'Phase 13E.5'}
-                  </span>
                 </div>
                 <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-                  Media Extraction & Transcription Hub
+                  Media Toolkit
                 </h1>
                 <p className="text-slate-400 text-sm mt-1 max-w-2xl">
-                  Extract pristine audio, generate timestamped transcripts, edit speech segments, synthesize natural voice, and translate content without altering original project data.
+                  Extract audio, transcribe speech, synthesize voice, and translate content across media formats.
                 </p>
               </div>
 
@@ -1512,7 +1487,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       Audio Extraction
                     </span>
                     <p className="text-slate-400 leading-relaxed text-[11px]">
-                      MP4, MOV, MKV, WebM. Lossless AAC/M4A remuxing, 192k MP3 & 16-bit WAV PCM encoding.
+                      Extract audio from video containers into MP3, WAV, or M4A formats.
                     </p>
                   </div>
 
@@ -1522,7 +1497,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       Speech-to-Text
                     </span>
                     <p className="text-slate-400 leading-relaxed text-[11px]">
-                      Faster-Whisper English ASR with cue timestamps, plain text, and SRT/VTT/TXT/CSV/JSON exports.
+                      Generate timestamped transcripts or plain text with subtitle exports.
                     </p>
                   </div>
 
@@ -1532,7 +1507,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       Text-to-Speech
                     </span>
                     <p className="text-slate-400 leading-relaxed text-[11px]">
-                      Google Khmer, Edge Piseth/Sreymom/Aria/Guy, and VoxCPM2 custom voice cloning.
+                      Generate natural speech in Khmer or English with standard and custom voices.
                     </p>
                   </div>
 
@@ -1542,7 +1517,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       Transcript to Audio
                     </span>
                     <p className="text-slate-400 leading-relaxed text-[11px]">
-                      Narration & Timed speech alignment, duration overflow detection, and cue regeneration.
+                      Convert subtitle transcripts into continuous narration or synchronized audio.
                     </p>
                   </div>
 
@@ -1552,7 +1527,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       Translation & Converter
                     </span>
                     <p className="text-slate-400 leading-relaxed text-[11px]">
-                      Local Meta NLLB-200 & cloud neural EN↔KM translation with SRT↔VTT subtitle conversion.
+                      Translate text and convert subtitle files between SRT and WebVTT formats.
                     </p>
                   </div>
                 </div>
@@ -1644,13 +1619,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                       className="text-left p-5 rounded-2xl border border-slate-200/90 bg-white hover:border-indigo-400 hover:shadow-md transition-all duration-200 relative flex flex-col justify-between group cursor-pointer"
                     >
                       <div>
-                        <div className="flex items-center justify-between mb-3.5">
+                        <div className="mb-3.5">
                           <div className="w-10 h-10 rounded-xl bg-indigo-50 group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white flex items-center justify-center transition-colors">
                             <Icon className="w-5 h-5" />
                           </div>
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            Available Now
-                          </span>
                         </div>
                         <h3 className="font-bold text-slate-900 text-base group-hover:text-indigo-600 transition-colors">
                           {tool.title}
@@ -1867,11 +1839,8 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   <CurrentToolIcon className="w-6 h-6" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div>
                     <h2 className="text-xl font-bold tracking-tight">{currentTool.title}</h2>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                      {currentTool.phase}
-                    </span>
                   </div>
                   <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
                     {currentTool.desc}
@@ -2784,9 +2753,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   Convert multi-sentence text into segmented speech and assembled narration.
                 </p>
               </div>
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                Phase 13E.3
-              </span>
             </div>
 
             {/* Language Selection */}
@@ -2845,7 +2811,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                     ))}
                 </optgroup>
                 {ttsVoices.some((v) => v.is_custom) && (
-                  <optgroup label="Authorized Custom Cloned Voices (VoxCPM2 GPU)">
+                  <optgroup label="Custom Voice Profiles">
                     {ttsVoices
                       .filter((v) => v.is_custom)
                       .map((v) => (
@@ -2854,7 +2820,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                           value={`${v.provider}:${v.voice}`}
                           disabled={!v.is_available}
                         >
-                          {v.label} ({v.gender}) {!v.is_available ? '(Worker Offline)' : '• Ready'}
+                          {v.label} ({v.gender}) {!v.is_available ? '(Offline)' : '• Ready'}
                         </option>
                       ))}
                   </optgroup>
@@ -3335,19 +3301,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
           {/* Left Column: Input Configuration */}
           <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-              <div>
-                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  <Radio className="w-5 h-5 text-indigo-600" />
-                  Transcript to Audio Studio
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Convert timestamped transcripts or plain text into natural continuous speech or timed tracks.
-                </p>
-              </div>
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                Phase 13E.4
-              </span>
+            <div className="border-b border-slate-100 pb-4">
+              <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                <Radio className="w-5 h-5 text-indigo-600" />
+                Transcript to Audio Studio
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Convert timestamped transcripts or plain text into natural continuous speech or timed tracks.
+              </p>
             </div>
 
             {/* Input Method Tabs */}

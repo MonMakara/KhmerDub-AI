@@ -18,6 +18,7 @@ import {
   Mic2,
   Layers,
   FileCode,
+  Activity,
 } from 'lucide-react';
 import { HealthResponse, TranslationProviderInfo } from '../types';
 import { api } from '../services/api';
@@ -61,6 +62,7 @@ const CUSTOM_PRESETS: ProviderPreset[] = [
 ];
 
 type SettingsSection =
+  | 'status'
   | 'translation'
   | 'voices'
   | 'models'
@@ -69,9 +71,11 @@ type SettingsSection =
   | 'developer';
 
 export const Settings: React.FC<SettingsProps> = ({ health }) => {
-  const [activeSection, setActiveSection] = useState<SettingsSection>('translation');
+  const [activeSection, setActiveSection] = useState<SettingsSection>('status');
   const [providers, setProviders] = useState<TranslationProviderInfo[]>([]);
   const [loadingProviders, setLoadingProviders] = useState<boolean>(true);
+  const [voiceData, setVoiceData] = useState<any>(null);
+  const [loadingVoiceData, setLoadingVoiceData] = useState<boolean>(false);
 
   // Active provider tab to configure (gemini, openai, claude, custom)
   const [activeTab, setActiveTab] = useState<string>('gemini');
@@ -87,19 +91,6 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [savingKey, setSavingKey] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; isError: boolean } | null>(null);
-
-  const fetchProviders = async () => {
-    try {
-      setLoadingProviders(true);
-      const res = await api.getTranslationProviders();
-      setProviders(res.providers);
-      syncFormForProvider(activeTab, res.providers);
-    } catch (err: any) {
-      console.error('Failed to load translation providers', err);
-    } finally {
-      setLoadingProviders(false);
-    }
-  };
 
   const syncFormForProvider = (providerId: string, providerList: TranslationProviderInfo[]) => {
     const p = providerList.find((item) => item.id === providerId);
@@ -119,8 +110,34 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
     }
   };
 
+  const fetchProviders = async () => {
+    try {
+      setLoadingProviders(true);
+      const res = await api.getTranslationProviders();
+      setProviders(res.providers);
+      syncFormForProvider(activeTab, res.providers);
+    } catch (err: any) {
+      console.error('Failed to load translation providers', err);
+    } finally {
+      setLoadingProviders(false);
+    }
+  };
+
+  const fetchVoiceData = async () => {
+    try {
+      setLoadingVoiceData(true);
+      const data = await api.getVoiceStudio();
+      setVoiceData(data);
+    } catch (err) {
+      console.warn('Could not load voice data for system status', err);
+    } finally {
+      setLoadingVoiceData(false);
+    }
+  };
+
   useEffect(() => {
     fetchProviders();
+    fetchVoiceData();
   }, []);
 
   const handleTabChange = (providerId: string) => {
@@ -198,6 +215,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
   };
 
   const navSections: { id: SettingsSection; label: string; icon: React.ElementType }[] = [
+    { id: 'status', label: 'System Status', icon: Activity },
     { id: 'translation', label: 'AI Translation & APIs', icon: Languages },
     { id: 'voices', label: 'Voice & TTS Providers', icon: Mic2 },
     { id: 'models', label: 'AI Models Catalog', icon: Layers },
@@ -205,6 +223,12 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
     { id: 'storage', label: 'Storage & Mounts', icon: HardDrive },
     { id: 'developer', label: 'Developer & CLI', icon: Terminal },
   ];
+
+  const isWorkerOnline = voiceData?.cloning_engine_status?.includes('Online') ?? false;
+  const isBackendHealthy = health?.status === 'ok';
+  const isFfmpegAvailable = health?.system_info?.ffmpeg_available ?? false;
+  const rawGpuLabel = voiceData?.cloning_engine_status?.match(/\((.*?)\)/)?.[1] || (isWorkerOnline ? 'CUDA GPU' : 'GPU Worker Offline');
+  const gpuCleanLabel = rawGpuLabel.replace('VoxCPM2 — ', '');
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -237,6 +261,215 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
           );
         })}
       </div>
+
+      {/* SECTION 0: System Status */}
+      {activeSection === 'status' && (
+        <div className="space-y-6">
+          {/* Main Status Cards Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Backend Connection */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
+                  Backend Service
+                </span>
+                <Server className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    isBackendHealthy ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
+                  }`}
+                />
+                <span className="text-base font-bold text-slate-900">
+                  {isBackendHealthy ? 'Connected' : 'Offline'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                FastAPI Core v{health?.version || '0.1.0'}
+              </p>
+            </div>
+
+            {/* FFmpeg Engine */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
+                  FFmpeg Engine
+                </span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    isFfmpegAvailable ? 'bg-emerald-500' : 'bg-rose-500'
+                  }`}
+                />
+                <span className="text-base font-bold text-slate-900">
+                  {isFfmpegAvailable ? 'Available' : 'Missing'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                Audio demuxing & lossless remuxing
+              </p>
+            </div>
+
+            {/* VoxCPM2 Worker Status */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
+                  Voice Cloning Worker
+                </span>
+                <Mic2 className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    isWorkerOnline ? 'bg-emerald-500' : 'bg-amber-500'
+                  }`}
+                />
+                <span className="text-base font-bold text-slate-900">
+                  {isWorkerOnline ? 'Online' : 'Offline'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 truncate" title={gpuCleanLabel}>
+                {isWorkerOnline ? gpuCleanLabel : 'GPU worker inactive'}
+              </p>
+            </div>
+
+            {/* Speech-to-Text Device */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
+                  Whisper ASR Engine
+                </span>
+                <Cpu className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                <span className="text-base font-bold text-slate-900 uppercase">
+                  {health?.system_info?.whisper_device || 'CPU'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                Model: {health?.system_info?.whisper_model || 'base'} (int8)
+              </p>
+            </div>
+          </div>
+
+          {/* AI Providers & Services Summary Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-indigo-600" />
+                  Available AI Providers & Capabilities
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Summary of all configured AI models across dubbing and media workflows
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  fetchProviders();
+                  fetchVoiceData();
+                }}
+                disabled={loadingProviders || loadingVoiceData}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 transition cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${
+                    loadingProviders || loadingVoiceData ? 'animate-spin' : ''
+                  }`}
+                />
+                <span>Refresh Status</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+              {/* Translation Providers */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                    <Languages className="w-4 h-4 text-purple-600" />
+                    Translation Providers
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {providers.filter((p) => p.is_configured).length} Configured
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200">
+                    <span className="font-semibold text-slate-800">Meta NLLB-200</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Local Offline Default
+                    </span>
+                  </div>
+                  {providers.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200"
+                    >
+                      <span className="font-semibold text-slate-800">{p.name}</span>
+                      {p.is_configured ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Ready
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] bg-slate-100 text-slate-500">
+                          API Key Required
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Speech Synthesis Providers */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                    <Mic2 className="w-4 h-4 text-indigo-600" />
+                    Speech Synthesis Providers
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    Standard & Custom
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200">
+                    <span className="font-semibold text-slate-800">Google Khmer (gTTS)</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Active
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200">
+                    <span className="font-semibold text-slate-800">Microsoft Edge Neural</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Piseth & Sreymom
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200">
+                    <span className="font-semibold text-slate-800">VoxCPM2 Voice Cloning</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                        isWorkerOnline
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                      }`}
+                    >
+                      {isWorkerOnline ? 'Worker Online' : 'Worker Offline'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SECTION 1: AI Translation Providers & Credentials */}
       {activeSection === 'translation' && (
@@ -668,7 +901,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
             </div>
             <div className="bg-slate-900 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
               <span>docker compose exec backend pytest -v</span>
-              <span className="text-slate-500 text-[10px]">Run 106 automated tests</span>
+              <span className="text-slate-500 text-[10px]">Run test suite</span>
             </div>
             <div className="bg-slate-900 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
               <span>docker compose exec frontend npm run typecheck</span>

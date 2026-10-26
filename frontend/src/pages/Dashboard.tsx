@@ -117,9 +117,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               KhmerDub AI Dubbing Studio
             </h2>
             <p className="text-slate-300 text-xs sm:text-sm leading-relaxed">
-              Automated end-to-end video localization: FFmpeg audio extraction, Faster-Whisper transcription,
-              AI Khmer translation (Gemini / NLLB / Custom), natural neural speech (Google & Microsoft),
-              and timing-synchronized MP4 export.
+              Automated video dubbing and localization from English to Khmer with speech recognition, translation, and synchronized voice synthesis.
             </p>
           </div>
 
@@ -314,8 +312,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
         {/* System Capabilities & Model Overview */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
           <div className="pb-3 border-b border-slate-100">
-            <h3 className="text-sm font-bold text-slate-800">AI Dubbing Engine</h3>
-            <p className="text-xs text-slate-500">Active pipeline components</p>
+            <h3 className="text-sm font-bold text-slate-800">Dubbing Pipeline</h3>
+            <p className="text-xs text-slate-500">Core localization features</p>
           </div>
 
           <div className="space-y-3 text-xs">
@@ -324,12 +322,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="flex items-center justify-between font-semibold text-slate-800">
                 <span className="flex items-center gap-1.5">
                   <FileAudio className="w-3.5 h-3.5 text-emerald-600" />
-                  Speech-to-Text
+                  Speech Recognition
                 </span>
-                <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">Faster-Whisper</span>
               </div>
               <p className="text-slate-500 text-[11px]">
-                CTranslate2 INT8 quantized execution with VAD voice activity timestamps.
+                Accurate speech recognition with automatic timestamp segmentation.
               </p>
             </div>
 
@@ -340,10 +337,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <Languages className="w-3.5 h-3.5 text-purple-600" />
                   Translation Engine
                 </span>
-                <span className="text-[10px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">Hybrid AI</span>
               </div>
               <p className="text-slate-500 text-[11px]">
-                Meta NLLB-200 (local offline) + Google Gemini / OpenAI / Claude / Custom API with glossary alignment.
+                Context-aware translation between English and Khmer with glossary support.
               </p>
             </div>
 
@@ -352,12 +348,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="flex items-center justify-between font-semibold text-slate-800">
                 <span className="flex items-center gap-1.5">
                   <Mic2 className="w-3.5 h-3.5 text-indigo-600" />
-                  Khmer Text-to-Speech
+                  Voice Synthesis
                 </span>
-                <span className="text-[10px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded">Multi-Voice</span>
               </div>
               <p className="text-slate-500 text-[11px]">
-                Google gTTS default + Microsoft Piseth (Male) and Sreymom (Female) neural voices.
+                Natural speech synthesis supporting Google, Microsoft neural, and custom voices.
               </p>
             </div>
 
@@ -368,10 +363,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <Film className="w-3.5 h-3.5 text-rose-600" />
                   Video Synchronization
                 </span>
-                <span className="text-[10px] bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded">FFmpeg Muxer</span>
               </div>
               <p className="text-slate-500 text-[11px]">
-                44.1kHz timeline building, gap silence padding, tempo adjustment & timing conflict safety.
+                Automatic speech alignment, pace matching, and timing conflict resolution.
               </p>
             </div>
           </div>

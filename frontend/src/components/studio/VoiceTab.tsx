@@ -168,7 +168,7 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
                 key={`${voice.provider}-${voice.voice}`}
                 onClick={() => {
                   if (isUnavailable) {
-                    alert('The VoxCPM2 GPU inference worker is currently offline. Please start it on the host via ./scripts/run_voxcpm_worker.sh');
+                    alert('The custom voice service is currently offline. Please check System Status in Settings or select an available standard voice.');
                     return;
                   }
                   onSelectVoice(voice.provider, voice.voice);
@@ -228,7 +228,7 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
                     onClick={(e) => {
                       e.stopPropagation();
                       if (isUnavailable) {
-                        alert('VoxCPM2 GPU worker is offline. Cannot preview custom voice.');
+                        alert('Custom voice service is offline. Cannot preview custom voice.');
                         return;
                       }
                       onPreviewVoice(voice.provider, voice.voice);
@@ -410,14 +410,14 @@ export const VoiceTab: React.FC<VoiceTabProps> = ({
           <div className="flex items-center gap-2">
             <Mic2 className="w-4 h-4 text-indigo-600 shrink-0" />
             <span>
-              Looking for custom speaker cloning? Manage authorized voice recordings in the{' '}
+              Looking for custom voice cloning? Manage authorized voice recordings and custom voice profiles in the{' '}
               <a
                 href="#voices"
                 className="font-semibold text-indigo-600 hover:text-indigo-800 underline"
               >
                 Voice Studio
               </a>
-              . Clone authorized custom voices for video dubbing with the local VoxCPM2 model.
+              .
             </span>
           </div>
         </div>
