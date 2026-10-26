@@ -3,7 +3,6 @@ import {
   Cpu,
   HardDrive,
   Terminal,
-  Info,
   Languages,
   Key,
   CheckCircle2,
@@ -841,16 +840,6 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                 {health?.system_info?.whisper_model || 'base'} (int8 quantized)
               </span>
               <p className="text-slate-400 mt-1">Optimized for low RAM footprint and fast inference on standard laptop CPUs.</p>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-amber-900 flex gap-3">
-            <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-semibold">Optional NVIDIA RTX 4060 GPU Acceleration</p>
-              <p className="text-amber-800">
-                To enable CUDA acceleration, install the NVIDIA Container Toolkit and set <code className="font-mono bg-amber-100 px-1 rounded">runtime: nvidia</code> in docker-compose.yml.
-              </p>
             </div>
           </div>
         </div>
