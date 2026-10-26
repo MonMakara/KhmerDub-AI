@@ -1,10 +1,11 @@
 import os
 import re
+import json
 import math
 import shutil
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 from app.core.timezone import get_cambodia_now_naive
 
@@ -15,6 +16,7 @@ from fastapi import (
     UploadFile,
     File,
     BackgroundTasks,
+    Query,
     status,
 )
 from fastapi.responses import FileResponse
@@ -50,6 +52,12 @@ from app.schemas.project import (
     TranscriptSegmentResponse,
     TranscriptSegmentUpdate,
     TranscriptResponse,
+    SegmentationPreviewItem,
+    SegmentationPreviewResponse,
+    SegmentationApplyRequest,
+    SegmentationApplyResponse,
+    SegmentSplitRequest,
+    SegmentSplitResponse,
     TranslationSegmentResponse,
     TranslationSegmentUpdate,
     TranslationListResponse,
@@ -93,6 +101,12 @@ from app.services.tts.registry import (
 )
 from app.workers.audio_extraction import process_audio_extraction
 from app.workers.transcription import process_transcription
+from app.services.transcription.base import TranscriptionSegment, WordTiming
+from app.services.transcription.segmentation import (
+    segment_transcript,
+    split_segment_at_word,
+    merge_adjacent_segments,
+)
 from app.workers.translation import process_translation
 from app.workers.tts import process_tts, synthesize_segment_audio
 from app.workers.dubbing import process_dubbing
@@ -678,6 +692,7 @@ def get_transcript(
     return TranscriptResponse(
         project_id=project_id,
         status=project.status,
+        segmentation_mode=project.segmentation_mode or "sentence",
         segments=segments,
     )
 
@@ -723,6 +738,7 @@ def update_transcript_segment(
 
     # If transcript text changed, mark corresponding translation as outdated
     if old_text != clean_text:
+        segment.is_manually_edited = True
         linked_trans = (
             db.query(TranslationSegment)
             .filter(
@@ -741,6 +757,424 @@ def update_transcript_segment(
     db.commit()
     db.refresh(segment)
     return segment
+
+
+def _load_raw_segments_for_project(project: Project, db: Session) -> List[TranscriptionSegment]:
+    """Retrieve raw transcription segments with word timings for a project."""
+    if project.raw_transcript_json:
+        try:
+            data = json.loads(project.raw_transcript_json)
+            return [TranscriptionSegment.from_dict(d) for d in data]
+        except Exception as e:
+            logger.warning("Failed to deserialize project.raw_transcript_json: %s", e)
+
+    # Check data/projects/{project_id}/asr_raw.json
+    try:
+        asr_dir = Path(settings.PROJECTS_DATA_DIR if hasattr(settings, "PROJECTS_DATA_DIR") else "/app/data/projects") / project.id
+        asr_file = asr_dir / "asr_raw.json"
+        if asr_file.exists():
+            data = json.loads(asr_file.read_text(encoding="utf-8"))
+            return [TranscriptionSegment.from_dict(d) for d in data]
+    except Exception as e:
+        logger.warning("Failed to read asr_raw.json: %s", e)
+
+    # Fallback to current db TranscriptSegment rows
+    db_segs = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project.id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+    result = []
+    for s in db_segs:
+        words = None
+        if s.words_json:
+            try:
+                w_list = json.loads(s.words_json)
+                words = [WordTiming.from_dict(w) for w in w_list]
+            except Exception:
+                pass
+        result.append(
+            TranscriptionSegment(
+                segment_order=s.segment_order,
+                start_time=s.start_time,
+                end_time=s.end_time,
+                text=s.text,
+                words=words,
+                is_approximate=s.is_approximate,
+                is_manually_edited=s.is_manually_edited,
+            )
+        )
+    return result
+
+
+@router.get(
+    "/{project_id}/transcript/segmentation/preview",
+    response_model=SegmentationPreviewResponse,
+)
+def preview_transcript_segmentation(
+    project_id: str,
+    mode: str = Query("sentence", description="Segmentation mode: original, sentence, or dubbing"),
+    db: Session = Depends(get_db),
+) -> SegmentationPreviewResponse:
+    """Preview proposed transcript segments and assess downstream invalidation impact."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    raw_segs = _load_raw_segments_for_project(project, db)
+    if not raw_segs:
+        raise HTTPException(status_code=400, detail="No transcript available to segment")
+
+    mode_clean = mode.lower().strip()
+    if mode_clean not in ("original", "sentence", "dubbing"):
+        raise HTTPException(status_code=400, detail=f"Unsupported segmentation mode: {mode}")
+
+    proposed = segment_transcript(raw_segs, mode=mode_clean)
+    curr_segs = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+    has_user_edits = any(s.is_manually_edited for s in curr_segs)
+    trans_count = db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).count()
+    audio_count = db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).count()
+    has_video_export = bool(project.video and project.video.exported_video_path)
+
+    requires_confirmation = has_user_edits or trans_count > 0 or audio_count > 0
+    impact_warning = None
+    if requires_confirmation:
+        parts = []
+        if has_user_edits:
+            parts.append("manual transcript edits")
+        if trans_count > 0:
+            parts.append(f"{trans_count} Khmer translation(s)")
+        if audio_count > 0:
+            parts.append(f"{audio_count} generated audio clip(s)")
+        impact_warning = (
+            f"Applying {mode_clean.title()} segmentation will change transcript segment boundaries and mark "
+            + " and ".join(parts)
+            + " as outdated. Re-translation will be required."
+        )
+
+    preview_items = [
+        SegmentationPreviewItem(
+            segment_order=s.segment_order,
+            start_time=s.start_time,
+            end_time=s.end_time,
+            duration=round(s.end_time - s.start_time, 2),
+            text=s.text,
+            is_approximate=s.is_approximate,
+        )
+        for s in proposed
+    ]
+
+    return SegmentationPreviewResponse(
+        project_id=project_id,
+        current_mode=project.segmentation_mode or "sentence",
+        requested_mode=mode_clean,
+        current_segment_count=len(curr_segs),
+        proposed_segment_count=len(proposed),
+        proposed_segments=preview_items,
+        has_user_edits=has_user_edits,
+        has_translations=trans_count > 0,
+        translation_count=trans_count,
+        has_audio=audio_count > 0,
+        audio_count=audio_count,
+        has_exported_video=has_video_export,
+        requires_confirmation=requires_confirmation,
+        impact_warning=impact_warning,
+    )
+
+
+@router.post(
+    "/{project_id}/transcript/segmentation/apply",
+    response_model=SegmentationApplyResponse,
+)
+def apply_transcript_segmentation(
+    project_id: str,
+    payload: SegmentationApplyRequest,
+    db: Session = Depends(get_db),
+) -> SegmentationApplyResponse:
+    """Apply the selected segmentation mode to the project transcript and invalidate downstream outputs."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project is deleting")
+
+    raw_segs = _load_raw_segments_for_project(project, db)
+    if not raw_segs:
+        raise HTTPException(status_code=400, detail="No transcript available to segment")
+
+    mode = payload.mode.lower().strip()
+    if mode not in ("original", "sentence", "dubbing"):
+        raise HTTPException(status_code=400, detail=f"Unsupported segmentation mode: {payload.mode}")
+
+    curr_segs = db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).all()
+    has_user_edits = any(s.is_manually_edited for s in curr_segs)
+    trans_count = db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).count()
+    audio_count = db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).count()
+
+    needs_confirm = has_user_edits or trans_count > 0 or audio_count > 0
+    if needs_confirm and not payload.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation required: applying new segmentation will invalidate existing translations or audio."
+        )
+
+    new_segs = segment_transcript(raw_segs, mode=mode)
+
+    # Invalidate downstream outputs
+    inv_trans = 0
+    inv_aud = 0
+    if trans_count > 0:
+        db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).update(
+            {TranslationSegment.is_outdated: True}
+        )
+        inv_trans = trans_count
+    if audio_count > 0:
+        db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).update(
+            {GeneratedAudio.is_outdated: True}
+        )
+        inv_aud = audio_count
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
+
+    # Replace TranscriptSegment rows
+    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete()
+    saved_segs: List[TranscriptSegment] = []
+    for s in new_segs:
+        words_data = json.dumps([w.to_dict() for w in s.words], ensure_ascii=False) if s.words else None
+        db_seg = TranscriptSegment(
+            project_id=project_id,
+            segment_order=s.segment_order,
+            start_time=s.start_time,
+            end_time=s.end_time,
+            text=s.text,
+            words_json=words_data,
+            is_approximate=s.is_approximate,
+            is_manually_edited=False,
+        )
+        db.add(db_seg)
+        saved_segs.append(db_seg)
+
+    project.segmentation_mode = mode
+    db.commit()
+    for s in saved_segs:
+        db.refresh(s)
+
+    return SegmentationApplyResponse(
+        project_id=project_id,
+        segmentation_mode=mode,
+        segment_count=len(saved_segs),
+        message=f"Successfully applied {mode.title()} segmentation with {len(saved_segs)} segments",
+        segments=saved_segs,
+        invalidated_translations=inv_trans,
+        invalidated_audios=inv_aud,
+    )
+
+
+@router.post(
+    "/{project_id}/transcript/{segment_id}/split",
+    response_model=SegmentSplitResponse,
+)
+def split_transcript_segment(
+    project_id: str,
+    segment_id: str,
+    payload: SegmentSplitRequest,
+    db: Session = Depends(get_db),
+) -> SegmentSplitResponse:
+    """Manually split a transcript segment at the specified word index."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    target_seg = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.id == segment_id, TranscriptSegment.project_id == project_id)
+        .first()
+    )
+    if not target_seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    words = None
+    if target_seg.words_json:
+        try:
+            words = [WordTiming.from_dict(w) for w in json.loads(target_seg.words_json)]
+        except Exception:
+            pass
+
+    t_seg = TranscriptionSegment(
+        segment_order=target_seg.segment_order,
+        start_time=target_seg.start_time,
+        end_time=target_seg.end_time,
+        text=target_seg.text,
+        words=words,
+        is_approximate=target_seg.is_approximate,
+        is_manually_edited=target_seg.is_manually_edited,
+    )
+
+    try:
+        s1, s2 = split_segment_at_word(t_seg, payload.word_index)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Shift following segment orders up by 1
+    following = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order > target_seg.segment_order,
+        )
+        .all()
+    )
+    for f in following:
+        f.segment_order += 1
+
+    # Update target segment to s1
+    target_seg.start_time = s1.start_time
+    target_seg.end_time = s1.end_time
+    target_seg.text = s1.text
+    target_seg.words_json = json.dumps([w.to_dict() for w in s1.words], ensure_ascii=False) if s1.words else None
+    target_seg.is_approximate = s1.is_approximate
+    target_seg.is_manually_edited = True
+
+    # Add s2 segment
+    new_db_seg = TranscriptSegment(
+        project_id=project_id,
+        segment_order=s2.segment_order,
+        start_time=s2.start_time,
+        end_time=s2.end_time,
+        text=s2.text,
+        words_json=json.dumps([w.to_dict() for w in s2.words], ensure_ascii=False) if s2.words else None,
+        is_approximate=s2.is_approximate,
+        is_manually_edited=True,
+    )
+    db.add(new_db_seg)
+
+    # Invalidate linked translation
+    linked_trans = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.project_id == project_id,
+            TranslationSegment.transcript_segment_id == segment_id,
+        )
+        .first()
+    )
+    if linked_trans:
+        linked_trans.is_outdated = True
+        if linked_trans.generated_audio:
+            linked_trans.generated_audio.is_outdated = True
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
+
+    db.commit()
+
+    all_segs = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+    return SegmentSplitResponse(
+        message="Segment successfully split into two",
+        segments=all_segs,
+    )
+
+
+@router.post(
+    "/{project_id}/transcript/{segment_id}/merge-next",
+    response_model=SegmentSplitResponse,
+)
+def merge_transcript_segment_next(
+    project_id: str,
+    segment_id: str,
+    db: Session = Depends(get_db),
+) -> SegmentSplitResponse:
+    """Manually merge a transcript segment with its next neighbor."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    target_seg = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.id == segment_id, TranscriptSegment.project_id == project_id)
+        .first()
+    )
+    if not target_seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    next_seg = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order == target_seg.segment_order + 1,
+        )
+        .first()
+    )
+    if not next_seg:
+        raise HTTPException(status_code=400, detail="No adjacent next segment found to merge with")
+
+    words1 = [WordTiming.from_dict(w) for w in json.loads(target_seg.words_json)] if target_seg.words_json else None
+    words2 = [WordTiming.from_dict(w) for w in json.loads(next_seg.words_json)] if next_seg.words_json else None
+
+    t1 = TranscriptionSegment(target_seg.segment_order, target_seg.start_time, target_seg.end_time, target_seg.text, words=words1)
+    t2 = TranscriptionSegment(next_seg.segment_order, next_seg.start_time, next_seg.end_time, next_seg.text, words=words2)
+
+    merged = merge_adjacent_segments(t1, t2)
+
+    target_seg.start_time = merged.start_time
+    target_seg.end_time = merged.end_time
+    target_seg.text = merged.text
+    target_seg.words_json = json.dumps([w.to_dict() for w in merged.words], ensure_ascii=False) if merged.words else None
+    target_seg.is_manually_edited = True
+
+    # Delete next_seg
+    db.delete(next_seg)
+
+    # Shift following segment orders down by 1
+    following = (
+        db.query(TranscriptSegment)
+        .filter(
+            TranscriptSegment.project_id == project_id,
+            TranscriptSegment.segment_order > next_seg.segment_order,
+        )
+        .all()
+    )
+    for f in following:
+        f.segment_order -= 1
+
+    # Invalidate linked translation
+    linked_trans = (
+        db.query(TranslationSegment)
+        .filter(
+            TranslationSegment.project_id == project_id,
+            TranslationSegment.transcript_segment_id == segment_id,
+        )
+        .first()
+    )
+    if linked_trans:
+        linked_trans.is_outdated = True
+        if linked_trans.generated_audio:
+            linked_trans.generated_audio.is_outdated = True
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
+
+    db.commit()
+
+    all_segs = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+    return SegmentSplitResponse(
+        message="Segments successfully merged",
+        segments=all_segs,
+    )
 
 
 def _enrich_translation_segment(

@@ -5,6 +5,8 @@ import {
   ProcessingJob,
   TranscriptResponse,
   TranscriptSegment,
+  SegmentationPreviewResponse,
+  SegmentationApplyResponse,
   TranslationSegment,
   TranslationListResponse,
   GeneratedAudio,
@@ -240,6 +242,77 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Failed to update segment: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async previewTranscriptSegmentation(
+    projectId: string,
+    mode: string
+  ): Promise<SegmentationPreviewResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/transcript/segmentation/preview?mode=${encodeURIComponent(mode)}`
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to preview segmentation: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async applyTranscriptSegmentation(
+    projectId: string,
+    mode: string,
+    confirm: boolean = false
+  ): Promise<SegmentationApplyResponse> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/transcript/segmentation/apply`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, confirm }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to apply segmentation: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async splitTranscriptSegment(
+    projectId: string,
+    segmentId: string,
+    wordIndex: number
+  ): Promise<{ message: string; segments: TranscriptSegment[] }> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/transcript/${segmentId}/split`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ word_index: wordIndex }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to split segment: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async mergeTranscriptSegmentNext(
+    projectId: string,
+    segmentId: string
+  ): Promise<{ message: string; segments: TranscriptSegment[] }> {
+    const res = await fetch(
+      `${API_BASE}/projects/${projectId}/transcript/${segmentId}/merge-next`,
+      {
+        method: 'POST',
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to merge segment: ${res.statusText}`);
     }
     return res.json();
   },

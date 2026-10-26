@@ -54,6 +54,8 @@ class Project(Base):
     translation_style = Column(String(50), default="natural", nullable=False)
     tts_provider = Column(String(50), default="gtts", nullable=False)
     tts_voice = Column(String(100), default="default", nullable=False)
+    segmentation_mode = Column(String(50), default="sentence", nullable=True)
+    raw_transcript_json = Column(Text, nullable=True)
     status = Column(
         SQLEnum(ProjectStatus),
         default=ProjectStatus.CREATED,
@@ -134,6 +136,9 @@ class TranscriptSegment(Base):
     start_time = Column(Float, nullable=False)
     end_time = Column(Float, nullable=False)
     text = Column(Text, nullable=False)
+    words_json = Column(Text, nullable=True)
+    is_approximate = Column(Boolean, default=False, nullable=False)
+    is_manually_edited = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="transcript_segments")

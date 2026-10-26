@@ -46,6 +46,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // Segments and data
   const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+  const [segmentationMode, setSegmentationMode] = useState<string>('sentence');
   const [translationSegments, setTranslationSegments] = useState<TranslationSegment[]>([]);
   const [generatedAudios, setGeneratedAudios] = useState<GeneratedAudio[]>([]);
   const [timingConflicts, setTimingConflicts] = useState<TimingConflict[]>([]);
@@ -120,6 +121,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     try {
       const data = await api.getTranscript(projectId);
       setTranscriptSegments(data.segments || []);
+      if (data.segmentation_mode) {
+        setSegmentationMode(data.segmentation_mode);
+      }
     } catch {
       // ignore if empty
     }
@@ -674,11 +678,20 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
         {activeTab === 'transcript' && (
           <TranscriptTab
+            projectId={projectId}
+            segmentationMode={segmentationMode}
             segments={transcriptSegments}
             isTranscribing={isTranscribing}
             onStartTranscription={handleStartTranscription}
             onUpdateSegment={handleUpdateTranscriptSegment}
             onSeekVideo={handleSeekVideo}
+            onResegmentSuccess={async () => {
+              await Promise.all([
+                fetchTranscriptData(),
+                fetchTranslationData(),
+                fetchAudioData(),
+              ]);
+            }}
             activeSegmentId={activeSegmentId}
             selectedSegmentId={selectedSegmentId}
             transcriptionError={transcriptionError}

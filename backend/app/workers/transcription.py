@@ -1,10 +1,22 @@
+import json
 import logging
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.database.session import SessionLocal
-from app.models.project import Project, Video, TranscriptSegment, ProcessingJob, ProjectStatus, JobStatus
+from app.core.config import settings
+from app.models.project import (
+    Project,
+    Video,
+    TranscriptSegment,
+    TranslationSegment,
+    GeneratedAudio,
+    ProcessingJob,
+    ProjectStatus,
+    JobStatus,
+)
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
+from app.services.transcription.segmentation import segment_transcript
 from app.services.transcription.exceptions import TranscriptionError
 
 logger = logging.getLogger(__name__)
@@ -46,22 +58,55 @@ def process_transcription(project_id: str, job_id: str, db: Optional[Session] = 
 
         audio_path = Path(video.extracted_audio_path)
         provider = FasterWhisperTranscriptionProvider()
-        segments = provider.transcribe(audio_path, language=project.original_language or "en")
+        raw_segments = provider.transcribe(audio_path, language=project.original_language or "en", word_timestamps=True)
 
         job.progress_percentage = 80
         db.commit()
 
-        # Safely replace any existing transcript segments on retranscription
+        # Persist raw transcription segments and word timings
+        raw_dict_list = [s.to_dict() for s in raw_segments]
+        raw_json_str = json.dumps(raw_dict_list, ensure_ascii=False)
+        project.raw_transcript_json = raw_json_str
+
+        # Also save to data/projects/{project_id}/asr_raw.json for persistent reference
+        try:
+            asr_dir = Path(settings.PROJECTS_DATA_DIR if hasattr(settings, "PROJECTS_DATA_DIR") else "/app/data/projects") / project_id
+            asr_dir.mkdir(parents=True, exist_ok=True)
+            (asr_dir / "asr_raw.json").write_text(raw_json_str, encoding="utf-8")
+        except Exception as e:
+            logger.warning("Could not write asr_raw.json to disk: %s", e)
+
+        # Apply segmentation mode (default to "sentence" for natural phrasing)
+        segment_mode = project.segmentation_mode or "sentence"
+        final_segments = segment_transcript(raw_segments, mode=segment_mode)
+
+        # Check if downstream entities exist; if so, mark them outdated upon re-transcription
+        existing_translations = db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).count()
+        if existing_translations > 0:
+            db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).update(
+                {TranslationSegment.is_outdated: True}
+            )
+            db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).update(
+                {GeneratedAudio.is_outdated: True}
+            )
+            if project.video and project.video.exported_video_path:
+                project.video.is_export_outdated = True
+
+        # Safely replace any existing transcript segments
         db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete()
 
-        # Insert new segments
-        for seg in segments:
+        # Insert new segmented records
+        for seg in final_segments:
+            words_data = json.dumps([w.to_dict() for w in seg.words], ensure_ascii=False) if seg.words else None
             db_segment = TranscriptSegment(
                 project_id=project_id,
                 segment_order=seg.segment_order,
                 start_time=seg.start_time,
                 end_time=seg.end_time,
                 text=seg.text,
+                words_json=words_data,
+                is_approximate=seg.is_approximate,
+                is_manually_edited=seg.is_manually_edited,
             )
             db.add(db_segment)
 
@@ -72,9 +117,11 @@ def process_transcription(project_id: str, job_id: str, db: Optional[Session] = 
         db.commit()
 
         logger.info(
-            "Successfully completed transcription for project %s: saved %d segments",
+            "Successfully completed transcription for project %s: mode=%s, saved %d segments from %d raw",
             project_id,
-            len(segments),
+            segment_mode,
+            len(final_segments),
+            len(raw_segments),
         )
 
     except TranscriptionError as e:

@@ -79,13 +79,52 @@ export interface TranscriptSegment {
   start_time: number;
   end_time: number;
   text: string;
+  is_approximate?: boolean;
+  is_manually_edited?: boolean;
   created_at?: string;
 }
 
 export interface TranscriptResponse {
   project_id: string;
   status: ProjectStatus;
+  segmentation_mode?: string;
   segments: TranscriptSegment[];
+}
+
+export interface SegmentationPreviewItem {
+  segment_order: number;
+  start_time: number;
+  end_time: number;
+  duration: number;
+  text: string;
+  is_approximate: boolean;
+}
+
+export interface SegmentationPreviewResponse {
+  project_id: string;
+  current_mode: string;
+  requested_mode: string;
+  current_segment_count: number;
+  proposed_segment_count: number;
+  proposed_segments: SegmentationPreviewItem[];
+  has_user_edits: boolean;
+  has_translations: boolean;
+  translation_count: number;
+  has_audio: boolean;
+  audio_count: number;
+  has_exported_video: boolean;
+  requires_confirmation: boolean;
+  impact_warning?: string | null;
+}
+
+export interface SegmentationApplyResponse {
+  project_id: string;
+  segmentation_mode: string;
+  segment_count: number;
+  message: string;
+  segments: TranscriptSegment[];
+  invalidated_translations: number;
+  invalidated_audios: number;
 }
 
 export interface TranslationSegment {

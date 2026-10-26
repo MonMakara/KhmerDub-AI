@@ -5,7 +5,11 @@ from typing import Dict, List, Optional
 
 from app.core.ai_guard import acquire_ai_inference_slot
 from app.core.config import settings
-from app.services.transcription.base import TranscriptionProvider, TranscriptionSegment
+from app.services.transcription.base import (
+    TranscriptionProvider,
+    TranscriptionSegment,
+    WordTiming,
+)
 from app.services.transcription.exceptions import (
     TranscriptionError,
     ModelLoadError,
@@ -81,9 +85,12 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
                 raise ModelLoadError(f"Failed to load Whisper model '{self.model_size}': {e}") from e
 
     def transcribe(
-        self, audio_path: Path, language: str = "en"
+        self,
+        audio_path: Path,
+        language: str = "en",
+        word_timestamps: bool = True,
     ) -> List[TranscriptionSegment]:
-        """Transcribe an audio file into timestamped segments."""
+        """Transcribe an audio file into timestamped segments with word timings."""
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file does not exist: {audio_path}")
 
@@ -99,6 +106,7 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
                     str(audio_path),
                     language=language or settings.WHISPER_LANGUAGE or "en",
                     vad_filter=self.vad_filter,
+                    word_timestamps=word_timestamps,
                 )
 
                 results: List[TranscriptionSegment] = []
@@ -106,12 +114,25 @@ class FasterWhisperTranscriptionProvider(TranscriptionProvider):
                 for order, segment in enumerate(segments_generator, start=1):
                     clean_text = segment.text.strip()
                     if clean_text:
+                        word_list: List[WordTiming] = []
+                        if hasattr(segment, "words") and segment.words:
+                            for w in segment.words:
+                                if w.word and w.word.strip():
+                                    word_list.append(
+                                        WordTiming(
+                                            word=w.word,
+                                            start=round(float(w.start), 3),
+                                            end=round(float(w.end), 3),
+                                            probability=round(float(getattr(w, "probability", 1.0)), 3),
+                                        )
+                                    )
                         results.append(
                             TranscriptionSegment(
                                 segment_order=order,
-                                start_time=round(float(segment.start), 2),
-                                end_time=round(float(segment.end), 2),
+                                start_time=round(float(segment.start), 3),
+                                end_time=round(float(segment.end), 3),
                                 text=clean_text,
+                                words=word_list if word_list else None,
                             )
                         )
 

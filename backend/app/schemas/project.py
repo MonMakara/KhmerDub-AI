@@ -45,6 +45,8 @@ class TranscriptSegmentResponse(BaseModel):
     start_time: float
     end_time: float
     text: str
+    is_approximate: bool = False
+    is_manually_edited: bool = False
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -57,6 +59,57 @@ class TranscriptSegmentUpdate(BaseModel):
 class TranscriptResponse(BaseModel):
     project_id: str
     status: ProjectStatus
+    segmentation_mode: Optional[str] = "sentence"
+    segments: List[TranscriptSegmentResponse]
+
+
+class SegmentationPreviewItem(BaseModel):
+    segment_order: int
+    start_time: float
+    end_time: float
+    duration: float
+    text: str
+    is_approximate: bool = False
+
+
+class SegmentationPreviewResponse(BaseModel):
+    project_id: str
+    current_mode: str
+    requested_mode: str
+    current_segment_count: int
+    proposed_segment_count: int
+    proposed_segments: List[SegmentationPreviewItem]
+    has_user_edits: bool
+    has_translations: bool
+    translation_count: int
+    has_audio: bool
+    audio_count: int
+    has_exported_video: bool
+    requires_confirmation: bool
+    impact_warning: Optional[str] = None
+
+
+class SegmentationApplyRequest(BaseModel):
+    mode: str
+    confirm: bool = False
+
+
+class SegmentationApplyResponse(BaseModel):
+    project_id: str
+    segmentation_mode: str
+    segment_count: int
+    message: str
+    segments: List[TranscriptSegmentResponse]
+    invalidated_translations: int
+    invalidated_audios: int
+
+
+class SegmentSplitRequest(BaseModel):
+    word_index: int
+
+
+class SegmentSplitResponse(BaseModel):
+    message: str
     segments: List[TranscriptSegmentResponse]
 
 
