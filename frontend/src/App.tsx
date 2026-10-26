@@ -17,7 +17,10 @@ export const App: React.FC = () => {
       const pid = hash.replace('project/', '').trim();
       return { tab: 'projects', projectId: pid || null };
     }
-    if (hash === 'projects' || hash === 'settings' || hash === 'dashboard' || hash === 'voices' || hash === 'toolkit') {
+    if (hash.startsWith('toolkit')) {
+      return { tab: 'toolkit', projectId: null };
+    }
+    if (hash === 'projects' || hash === 'settings' || hash === 'dashboard' || hash === 'voices') {
       return { tab: hash, projectId: null };
     }
     return { tab: 'dashboard', projectId: null };
@@ -185,7 +188,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Scrollable Page Body */}
-        <main className="flex-1 overflow-y-auto p-3.5 sm:p-6 md:p-8">
+        <main id="main-scroll-container" className="flex-1 overflow-y-auto p-3.5 sm:p-6 md:p-8">
           {currentTab === 'dashboard' && (
             <Dashboard
               health={health}

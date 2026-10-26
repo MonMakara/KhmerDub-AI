@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Video,
   FileAudio,
@@ -12,6 +12,11 @@ import {
   Layers,
   Archive,
   ArrowRight,
+  ArrowLeft,
+  ExternalLink,
+  ChevronRight,
+  Search,
+  History,
   Upload,
   FolderGit2,
   Play,
@@ -54,14 +59,80 @@ import {
   TranslationProviderInfo,
 } from '../types';
 
+export type ToolkitViewMode = 'overview' | 'workspace' | 'history';
+
+export const SLUG_TO_TOOL_ID: Record<string, string> = {
+  'video-to-audio': 'video_to_audio',
+  'video_to_audio': 'video_to_audio',
+  'video-to-transcript': 'video_to_transcript',
+  'video_to_transcript': 'video_to_transcript',
+  'video-to-text': 'video_to_text',
+  'video_to_text': 'video_to_text',
+  'audio-to-transcript': 'audio_to_transcript',
+  'audio_to_transcript': 'audio_to_transcript',
+  'audio-to-text': 'audio_to_text',
+  'audio_to_text': 'audio_to_text',
+  'text-to-speech': 'text_to_speech',
+  'text_to_speech': 'text_to_speech',
+  'transcript-to-audio': 'transcript_to_audio',
+  'transcript_to_audio': 'transcript_to_audio',
+  'translation': 'text_translation',
+  'text-translation': 'text_translation',
+  'text_translation': 'text_translation',
+  'subtitle-converter': 'subtitle_conversion',
+  'subtitle-conversion': 'subtitle_conversion',
+  'subtitle_conversion': 'subtitle_conversion',
+};
+
+export const TOOL_ID_TO_SLUG: Record<string, string> = {
+  'video_to_audio': 'video-to-audio',
+  'video_to_transcript': 'video-to-transcript',
+  'video_to_text': 'video-to-text',
+  'audio_to_transcript': 'audio-to-transcript',
+  'audio_to_text': 'audio-to-text',
+  'text_to_speech': 'text-to-speech',
+  'transcript_to_audio': 'transcript-to-audio',
+  'text_translation': 'translation',
+  'translation': 'translation',
+  'subtitle_conversion': 'subtitle-converter',
+};
+
+export const parseToolkitRoute = (hash: string): { mode: ToolkitViewMode; toolId?: string } => {
+  const clean = hash.replace(/^#\/?/, '').trim();
+  if (!clean.startsWith('toolkit')) {
+    return { mode: 'overview' };
+  }
+  const sub = clean.replace(/^toolkit\/?/, '').trim();
+  if (!sub || sub === 'overview') {
+    return { mode: 'overview' };
+  }
+  if (sub === 'history') {
+    return { mode: 'history' };
+  }
+  const toolId = SLUG_TO_TOOL_ID[sub];
+  if (toolId) {
+    return { mode: 'workspace', toolId };
+  }
+  return { mode: 'overview' };
+};
+
 interface MediaToolkitProps {
   projects?: ProjectSummary[];
 }
 
 export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => {
+  const initialRoute = parseToolkitRoute(typeof window !== 'undefined' ? window.location.hash : '');
+  const [viewMode, setViewMode] = useState<ToolkitViewMode>(initialRoute.mode);
+  const [selectedTool, setSelectedTool] = useState<string>(initialRoute.toolId || 'video_to_audio');
   const [capabilities, setCapabilities] = useState<ToolkitCapabilities | null>(null);
-  const [selectedTool, setSelectedTool] = useState<string>('video_to_audio');
   const [showLanguageInfo, setShowLanguageInfo] = useState<boolean>(false);
+  const [overviewCategory, setOverviewCategory] = useState<'all' | 'audio_asr' | 'speech' | 'translation'>('all');
+
+  // History search, filter, and sort state
+  const [historySearch, setHistorySearch] = useState<string>('');
+  const [historyToolFilter, setHistoryToolFilter] = useState<string>('all');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<string>('all');
+  const [historySortOrder, setHistorySortOrder] = useState<'desc' | 'asc'>('desc');
 
   // Common Input State
   const [inputMode, setInputMode] = useState<'upload' | 'project'>('upload');
@@ -232,6 +303,73 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setTasksLoading(false);
     }
   }, [activeTask]);
+
+  // Scroll to top helper
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const mainEl = document.getElementById('main-scroll-container');
+    if (mainEl) {
+      mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  // Sync state on hash change (browser back/forward or URL navigation)
+  useEffect(() => {
+    const handleHashChange = () => {
+      const route = parseToolkitRoute(window.location.hash);
+      setViewMode(route.mode);
+      if (route.toolId) {
+        setSelectedTool(route.toolId);
+      }
+      scrollToTop();
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const navigateToOverview = () => {
+    setViewMode('overview');
+    window.location.hash = 'toolkit';
+    scrollToTop();
+  };
+
+  const navigateToTool = (toolId: string) => {
+    const slug = TOOL_ID_TO_SLUG[toolId] || 'video-to-audio';
+    setSelectedTool(toolId);
+    setViewMode('workspace');
+    window.location.hash = `toolkit/${slug}`;
+    scrollToTop();
+  };
+
+  const navigateToHistory = () => {
+    setViewMode('history');
+    window.location.hash = 'toolkit/history';
+    scrollToTop();
+  };
+
+  const handleOpenTaskInWorkspace = async (task: ToolkitTask) => {
+    try {
+      const full = await api.getToolkitTask(task.id);
+      setActiveTask(full);
+      let targetTool = full.tool_type;
+      if (full.tool_type === 'transcript_translation') {
+        targetTool = 'text_translation';
+        setTransMode('transcript');
+      } else if (full.tool_type === 'text_translation' || full.tool_type === 'translation') {
+        targetTool = 'text_translation';
+        setTransMode('text');
+      } else if (full.tool_type === 'text_to_speech' && full.full_text) {
+        setTtsText(full.full_text);
+      }
+      navigateToTool(targetTool);
+    } catch (err: any) {
+      console.error('Failed to load task details:', err);
+      setActiveTask(task);
+      const targetTool = task.tool_type === 'translation' ? 'text_translation' : task.tool_type;
+      navigateToTool(targetTool);
+    }
+  };
 
   useEffect(() => {
     fetchCapabilities();
@@ -1092,6 +1230,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     setTransInputTab('import');
     setTransImportTaskId(task.id);
     setError(null);
+    navigateToTool('text_translation');
   };
 
   const handleSendToTTS = (task: ToolkitTask) => {
@@ -1100,6 +1239,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setTtsText(task.full_text);
     }
     setError(null);
+    navigateToTool('text_to_speech');
   };
 
   const handleSendToTranscriptToAudio = (task: ToolkitTask) => {
@@ -1108,6 +1248,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     setTtaImportTaskId(task.id);
     setTtaMode('timed');
     setError(null);
+    navigateToTool('transcript_to_audio');
   };
 
   const handleSendTranslationToTTS = (task: ToolkitTask) => {
@@ -1122,6 +1263,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setTtsText(txt);
     }
     setError(null);
+    navigateToTool('text_to_speech');
   };
 
   const handleSendTranslationToTranscriptToAudio = (task: ToolkitTask) => {
@@ -1142,6 +1284,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setTtaSourceTaskId(task.id);
     }
     setError(null);
+    navigateToTool('transcript_to_audio');
   };
 
   // Helpers
@@ -1175,6 +1318,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: Video,
       status: 'available' as const,
       phase: 'Phase 13E.1',
+      category: 'audio_asr' as const,
     },
     {
       id: 'video_to_transcript',
@@ -1183,6 +1327,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: FileText,
       status: 'available' as const,
       phase: 'Phase 13E.2',
+      category: 'audio_asr' as const,
     },
     {
       id: 'video_to_text',
@@ -1191,6 +1336,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: AlignLeft,
       status: 'available' as const,
       phase: 'Phase 13E.2',
+      category: 'audio_asr' as const,
     },
     {
       id: 'audio_to_transcript',
@@ -1199,6 +1345,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: ListMusic,
       status: 'available' as const,
       phase: 'Phase 13E.2',
+      category: 'audio_asr' as const,
     },
     {
       id: 'audio_to_text',
@@ -1207,6 +1354,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: FileCode,
       status: 'available' as const,
       phase: 'Phase 13E.2',
+      category: 'audio_asr' as const,
     },
     {
       id: 'text_to_speech',
@@ -1215,6 +1363,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: Mic2,
       status: 'available' as const,
       phase: 'Phase 13E.3',
+      category: 'speech' as const,
     },
     {
       id: 'transcript_to_audio',
@@ -1223,6 +1372,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: Radio,
       status: 'available' as const,
       phase: 'Phase 13E.4',
+      category: 'speech' as const,
     },
     {
       id: 'text_translation',
@@ -1231,6 +1381,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: Languages,
       status: 'available' as const,
       phase: 'Phase 13E.5',
+      category: 'translation' as const,
     },
     {
       id: 'subtitle_conversion',
@@ -1239,13 +1390,55 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       icon: Layers,
       status: 'available' as const,
       phase: 'Phase 13E.5',
+      category: 'translation' as const,
     },
   ];
 
   const getToolTitle = (toolId: string) => {
+    if (toolId === 'translation' || toolId === 'text_translation' || toolId === 'transcript_translation') {
+      return 'Translation Studio';
+    }
     const found = toolsList.find((t) => t.id === toolId);
-    return found ? found.title : toolId;
+    return found ? found.title : toolId.replace(/_/g, ' ');
   };
+
+  const currentTool = toolsList.find((t) => t.id === selectedTool) || toolsList[0];
+  const CurrentToolIcon = currentTool.icon;
+
+  const filteredTasks = useMemo(() => {
+    return tasks
+      .filter((task) => {
+        if (historyToolFilter !== 'all') {
+          if (historyToolFilter === 'text_translation') {
+            if (task.tool_type !== 'translation' && task.tool_type !== 'text_translation' && task.tool_type !== 'transcript_translation') {
+              return false;
+            }
+          } else if (task.tool_type !== historyToolFilter) {
+            return false;
+          }
+        }
+        if (historyStatusFilter !== 'all' && task.status !== historyStatusFilter) {
+          return false;
+        }
+        if (historySearch.trim()) {
+          const q = historySearch.toLowerCase();
+          const matchFilename = task.source_filename?.toLowerCase().includes(q);
+          const matchFormat = task.target_format?.toLowerCase().includes(q);
+          const matchType = task.tool_type?.toLowerCase().includes(q);
+          const matchId = task.id.toLowerCase().includes(q);
+          const matchText = task.full_text?.toLowerCase().includes(q);
+          if (!matchFilename && !matchFormat && !matchType && !matchId && !matchText) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const timeA = new Date(a.created_at).getTime();
+        const timeB = new Date(b.created_at).getTime();
+        return historySortOrder === 'desc' ? timeB - timeA : timeA - timeB;
+      });
+  }, [tasks, historyToolFilter, historyStatusFilter, historySearch, historySortOrder]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 pb-12">
@@ -1256,185 +1449,448 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         onError={() => setPlayingTaskId(null)}
       />
 
-      {/* Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-8 text-white shadow-xl relative overflow-hidden">
-        <div className="absolute right-0 top-0 bottom-0 w-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
-          <div>
-            <div className="flex items-center gap-2.5 mb-2">
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" />
-                AI Media Toolkit
-              </span>
-              <span className="text-xs text-slate-400 font-mono">
-                {capabilities?.version ? `v${capabilities.version}` : 'Phase 13E.2'}
-              </span>
+      {/* ======================================================== */}
+      {/* VIEW 1: OVERVIEW (viewMode === 'overview')               */}
+      {/* ======================================================== */}
+      {viewMode === 'overview' && (
+        <div className="space-y-8">
+          {/* Header Banner */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-8 text-white shadow-xl relative overflow-hidden">
+            <div className="absolute right-0 top-0 bottom-0 w-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
+              <div>
+                <div className="flex items-center gap-2.5 mb-2">
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    AI Media Toolkit
+                  </span>
+                  <span className="text-xs text-slate-400 font-mono">
+                    {capabilities?.version ? `v${capabilities.version}` : 'Phase 13E.5'}
+                  </span>
+                </div>
+                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+                  Media Extraction & Transcription Hub
+                </h1>
+                <p className="text-slate-400 text-sm mt-1 max-w-2xl">
+                  Extract pristine audio, generate timestamped transcripts, edit speech segments, synthesize natural voice, and translate content without altering original project data.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setShowLanguageInfo(!showLanguageInfo)}
+                className="self-start md:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60 transition-colors shadow-sm cursor-pointer"
+                title="Toggle capabilities overview"
+              >
+                <Info className="w-4 h-4 text-indigo-400" />
+                <span>AI Capabilities Guide</span>
+                {showLanguageInfo ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              Media Extraction & Transcription Hub
-            </h1>
-            <p className="text-slate-400 text-sm mt-1 max-w-2xl">
-              Extract pristine audio, generate timestamped transcripts, edit speech segments, and export subtitles (SRT, VTT, TXT, CSV, JSON) without altering original project data.
-            </p>
+
+            {/* Expandable Language Capability Matrix */}
+            {showLanguageInfo && (
+              <div className="mt-6 pt-6 border-t border-slate-800/80 space-y-4">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span className="font-semibold uppercase tracking-wider text-slate-300">
+                    System AI Capabilities & Supported Formats
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowLanguageInfo(false)}
+                    className="hover:text-white p-1 rounded-lg hover:bg-slate-800 text-slate-400 transition-colors cursor-pointer flex items-center gap-1"
+                    title="Close guide"
+                  >
+                    <X className="w-4 h-4" />
+                    <span className="text-[11px]">Close</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3.5 text-xs">
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                    <span className="font-semibold text-slate-200 flex items-center gap-2">
+                      <FileAudio className="w-4 h-4 text-indigo-400" />
+                      Audio Extraction
+                    </span>
+                    <p className="text-slate-400 leading-relaxed text-[11px]">
+                      MP4, MOV, MKV, WebM. Lossless AAC/M4A remuxing, 192k MP3 & 16-bit WAV PCM encoding.
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                    <span className="font-semibold text-slate-200 flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-emerald-400" />
+                      Speech-to-Text
+                    </span>
+                    <p className="text-slate-400 leading-relaxed text-[11px]">
+                      Faster-Whisper English ASR with cue timestamps, plain text, and SRT/VTT/TXT/CSV/JSON exports.
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                    <span className="font-semibold text-slate-200 flex items-center gap-2">
+                      <Mic2 className="w-4 h-4 text-amber-400" />
+                      Text-to-Speech
+                    </span>
+                    <p className="text-slate-400 leading-relaxed text-[11px]">
+                      Google Khmer, Edge Piseth/Sreymom/Aria/Guy, and VoxCPM2 custom voice cloning.
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                    <span className="font-semibold text-slate-200 flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-purple-400" />
+                      Transcript to Audio
+                    </span>
+                    <p className="text-slate-400 leading-relaxed text-[11px]">
+                      Narration & Timed speech alignment, duration overflow detection, and cue regeneration.
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                    <span className="font-semibold text-slate-200 flex items-center gap-2">
+                      <Languages className="w-4 h-4 text-blue-400" />
+                      Translation & Converter
+                    </span>
+                    <p className="text-slate-400 leading-relaxed text-[11px]">
+                      Local Meta NLLB-200 & cloud neural EN↔KM translation with SRT↔VTT subtitle conversion.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          <button
-            onClick={() => setShowLanguageInfo(!showLanguageInfo)}
-            className="self-start md:self-auto inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60 transition-colors shadow-sm cursor-pointer"
-            title="Toggle capabilities overview"
-          >
-            <Info className="w-4 h-4 text-indigo-400" />
-            <span>AI Capabilities Guide</span>
-            {showLanguageInfo ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </button>
-        </div>
-
-        {/* Expandable Language Capability Matrix */}
-        {showLanguageInfo && (
-          <div className="mt-6 pt-6 border-t border-slate-800/80 space-y-4">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-semibold uppercase tracking-wider text-slate-300">
-                System AI Capabilities & Supported Formats
-              </span>
+          {/* Category Filter Pills & History Shortcut Button */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl overflow-x-auto">
               <button
                 type="button"
-                onClick={() => setShowLanguageInfo(false)}
-                className="hover:text-white p-1 rounded-lg hover:bg-slate-800 text-slate-400 transition-colors cursor-pointer flex items-center gap-1"
-                title="Close guide"
-              >
-                <X className="w-4 h-4" />
-                <span className="text-[11px]">Close</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3.5 text-xs">
-              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="font-semibold text-slate-200 flex items-center gap-2">
-                  <FileAudio className="w-4 h-4 text-indigo-400" />
-                  Audio Extraction
-                </span>
-                <p className="text-slate-400 leading-relaxed text-[11px]">
-                  MP4, MOV, MKV, WebM. Lossless AAC/M4A remuxing, 192k MP3 & 16-bit WAV PCM encoding.
-                </p>
-              </div>
-
-              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="font-semibold text-slate-200 flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-emerald-400" />
-                  Speech-to-Text
-                </span>
-                <p className="text-slate-400 leading-relaxed text-[11px]">
-                  Faster-Whisper English ASR with cue timestamps, plain text, and SRT/VTT/TXT/CSV/JSON exports.
-                </p>
-              </div>
-
-              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="font-semibold text-slate-200 flex items-center gap-2">
-                  <Mic2 className="w-4 h-4 text-amber-400" />
-                  Text-to-Speech
-                </span>
-                <p className="text-slate-400 leading-relaxed text-[11px]">
-                  Google Khmer, Edge Piseth/Sreymom/Aria/Guy, and VoxCPM2 custom voice cloning.
-                </p>
-              </div>
-
-              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="font-semibold text-slate-200 flex items-center gap-2">
-                  <Radio className="w-4 h-4 text-purple-400" />
-                  Transcript to Audio
-                </span>
-                <p className="text-slate-400 leading-relaxed text-[11px]">
-                  Narration & Timed speech alignment, duration overflow detection, and cue regeneration.
-                </p>
-              </div>
-
-              <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="font-semibold text-slate-200 flex items-center gap-2">
-                  <Languages className="w-4 h-4 text-blue-400" />
-                  Translation & Converter
-                </span>
-                <p className="text-slate-400 leading-relaxed text-[11px]">
-                  Local Meta NLLB-200 & cloud neural EN↔KM translation with SRT↔VTT subtitle conversion.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Tool Cards Selector */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">
-            Available & Planned Toolkit Modules
-          </h2>
-          <span className="text-xs text-slate-400">Click a card to activate</span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {toolsList.map((tool) => {
-            const Icon = tool.icon;
-            const isSelected = selectedTool === tool.id;
-            const isAvailable = tool.status === 'available';
-
-            return (
-              <button
-                key={tool.id}
-                onClick={() => {
-                  if (isAvailable) {
-                    setSelectedTool(tool.id);
-                    setError(null);
-                  }
-                }}
-                disabled={!isAvailable}
-                className={`text-left p-4 rounded-xl border transition-all duration-200 relative flex flex-col justify-between ${
-                  isSelected
-                    ? 'bg-white border-indigo-500 shadow-md ring-2 ring-indigo-500/20'
-                    : isAvailable
-                    ? 'bg-white border-slate-200 hover:border-slate-300 hover:shadow-sm cursor-pointer'
-                    : 'bg-slate-50/70 border-slate-200/80 opacity-70 cursor-not-allowed'
+                onClick={() => setOverviewCategory('all')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  overviewCategory === 'all'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
+                All Tools ({toolsList.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverviewCategory('audio_asr')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  overviewCategory === 'audio_asr'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Audio & ASR (5)
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverviewCategory('speech')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  overviewCategory === 'speech'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Speech Synthesis (2)
+              </button>
+              <button
+                type="button"
+                onClick={() => setOverviewCategory('translation')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  overviewCategory === 'translation'
+                    ? 'bg-white text-indigo-600 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Translation & Subtitles (2)
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={navigateToHistory}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-xs cursor-pointer self-start sm:self-auto"
+            >
+              <History className="w-4 h-4 text-indigo-600" />
+              <span>Full Task History</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                {tasks.length}
+              </span>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+          </div>
+
+          {/* Tool Cards Grid */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">
+                Available Toolkit Modules
+              </h2>
+              <span className="text-xs text-slate-400">Click any card to launch its dedicated workspace</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {toolsList
+                .filter((t) => overviewCategory === 'all' || t.category === overviewCategory)
+                .map((tool) => {
+                  const Icon = tool.icon;
+                  return (
+                    <button
+                      key={tool.id}
+                      onClick={() => navigateToTool(tool.id)}
+                      className="text-left p-5 rounded-2xl border border-slate-200/90 bg-white hover:border-indigo-400 hover:shadow-md transition-all duration-200 relative flex flex-col justify-between group cursor-pointer"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-3.5">
+                          <div className="w-10 h-10 rounded-xl bg-indigo-50 group-hover:bg-indigo-600 text-indigo-600 group-hover:text-white flex items-center justify-center transition-colors">
+                            <Icon className="w-5 h-5" />
+                          </div>
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Available Now
+                          </span>
+                        </div>
+                        <h3 className="font-bold text-slate-900 text-base group-hover:text-indigo-600 transition-colors">
+                          {tool.title}
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-1.5 line-clamp-2 leading-relaxed">
+                          {tool.desc}
+                        </p>
+                      </div>
+
+                      <div className="mt-4 pt-3.5 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-indigo-600">
+                        <span>Launch Workspace</span>
+                        <ArrowRight className="w-4 h-4 transform group-hover:translate-x-1 transition-transform" />
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+
+          {/* Recent Tasks Summary Section */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                  <Clock className="w-4 h-4" />
+                </div>
                 <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <div
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center ${
-                        isSelected
-                          ? 'bg-indigo-600 text-white'
-                          : isAvailable
-                          ? 'bg-indigo-50 text-indigo-600'
-                          : 'bg-slate-200/70 text-slate-400'
-                      }`}
-                    >
-                      <Icon className="w-5 h-5" />
+                  <h3 className="font-bold text-slate-900 text-base">Recent Media Tasks</h3>
+                  <p className="text-xs text-slate-400">Quickly reopen recent workspace jobs or download outputs</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={fetchTasks}
+                  disabled={tasksLoading}
+                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                  title="Refresh tasks"
+                >
+                  <RefreshCw className={`w-4 h-4 ${tasksLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  type="button"
+                  onClick={navigateToHistory}
+                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <span>View All {tasks.length} Tasks</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {tasks.length === 0 ? (
+              <div className="text-center py-8 text-slate-400 text-xs">
+                No media tasks yet. Select a tool card above to extract audio, generate speech, or translate content.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {tasks.slice(0, 4).map((task) => (
+                  <div
+                    key={task.id}
+                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/60 rounded-xl px-2.5 transition-colors"
+                  >
+                    <div className="flex items-start sm:items-center gap-3 min-w-0">
+                      <span className="px-2 py-1 rounded-lg text-[10px] font-bold uppercase bg-slate-100 text-slate-700 shrink-0">
+                        {task.target_format}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-xs text-slate-900 truncate">
+                            {task.source_filename || 'Media Task'}
+                          </span>
+                          <span className="text-[10px] text-slate-400">·</span>
+                          <span className="text-[11px] text-slate-500 font-medium">
+                            {getToolTitle(task.tool_type)}
+                          </span>
+                          {task.is_outdated && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                              Outdated
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
+                          <span>{new Date(task.created_at).toLocaleDateString()} {new Date(task.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          {task.output_duration_seconds ? (
+                            <>
+                              <span>·</span>
+                              <span>{formatDuration(task.output_duration_seconds)}</span>
+                            </>
+                          ) : null}
+                          <span>·</span>
+                          {task.status === 'completed' && (
+                            <span className="text-emerald-600 font-medium inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" /> Done
+                            </span>
+                          )}
+                          {task.status === 'processing' && (
+                            <span className="text-indigo-600 font-medium inline-flex items-center gap-1">
+                              <RefreshCw className="w-3 h-3 animate-spin" /> Processing
+                            </span>
+                          )}
+                          {task.status === 'failed' && (
+                            <span className="text-rose-600 font-medium inline-flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3" /> Failed
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <span
-                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                        isAvailable
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          : 'bg-slate-100 text-slate-500 border border-slate-200'
-                      }`}
-                    >
-                      {isAvailable ? 'Available Now' : tool.phase}
+
+                    <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTaskInWorkspace(task)}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Open in tool workspace"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open in Workspace</span>
+                      </button>
+
+                      {task.status === 'completed' && (
+                        <>
+                          {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio') && (
+                            <button
+                              onClick={() => {
+                                setActiveTask(task);
+                                handleTogglePlay(task.id);
+                              }}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                              title="Play/Pause Audio"
+                            >
+                              {playingTaskId === task.id ? (
+                                <Pause className="w-4 h-4 text-indigo-600" />
+                              ) : (
+                                <Play className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                          <a
+                            href={api.getToolkitAudioDownloadUrl(task.id)}
+                            download
+                            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                            title="Download Output"
+                          >
+                            <Download className="w-4 h-4" />
+                          </a>
+                        </>
+                      )}
+
+                      <button
+                        onClick={() => handleDeleteTask(task)}
+                        className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                        title="Delete Task"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* VIEW 2: TOOL WORKSPACE (viewMode === 'workspace')         */}
+      {/* ======================================================== */}
+      {viewMode === 'workspace' && (
+        <div className="space-y-6">
+          {/* Breadcrumb Navigation Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white border border-slate-200/90 rounded-2xl px-5 py-3.5 shadow-xs">
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={navigateToOverview}
+                className="inline-flex items-center gap-1.5 font-bold text-slate-700 hover:text-indigo-600 transition-colors cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>All Tools</span>
+              </button>
+              <span className="text-slate-300">/</span>
+              <button
+                type="button"
+                onClick={navigateToOverview}
+                className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+              >
+                Media Toolkit
+              </button>
+              <span className="text-slate-300">/</span>
+              <span className="font-semibold text-slate-900">{currentTool.title}</span>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <button
+                type="button"
+                onClick={navigateToHistory}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200/80 text-slate-700 transition-colors cursor-pointer"
+                title="View Full Task History"
+              >
+                <History className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Task History ({tasks.length})</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Tool Workspace Header Card */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 text-white shadow-md relative overflow-hidden">
+            <div className="flex items-start sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-indigo-600/30 border border-indigo-500/30 flex items-center justify-center text-indigo-300 shrink-0">
+                  <CurrentToolIcon className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-bold tracking-tight">{currentTool.title}</h2>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {currentTool.phase}
                     </span>
                   </div>
-                  <h3 className="font-semibold text-slate-800 text-sm">{tool.title}</h3>
-                  <p className="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                    {tool.desc}
+                  <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+                    {currentTool.desc}
                   </p>
                 </div>
+              </div>
 
-                <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>{isAvailable ? 'Ready to use' : 'Under Development'}</span>
-                  {isSelected && <span className="font-medium text-indigo-600">Active</span>}
-                </div>
+              <button
+                type="button"
+                onClick={navigateToOverview}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700/60 transition-colors cursor-pointer shrink-0"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Switch Tool</span>
               </button>
-            );
-          })}
-        </div>
-      </div>
+            </div>
+          </div>
 
-      {/* Main Studio Viewport */}
+          {/* Main Studio Viewport */}
       {selectedTool === 'video_to_audio' ? (
         /* Video to Audio Studio (Phase 13E.1) */
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -4536,155 +4992,314 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
           </div>
         </div>
       ) : null}
-
-      {/* Task Workspace History Section */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-          <div className="flex items-center gap-2">
-            <h3 className="font-bold text-slate-900 text-base">Media Toolkit Workspace History</h3>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">
-              {tasks.length}
-            </span>
-          </div>
-
-          <button
-            onClick={fetchTasks}
-            disabled={tasksLoading}
-            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
-            title="Refresh history"
-          >
-            <RefreshCw className={`w-4 h-4 ${tasksLoading ? 'animate-spin' : ''}`} />
-          </button>
         </div>
+      )}
 
-        {tasks.length === 0 ? (
-          <div className="text-center py-8 text-slate-400 text-xs">
-            No media tasks yet. Generated files and transcripts will appear here for review and download.
+      {/* ======================================================== */}
+      {/* VIEW 3: FULL TASK HISTORY (viewMode === 'history')        */}
+      {/* ======================================================== */}
+      {viewMode === 'history' && (
+        <div className="space-y-6">
+          {/* Breadcrumb Navigation Bar */}
+          <div className="flex items-center justify-between bg-white border border-slate-200/90 rounded-2xl px-5 py-3.5 shadow-xs">
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={navigateToOverview}
+                className="inline-flex items-center gap-1.5 font-bold text-slate-700 hover:text-indigo-600 transition-colors cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>All Tools</span>
+              </button>
+              <span className="text-slate-300">/</span>
+              <button
+                type="button"
+                onClick={navigateToOverview}
+                className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+              >
+                Media Toolkit
+              </button>
+              <span className="text-slate-300">/</span>
+              <span className="font-semibold text-slate-900">Task History</span>
+            </div>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-100 text-slate-400 font-semibold uppercase tracking-wider">
-                  <th className="py-2.5 px-3">Date</th>
-                  <th className="py-2.5 px-3">Tool Type</th>
-                  <th className="py-2.5 px-3">Source Media</th>
-                  <th className="py-2.5 px-3">Format</th>
-                  <th className="py-2.5 px-3">Duration</th>
-                  <th className="py-2.5 px-3">Status</th>
-                  <th className="py-2.5 px-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
-                {tasks.map((task) => (
-                  <tr
-                    key={task.id}
-                    onClick={() => handleSelectTask(task)}
-                    className={`hover:bg-slate-50/70 transition-colors cursor-pointer ${
-                      activeTask?.id === task.id ? 'bg-indigo-50/30' : ''
-                    }`}
+
+          {/* History Header & Summary Cards */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2.5">
+                  <History className="w-6 h-6 text-indigo-600" />
+                  Media Toolkit Task History
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Persistent log of all extraction, speech synthesis, transcription, and translation operations.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={fetchTasks}
+                  disabled={tasksLoading}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${tasksLoading ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Stat Badges */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <div className="text-slate-400 font-medium">Total Tasks</div>
+                <div className="text-xl font-bold text-slate-900 mt-0.5">{tasks.length}</div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-200/80">
+                <div className="text-emerald-700 font-medium">Completed</div>
+                <div className="text-xl font-bold text-emerald-800 mt-0.5">
+                  {tasks.filter((t) => t.status === 'completed').length}
+                </div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-200/80">
+                <div className="text-indigo-700 font-medium">Processing</div>
+                <div className="text-xl font-bold text-indigo-800 mt-0.5">
+                  {tasks.filter((t) => t.status === 'processing').length}
+                </div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-rose-50/60 border border-rose-200/80">
+                <div className="text-rose-700 font-medium">Failed</div>
+                <div className="text-xl font-bold text-rose-800 mt-0.5">
+                  {tasks.filter((t) => t.status === 'failed').length}
+                </div>
+              </div>
+            </div>
+
+            {/* Filter & Search Bar */}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 pt-2">
+              {/* Search input */}
+              <div className="sm:col-span-5 relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                  placeholder="Search by filename, format, or task ID..."
+                  className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                />
+              </div>
+
+              {/* Tool Type Filter */}
+              <div className="sm:col-span-3">
+                <select
+                  value={historyToolFilter}
+                  onChange={(e) => setHistoryToolFilter(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                >
+                  <option value="all">All Tool Types</option>
+                  <option value="video_to_audio">Video to Audio</option>
+                  <option value="video_to_transcript">Video to Transcript</option>
+                  <option value="video_to_text">Video to Text</option>
+                  <option value="audio_to_transcript">Audio to Transcript</option>
+                  <option value="audio_to_text">Audio to Text</option>
+                  <option value="text_to_speech">Text to Speech</option>
+                  <option value="transcript_to_audio">Transcript to Audio</option>
+                  <option value="text_translation">Translation Studio</option>
+                  <option value="subtitle_conversion">Subtitle Converter</option>
+                </select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="sm:col-span-2">
+                <select
+                  value={historyStatusFilter}
+                  onChange={(e) => setHistoryStatusFilter(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="completed">Completed</option>
+                  <option value="processing">Processing</option>
+                  <option value="failed">Failed</option>
+                </select>
+              </div>
+
+              {/* Sort Order */}
+              <div className="sm:col-span-2">
+                <button
+                  type="button"
+                  onClick={() => setHistorySortOrder(historySortOrder === 'desc' ? 'asc' : 'desc')}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  {historySortOrder === 'desc' ? (
+                    <>
+                      <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Newest First</span>
+                    </>
+                  ) : (
+                    <>
+                      <ArrowUp className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Oldest First</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Table */}
+            {filteredTasks.length === 0 ? (
+              <div className="text-center py-12 text-slate-400 text-xs space-y-2">
+                <p>No tasks match the selected criteria.</p>
+                {(historySearch || historyToolFilter !== 'all' || historyStatusFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHistorySearch('');
+                      setHistoryToolFilter('all');
+                      setHistoryStatusFilter('all');
+                    }}
+                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 underline cursor-pointer"
                   >
-                    <td className="py-3 px-3 text-slate-400 whitespace-nowrap">
-                      {new Date(task.created_at).toLocaleDateString()}{' '}
-                      {new Date(task.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </td>
-                    <td className="py-3 px-3 whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
-                        {getToolTitle(task.tool_type)}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 font-medium text-slate-900 max-w-[200px] truncate" title={task.source_filename}>
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate">{task.source_filename}</span>
-                        {task.is_outdated && (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 shrink-0">
-                            Outdated
+                    Reset Filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-slate-400 font-semibold uppercase tracking-wider">
+                      <th className="py-2.5 px-3">Date</th>
+                      <th className="py-2.5 px-3">Tool Type</th>
+                      <th className="py-2.5 px-3">Source Media</th>
+                      <th className="py-2.5 px-3">Format</th>
+                      <th className="py-2.5 px-3">Duration</th>
+                      <th className="py-2.5 px-3">Status</th>
+                      <th className="py-2.5 px-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {filteredTasks.map((task) => (
+                      <tr
+                        key={task.id}
+                        onClick={() => handleSelectTask(task)}
+                        className={`hover:bg-slate-50/70 transition-colors cursor-pointer ${
+                          activeTask?.id === task.id ? 'bg-indigo-50/30' : ''
+                        }`}
+                      >
+                        <td className="py-3 px-3 text-slate-400 whitespace-nowrap">
+                          {new Date(task.created_at).toLocaleDateString()}{' '}
+                          {new Date(task.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
+                            {getToolTitle(task.tool_type)}
                           </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3 px-3">
-                      <span className="font-semibold uppercase px-2 py-0.5 rounded text-[10px] bg-slate-100 text-slate-700">
-                        {task.target_format}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 whitespace-nowrap">
-                      {formatDuration(task.output_duration_seconds)}
-                    </td>
-                    <td className="py-3 px-3 whitespace-nowrap">
-                      {task.status === 'completed' && (
-                        <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Done
-                        </span>
-                      )}
-                      {task.status === 'processing' && (
-                        <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing
-                        </span>
-                      )}
-                      {task.status === 'failed' && (
-                        <span className="inline-flex items-center gap-1 text-rose-600 font-medium" title={task.error_message || ''}>
-                          <AlertCircle className="w-3.5 h-3.5" /> Failed
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center justify-end gap-1.5">
-                        {task.status === 'completed' && (
-                          <>
-                            {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio') && (
-                              <button
-                                onClick={() => {
-                                  setActiveTask(task);
-                                  handleTogglePlay(task.id);
-                                }}
-                                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
-                                title="Play/Pause Audio"
-                              >
-                                {playingTaskId === task.id ? (
-                                  <Pause className="w-4 h-4 text-indigo-600" />
-                                ) : (
-                                  <Play className="w-4 h-4" />
+                        </td>
+                        <td className="py-3 px-3 font-medium text-slate-900 max-w-[200px] truncate" title={task.source_filename}>
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate">{task.source_filename}</span>
+                            {task.is_outdated && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 shrink-0">
+                                Outdated
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3 px-3">
+                          <span className="font-semibold uppercase px-2 py-0.5 rounded text-[10px] bg-slate-100 text-slate-700">
+                            {task.target_format}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          {formatDuration(task.output_duration_seconds)}
+                        </td>
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          {task.status === 'completed' && (
+                            <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Done
+                            </span>
+                          )}
+                          {task.status === 'processing' && (
+                            <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing
+                            </span>
+                          )}
+                          {task.status === 'failed' && (
+                            <span className="inline-flex items-center gap-1 text-rose-600 font-medium" title={task.error_message || ''}>
+                              <AlertCircle className="w-3.5 h-3.5" /> Failed
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenTaskInWorkspace(task)}
+                              className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer mr-1"
+                              title="Open task in workspace"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Open Task</span>
+                            </button>
+
+                            {task.status === 'completed' && (
+                              <>
+                                {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio') && (
+                                  <button
+                                    onClick={() => {
+                                      setActiveTask(task);
+                                      handleTogglePlay(task.id);
+                                    }}
+                                    className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                                    title="Play/Pause Audio"
+                                  >
+                                    {playingTaskId === task.id ? (
+                                      <Pause className="w-4 h-4 text-indigo-600" />
+                                    ) : (
+                                      <Play className="w-4 h-4" />
+                                    )}
+                                  </button>
                                 )}
-                              </button>
+
+                                <a
+                                  href={api.getToolkitAudioDownloadUrl(task.id)}
+                                  download
+                                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                  title="Download Output File"
+                                >
+                                  <Download className="w-4 h-4" />
+                                </a>
+
+                                <a
+                                  href={api.getTaskBundleUrl(task.id)}
+                                  download={`${task.source_filename || 'task'}_bundle.zip`}
+                                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                                  title="Download All (ZIP Bundle)"
+                                >
+                                  <Archive className="w-4 h-4" />
+                                </a>
+                              </>
                             )}
 
-                            <a
-                              href={api.getToolkitAudioDownloadUrl(task.id)}
-                              download
-                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
-                              title="Download Output File"
+                            <button
+                              onClick={() => handleDeleteTask(task)}
+                              className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                              title="Delete Task"
                             >
-                              <Download className="w-4 h-4" />
-                            </a>
-
-                            <a
-                              href={api.getTaskBundleUrl(task.id)}
-                              download={`${task.source_filename || 'task'}_bundle.zip`}
-                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
-                              title="Download All (ZIP Bundle)"
-                            >
-                              <Archive className="w-4 h-4" />
-                            </a>
-                          </>
-                        )}
-
-                        <button
-                          onClick={() => handleDeleteTask(task)}
-                          className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
-                          title="Delete Task"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Delete Confirmation Modal for Toolkit Task / Project */}
       <DeleteToolkitTaskModal
