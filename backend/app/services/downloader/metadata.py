@@ -52,7 +52,8 @@ def _fetch_yt_dlp_metadata(url: str, platform: str) -> Dict[str, Any]:
         "noplaylist": True,
         "no_warnings": True,
         "quiet": True,
-        "socket_timeout": 15,
+        "socket_timeout": 30,
+        "retries": 5,
         "no_color": True,
         "no_cookies": True,
     }

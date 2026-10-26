@@ -400,27 +400,65 @@ def _download_yt_dlp(
         "noplaylist": True,
         "no_warnings": True,
         "quiet": True,
-        "socket_timeout": 30,
+        "socket_timeout": 60,
+        "retries": 15,
+        "fragment_retries": 15,
+        "file_access_retries": 5,
+        "http_chunk_size": 10485760,  # 10MB chunking prevents YouTube CDN streaming throttling & dropping
+        "buffersize": 1024 * 64,       # 64KB buffer prevents socket read starvation
+        "continuedl": True,            # Resume partially downloaded .part files
         "no_cookies": True,
         "concurrent_fragment_downloads": 1,
         "hls_prefer_native": True,
         "progress_hooks": [_hook],
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except DownloadCancelledException:
-        raise
-    except DownloadLimitExceededError:
-        raise
-    except yt_dlp.utils.DownloadError as e:
-        err = str(e)
-        logger.warning("yt-dlp download failed for %s: %s", url, err)
-        raise VideoDownloadError(f"Download failed: {err.split(';')[-1].strip()}")
-    except Exception as e:
-        logger.error("Unexpected yt-dlp failure: %s", e)
-        raise VideoDownloadError(f"Download engine error: {e}") from e
+    max_network_retries = 3
+    for attempt in range(1, max_network_retries + 1):
+        if cancel_event.is_set():
+            raise DownloadCancelledException("Download cancelled by user.")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            break  # Download succeeded!
+        except DownloadCancelledException:
+            raise
+        except DownloadLimitExceededError:
+            raise
+        except yt_dlp.utils.DownloadError as e:
+            err = str(e)
+            is_transient = any(phrase in err.lower() for phrase in [
+                "timed out", "read timeout", "timeout", "connection reset",
+                "remotedisconnected", "network is unreachable", "temporary failure",
+                "broken pipe", "connection refused", "503", "502", "504", "429",
+                "httpsconnectionpool",
+            ])
+            if is_transient and attempt < max_network_retries:
+                logger.warning(
+                    "Transient download timeout/error for %s (attempt %d/%d): %s. Resuming in %ds...",
+                    url, attempt, max_network_retries, err, attempt * 2
+                )
+                progress_callback({
+                    "status": "processing",
+                    "stage": "downloading",
+                    "detail": f"Network timeout detected. Resuming download (attempt {attempt + 1}/{max_network_retries})...",
+                })
+                time.sleep(attempt * 2)
+                continue
+            else:
+                logger.warning("yt-dlp download failed for %s: %s", url, err)
+                raise VideoDownloadError(f"Download failed: {err.split(';')[-1].strip()}")
+        except Exception as e:
+            err = str(e)
+            is_transient = any(phrase in err.lower() for phrase in [
+                "timed out", "read timeout", "connection reset", "remotedisconnected", "httpsconnectionpool"
+            ])
+            if is_transient and attempt < max_network_retries:
+                logger.warning("Transient error on %s: %s. Resuming...", url, e)
+                time.sleep(attempt * 2)
+                continue
+            logger.error("Unexpected yt-dlp failure: %s", e)
+            raise VideoDownloadError(f"Download engine error: {e}") from e
 
     # Find the downloaded file
     candidates = list(dest_dir.glob(f"raw_download_{task_id}.*"))
@@ -466,7 +504,7 @@ def _download_direct_media(
     try:
         with httpx.Client(
             follow_redirects=True,
-            timeout=30.0,
+            timeout=httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=15.0),
             headers=headers,
             event_hooks={"response": [_check_redirect]},
         ) as client:
