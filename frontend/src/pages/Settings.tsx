@@ -230,7 +230,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
   const gpuCleanLabel = rawGpuLabel.replace('VoxCPM2 — ', '');
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto">
+    <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Settings Header */}
       <div>
         <h2 className="text-xl font-bold text-slate-900">Platform Settings</h2>
