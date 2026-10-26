@@ -49,6 +49,8 @@ class DubbingPipeline:
         db: Session,
         on_progress: Optional[Callable[[int, str], None]] = None,
         strict_validation: bool = True,
+        max_tempo_factor: Optional[float] = None,
+        trim_silence: bool = False,
     ) -> DubbingPipelineResult:
         """Execute end-to-end synchronization and export for a project."""
         def report(pct: int, msg: str):
@@ -128,6 +130,8 @@ class DubbingPipeline:
             target_duration=video_dur,
             output_timeline_path=timeline_path,
             strict_validation=strict_validation,
+            max_tempo_factor=max_tempo_factor,
+            trim_silence=trim_silence,
         )
 
         report(75, "Remuxing video with synchronized Khmer audio timeline...")

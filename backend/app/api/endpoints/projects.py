@@ -110,6 +110,7 @@ from app.services.transcription.segmentation import (
 from app.workers.translation import process_translation
 from app.workers.tts import process_tts, synthesize_segment_audio
 from app.workers.dubbing import process_dubbing
+from app.services.dubbing import AutoFitService
 
 logger = logging.getLogger(__name__)
 
@@ -1916,6 +1917,8 @@ def stream_audio_segment(
 def start_dubbing_export(
     project_id: str,
     background_tasks: BackgroundTasks,
+    max_tempo: float = Query(1.25, ge=1.0, le=2.0),
+    trim_silence: bool = Query(True),
     db: Session = Depends(get_db),
 ) -> ProcessingJobResponse:
     """Trigger background audio synchronization and dubbed video export."""
@@ -1995,13 +1998,20 @@ def start_dubbing_export(
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(process_dubbing, project_id, job.id)
+    background_tasks.add_task(
+        process_dubbing,
+        project_id,
+        job.id,
+        max_tempo_factor=max_tempo,
+        trim_silence=trim_silence,
+    )
     return job
 
 
 @router.get("/{project_id}/export/status", response_model=ExportStatusResponse)
 def get_export_status(
     project_id: str,
+    max_tempo: float = Query(1.25, ge=1.0, le=2.0),
     db: Session = Depends(get_db),
 ) -> ExportStatusResponse:
     """Check export readiness, current job status, timing conflicts, and media details."""
@@ -2061,8 +2071,8 @@ def get_export_status(
                     safety_margin = 0.05
                     effective_window = max(0.05, round(avail_window - safety_margin, 3))
                     required_tempo = round(raw_dur / effective_window, 2)
-                    if required_tempo > 1.25:
-                        adjusted_est = raw_dur / 1.25
+                    if required_tempo > max_tempo:
+                        adjusted_est = raw_dur / max_tempo
                         overflow = round(adjusted_est - effective_window, 2)
                         if overflow > 0.05:
                             est_words = max(1, math.ceil(overflow / 0.35))
@@ -2082,14 +2092,14 @@ def get_export_status(
                                     effective_window=round(effective_window, 2),
                                     safety_margin_seconds=safety_margin,
                                     required_tempo=required_tempo,
-                                    max_tempo_factor=1.25,
-                                    tempo_factor=1.25,
+                                    max_tempo_factor=max_tempo,
+                                    tempo_factor=max_tempo,
                                     overflow_seconds=overflow,
                                     suggested_action=action,
                                     message=(
                                         f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
                                         f"({avail_window:.2f}s raw, {effective_window:.2f}s effective with {int(safety_margin * 1000)}ms safety margin) "
-                                        f"by {overflow:.1f}s even at 1.25x speed. "
+                                        f"by {overflow:.1f}s even at {max_tempo}x speed. "
                                         f"{action}"
                                     ),
                                 )
@@ -2111,6 +2121,29 @@ def get_export_status(
         video_url=video_url,
         download_url=download_url,
     )
+
+
+@router.post("/{project_id}/dubbing/auto-fit", response_model=ExportStatusResponse)
+def auto_fit_project_timing(
+    project_id: str,
+    max_tempo: float = Query(1.25, ge=1.0, le=2.0),
+    db: Session = Depends(get_db),
+) -> ExportStatusResponse:
+    """Automatically shorten Khmer translations and re-synthesize speech to fit within video timestamps."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Project is already in the process of being deleted",
+        )
+
+    auto_fit_service = AutoFitService()
+    auto_fit_service.auto_fit_project(project_id, db, max_tempo=max_tempo)
+
+    return get_export_status(project_id=project_id, max_tempo=max_tempo, db=db)
 
 
 @router.api_route("/{project_id}/export/video", methods=["GET", "HEAD"])

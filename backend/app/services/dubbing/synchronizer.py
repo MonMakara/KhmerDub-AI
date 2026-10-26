@@ -114,6 +114,33 @@ class AudioSynchronizationService:
             raise RuntimeError(f"FFmpeg failed to standardize audio {input_audio}: {res.stderr}")
         return output_path
 
+    def trim_audio_silence(self, input_audio: Path, output_path: Path) -> Path:
+        """Trim excessive silence padding from start and end of generated TTS audio without clipping speech."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        is_same = (input_audio.resolve() == output_path.resolve())
+        target_path = output_path.with_suffix(".trim_tmp.wav") if is_same else output_path
+
+        cmd = [
+            self.ffmpeg_bin,
+            "-y",
+            "-i", str(input_audio),
+            "-af", "silenceremove=start_periods=1:start_duration=0.03:start_threshold=-40dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=-40dB:detection=peak,areverse",
+            "-acodec", "pcm_s16le",
+            "-ar", str(self.sample_rate),
+            "-ac", str(self.channels),
+            str(target_path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            if is_same and target_path.exists():
+                target_path.unlink()
+            return self.convert_to_standard_wav(input_audio, output_path)
+
+        if is_same:
+            target_path.replace(output_path)
+
+        return output_path
+
     def adjust_tempo(self, input_audio: Path, output_path: Path, tempo_factor: float) -> Path:
         """Adjust speech tempo using FFmpeg's atempo filter without altering pitch."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,11 +168,14 @@ class AudioSynchronizationService:
         target_duration: float,
         output_timeline_path: Path,
         strict_validation: bool = True,
+        max_tempo_factor: Optional[float] = None,
+        trim_silence: bool = False,
     ) -> SynchronizationResult:
         """Align speech segments onto a unified timeline WAV matching target video duration."""
         if not segment_items:
             raise ValueError("No speech segments provided for synchronization.")
 
+        active_max_tempo = float(max_tempo_factor) if max_tempo_factor is not None else self.max_tempo_factor
         output_timeline_path.parent.mkdir(parents=True, exist_ok=True)
         work_dir = output_timeline_path.parent / f"sync_tmp_{project_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -185,7 +215,15 @@ class AudioSynchronizationService:
                         f"Generated audio file missing for segment {t_seg.segment_order} at {audio_path}"
                     )
 
-                raw_dur = self.video_processor.get_audio_duration(audio_path)
+                if trim_silence:
+                    trimmed_src = work_dir / f"trimmed_src_{idx}.wav"
+                    self.trim_audio_silence(audio_path, trimmed_src)
+                    source_for_piece = trimmed_src
+                    raw_dur = self.video_processor.get_audio_duration(trimmed_src)
+                else:
+                    source_for_piece = audio_path
+                    raw_dur = self.video_processor.get_audio_duration(audio_path)
+
                 if raw_dur <= 0.0:
                     raw_dur = float(audio_rec.duration_seconds or 1.0)
 
@@ -200,7 +238,7 @@ class AudioSynchronizationService:
                     pause_left = avail_window - raw_dur
                     if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
                         target_dur = max(orig_dur, avail_window - 0.2)
-                        tempo = min(self.max_tempo_factor, max(1.0, round(raw_dur / target_dur, 2)))
+                        tempo = min(active_max_tempo, max(1.0, round(raw_dur / target_dur, 2)))
                     else:
                         tempo = 1.0
                     required_tempo = 1.0
@@ -209,10 +247,10 @@ class AudioSynchronizationService:
                     effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
                     required_tempo = round(raw_dur / effective_window, 2)
 
-                    if required_tempo <= self.max_tempo_factor:
+                    if required_tempo <= active_max_tempo:
                         tempo = required_tempo
                     else:
-                        tempo = self.max_tempo_factor
+                        tempo = active_max_tempo
                         adjusted_est = raw_dur / tempo
                         overflow = round(adjusted_est - effective_window, 2)
                         if overflow > 0.05:
@@ -233,7 +271,7 @@ class AudioSynchronizationService:
                                     effective_window=round(effective_window, 2),
                                     safety_margin_seconds=round(self.safety_margin_seconds, 3),
                                     required_tempo=required_tempo,
-                                    max_tempo_factor=self.max_tempo_factor,
+                                    max_tempo_factor=active_max_tempo,
                                     tempo_factor=tempo,
                                     overflow_seconds=overflow,
                                     suggested_action=action,
@@ -251,7 +289,7 @@ class AudioSynchronizationService:
                     "t_seg": t_seg,
                     "trans_seg": trans_seg,
                     "audio_rec": audio_rec,
-                    "audio_path": audio_path,
+                    "audio_path": source_for_piece,
                     "start_time": start_time,
                     "raw_dur": raw_dur,
                     "tempo": tempo,
@@ -367,14 +405,17 @@ class AudioSynchronizationService:
         output_timeline_path: Path,
         target_duration: Optional[float] = None,
         strict_validation: bool = False,
+        max_tempo_factor: Optional[float] = None,
+        trim_silence: bool = False,
     ) -> SynchronizationResult:
         """Align arbitrary timed audio segments onto a timeline WAV matching target timestamps.
-        Applies up to max_tempo_factor (1.25x) tempo adjustment without silent truncation,
+        Applies up to max_tempo_factor tempo adjustment without silent truncation,
         inserts precise silence gaps, detects timing overflows, and generates a unified timeline.
         """
         if not segments:
             raise ValueError("No speech segments provided for timed synchronization.")
 
+        active_max_tempo = float(max_tempo_factor) if max_tempo_factor is not None else self.max_tempo_factor
         output_timeline_path.parent.mkdir(parents=True, exist_ok=True)
         work_dir = output_timeline_path.parent / f"sync_timed_{task_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -414,7 +455,15 @@ class AudioSynchronizationService:
                 if not audio_path.exists() or audio_path.stat().st_size == 0:
                     raise FileNotFoundError(f"Segment audio file missing at {audio_path}")
 
-                raw_dur = self.video_processor.get_audio_duration(audio_path)
+                if trim_silence:
+                    trimmed_src = work_dir / f"trimmed_timed_{idx}.wav"
+                    self.trim_audio_silence(audio_path, trimmed_src)
+                    source_for_piece = trimmed_src
+                    raw_dur = self.video_processor.get_audio_duration(trimmed_src)
+                else:
+                    source_for_piece = audio_path
+                    raw_dur = self.video_processor.get_audio_duration(audio_path)
+
                 if raw_dur <= 0.0:
                     raw_dur = float(seg.get("duration_seconds", 1.0))
 
@@ -428,17 +477,17 @@ class AudioSynchronizationService:
                     pause_left = avail_window - raw_dur
                     if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
                         target_dur = max(orig_dur, avail_window - 0.2)
-                        tempo = min(self.max_tempo_factor, max(1.0, round(raw_dur / target_dur, 2)))
+                        tempo = min(active_max_tempo, max(1.0, round(raw_dur / target_dur, 2)))
                     else:
                         tempo = 1.0
                     required_tempo = 1.0
                 else:
                     effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
                     required_tempo = round(raw_dur / effective_window, 2)
-                    if required_tempo <= self.max_tempo_factor:
+                    if required_tempo <= active_max_tempo:
                         tempo = required_tempo
                     else:
-                        tempo = self.max_tempo_factor
+                        tempo = active_max_tempo
                         adjusted_est = raw_dur / tempo
                         overflow = round(adjusted_est - effective_window, 2)
                         if overflow > 0.05:
@@ -459,7 +508,7 @@ class AudioSynchronizationService:
                                     effective_window=round(effective_window, 2),
                                     safety_margin_seconds=round(self.safety_margin_seconds, 3),
                                     required_tempo=required_tempo,
-                                    max_tempo_factor=self.max_tempo_factor,
+                                    max_tempo_factor=active_max_tempo,
                                     tempo_factor=tempo,
                                     overflow_seconds=overflow,
                                     suggested_action=action,
@@ -474,7 +523,7 @@ class AudioSynchronizationService:
                 analyzed_segments.append({
                     "idx": idx,
                     "seg_order": seg_order,
-                    "audio_path": audio_path,
+                    "audio_path": source_for_piece,
                     "start_time": start_time,
                     "raw_dur": raw_dur,
                     "tempo": tempo,

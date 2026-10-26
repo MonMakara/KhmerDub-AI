@@ -72,6 +72,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
   const [isGeneratingVoice, setIsGeneratingVoice] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isAutoFitting, setIsAutoFitting] = useState<boolean>(false);
 
   // Errors
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -518,6 +519,21 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     }
   };
 
+  const handleAutoFitConflicts = async () => {
+    setIsAutoFitting(true);
+    try {
+      await api.autoFitDubbing(projectId);
+      await Promise.all([
+        fetchProjectData(),
+        fetchExportData(),
+      ]);
+    } catch (err: any) {
+      alert(`Auto-fit timing failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsAutoFitting(false);
+    }
+  };
+
   const handleSeekVideo = (timestamp: number) => {
     if (videoPlayerRef.current) {
       videoPlayerRef.current.seekTo(timestamp);
@@ -775,6 +791,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             onExportVideo={handleExportVideo}
             onOpenAIImprove={(seg) => setActiveAIModalSegment(seg)}
             exportError={exportError}
+            onAutoFitConflicts={handleAutoFitConflicts}
+            isAutoFitting={isAutoFitting}
           />
         )}
       </div>

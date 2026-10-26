@@ -16,7 +16,13 @@ from app.services.dubbing.synchronizer import TimingConflictError
 logger = logging.getLogger(__name__)
 
 
-def process_dubbing(project_id: str, job_id: str, db: Optional[Session] = None) -> None:
+def process_dubbing(
+    project_id: str,
+    job_id: str,
+    db: Optional[Session] = None,
+    max_tempo_factor: Optional[float] = None,
+    trim_silence: bool = False,
+) -> None:
     """Background worker for audio synchronization and dubbed video export."""
     should_close = False
     if db is None:
@@ -51,6 +57,8 @@ def process_dubbing(project_id: str, job_id: str, db: Optional[Session] = None) 
             project_id=project_id,
             db=db,
             on_progress=on_progress,
+            max_tempo_factor=max_tempo_factor,
+            trim_silence=trim_silence,
         )
 
         job.progress_percentage = 100

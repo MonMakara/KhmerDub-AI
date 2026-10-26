@@ -40,6 +40,7 @@ class VideoExportService:
         video_path: Path,
         expected_duration: Optional[float] = None,
         tolerance_seconds: float = 0.15,
+        original_video_path: Optional[Path] = None,
     ) -> ExportResult:
         """Inspect and verify that exported MP4 contains valid video and audio streams,
         and optionally verify duration against expected duration within tolerance.
@@ -102,7 +103,31 @@ class VideoExportService:
                     f"(difference: {diff_audio:.3f}s exceeds {tolerance_seconds:.2f}s tolerance)."
                 )
 
-            if diff_video > tolerance_seconds:
+            video_matches = (diff_video <= tolerance_seconds)
+            # If video track length differs slightly from container expected duration,
+            # verify against source video's actual video track duration to ensure 100% fidelity
+            if not video_matches and original_video_path and original_video_path.exists():
+                try:
+                    cmd_orig = [
+                        self.ffprobe_bin,
+                        "-v", "error",
+                        "-show_entries", "stream=codec_type,duration",
+                        "-of", "json",
+                        str(original_video_path),
+                    ]
+                    res_orig = subprocess.run(cmd_orig, capture_output=True, text=True, check=False)
+                    if res_orig.returncode == 0:
+                        data_orig = json.loads(res_orig.stdout)
+                        for s in data_orig.get("streams", []):
+                            if s.get("codec_type") == "video":
+                                orig_vdur = float(s.get("duration", 0.0))
+                                if orig_vdur > 0.0 and abs(video_dur - orig_vdur) <= tolerance_seconds:
+                                    video_matches = True
+                                    break
+                except Exception:
+                    pass
+
+            if not video_matches:
                 raise VideoProcessingError(
                     f"Exported video duration mismatch: video stream is {video_dur:.3f}s, expected {expected_duration:.3f}s "
                     f"(difference: {diff_video:.3f}s exceeds {tolerance_seconds:.2f}s tolerance)."
@@ -184,6 +209,7 @@ class VideoExportService:
                 temp_output_path,
                 expected_duration=expected_duration,
                 tolerance_seconds=tolerance_seconds,
+                original_video_path=video_path,
             )
             # Atomically publish to final destination
             shutil.move(str(temp_output_path), str(output_video_path))

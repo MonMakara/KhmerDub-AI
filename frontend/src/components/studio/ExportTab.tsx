@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Sparkles,
   Subtitles,
+  Wand2,
 } from 'lucide-react';
 import {
   ProjectDetail,
@@ -25,6 +26,8 @@ interface ExportTabProps {
   onExportVideo: () => Promise<void>;
   onOpenAIImprove: (segment: TranslationSegment) => void;
   exportError?: string | null;
+  onAutoFitConflicts?: () => Promise<void>;
+  isAutoFitting?: boolean;
 }
 
 export const ExportTab: React.FC<ExportTabProps> = ({
@@ -36,6 +39,8 @@ export const ExportTab: React.FC<ExportTabProps> = ({
   onExportVideo,
   onOpenAIImprove,
   exportError,
+  onAutoFitConflicts,
+  isAutoFitting = false,
 }) => {
   const isVideoReady = Boolean(project.video?.file_path || project.original_video_path);
   const isAudioExtracted = project.status !== 'uploaded' && project.status !== 'created';
@@ -158,15 +163,38 @@ export const ExportTab: React.FC<ExportTabProps> = ({
 
       {/* Timing Conflicts Details Card (if any) */}
       {hasTimingConflicts && (
-        <div className="p-5 rounded-2xl bg-amber-50/70 border border-amber-300 text-xs space-y-3">
-          <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-            <span>{timingConflicts.length} Speech Timing Conflict(s) Detected</span>
+        <div className="p-5 rounded-2xl bg-amber-50/70 border border-amber-300 text-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>{timingConflicts.length} Speech Timing Conflict(s) Detected</span>
+            </div>
+
+            {onAutoFitConflicts && (
+              <button
+                onClick={onAutoFitConflicts}
+                disabled={isAutoFitting || isExporting}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 shrink-0"
+                title="Automatically shorten translations and re-synthesize speech to fit original video timing"
+              >
+                {isAutoFitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Auto-Fitting Timing Conflicts...</span>
+                  </>
+                ) : (
+                  <>
+                    <Wand2 className="w-3.5 h-3.5" />
+                    <span>Auto-Fit All Timing Conflicts</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
 
           <p className="text-amber-800 leading-relaxed">
             The following speech segments take longer to pronounce in Khmer than the original English video speech slot.
-            Per project architecture, silent truncation is prevented. Please shorten the Khmer translation or apply an AI Shorten suggestion.
+            Per project architecture, silent truncation is prevented. You can click <strong>Auto-Fit All Timing Conflicts</strong> to automatically optimize phrasing and speech timing, or shorten individual segments below.
           </p>
 
           <div className="space-y-2 pt-1">

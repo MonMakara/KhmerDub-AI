@@ -6,6 +6,7 @@ from app.services.dubbing.synchronizer import (
 )
 from app.services.dubbing.exporter import VideoExportService, ExportResult
 from app.services.dubbing.pipeline import DubbingPipeline, DubbingPipelineResult
+from app.services.dubbing.auto_fit import AutoFitService, shorten_khmer_text
 
 __all__ = [
     "AudioSynchronizationService",
@@ -16,4 +17,6 @@ __all__ = [
     "ExportResult",
     "DubbingPipeline",
     "DubbingPipelineResult",
+    "AutoFitService",
+    "shorten_khmer_text",
 ]

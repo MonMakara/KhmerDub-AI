@@ -479,6 +479,17 @@ export const api = {
     return res.json();
   },
 
+  async autoFitDubbing(projectId: string, maxTempo: number = 1.25): Promise<ExportStatusResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/dubbing/auto-fit?max_tempo=${maxTempo}`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Auto-fit failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
   async getExportStatus(projectId: string): Promise<ExportStatusResponse> {
     const res = await fetch(`${API_BASE}/projects/${projectId}/export/status`);
     if (!res.ok) {
