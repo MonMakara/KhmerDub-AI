@@ -34,6 +34,10 @@ import {
   TranslationLanguagePair,
   SubtitleConvertResponse,
   TranslationProviderInfo,
+  VideoDownloaderMetadata,
+  VideoDownloaderStartPayload,
+  VideoDownloaderImportDubbingPayload,
+  VideoDownloaderImportDubbingResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -1238,6 +1242,73 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Subtitle conversion failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  // ---------------- Video Downloader (Phase 13F) ----------------
+  async inspectDownloaderUrl(url: string): Promise<VideoDownloaderMetadata> {
+    const res = await fetch(`${API_BASE}/toolkit/downloader/info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to inspect video URL: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async startDownloaderTask(payload: VideoDownloaderStartPayload): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/downloader/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to start video download: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async cancelDownloaderTask(taskId: string): Promise<{ task_id: string; status: string; message: string }> {
+    const res = await fetch(`${API_BASE}/toolkit/downloader/${taskId}/cancel`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to cancel download: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async importDownloaderTaskToDubbing(
+    taskId: string,
+    payload?: VideoDownloaderImportDubbingPayload
+  ): Promise<VideoDownloaderImportDubbingResponse> {
+    const res = await fetch(`${API_BASE}/toolkit/downloader/${taskId}/import-dubbing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to import video into dubbing: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async handoffDownloaderTask(taskId: string, targetTool: string): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/downloader/${taskId}/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_tool: targetTool }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to transfer media to ${targetTool}: ${res.statusText}`);
     }
     return res.json();
   },

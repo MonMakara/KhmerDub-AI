@@ -17,3 +17,4 @@ gTTS>=2.5.0
 edge-tts>=6.1.10
 google-genai>=0.1.0
 cryptography>=38.0.0
+yt-dlp==2025.2.19

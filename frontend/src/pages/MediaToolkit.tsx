@@ -43,6 +43,8 @@ import {
   Volume2,
   ArrowUp,
   ArrowDown,
+  ShieldCheck,
+  Film,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { DeleteToolkitTaskModal } from '../components/common/DeleteToolkitTaskModal';
@@ -56,6 +58,7 @@ import {
   TranslationLanguagePair,
   SubtitleConvertResponse,
   TranslationProviderInfo,
+  VideoDownloaderMetadata,
 } from '../types';
 
 export type ToolkitViewMode = 'overview' | 'workspace' | 'history';
@@ -81,6 +84,8 @@ export const SLUG_TO_TOOL_ID: Record<string, string> = {
   'subtitle-converter': 'subtitle_conversion',
   'subtitle-conversion': 'subtitle_conversion',
   'subtitle_conversion': 'subtitle_conversion',
+  'video-downloader': 'video_downloader',
+  'video_downloader': 'video_downloader',
 };
 
 export const TOOL_ID_TO_SLUG: Record<string, string> = {
@@ -94,6 +99,7 @@ export const TOOL_ID_TO_SLUG: Record<string, string> = {
   'text_translation': 'translation',
   'translation': 'translation',
   'subtitle_conversion': 'subtitle-converter',
+  'video_downloader': 'video-downloader',
 };
 
 export const parseToolkitRoute = (hash: string): { mode: ToolkitViewMode; toolId?: string } => {
@@ -237,6 +243,21 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [convCopied, setConvCopied] = useState<boolean>(false);
   const convFileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Video Downloader State (Phase 13F)
+  const [downloaderUrl, setDownloaderUrl] = useState<string>('');
+  const [downloaderRightsConfirmed, setDownloaderRightsConfirmed] = useState<boolean>(false);
+  const [downloaderOutputType, setDownloaderOutputType] = useState<'video' | 'audio'>('video');
+  const [downloaderQuality, setDownloaderQuality] = useState<string>('best');
+  const [downloaderAudioFormat, setDownloaderAudioFormat] = useState<string>('mp3');
+  const [downloaderMeta, setDownloaderMeta] = useState<VideoDownloaderMetadata | null>(null);
+  const [downloaderInspecting, setDownloaderInspecting] = useState<boolean>(false);
+  const [downloaderStarting, setDownloaderStarting] = useState<boolean>(false);
+  const [downloaderActiveTaskId, setDownloaderActiveTaskId] = useState<string | null>(null);
+  const [downloaderActiveTask, setDownloaderActiveTask] = useState<ToolkitTask | null>(null);
+  const [downloaderCancelling, setDownloaderCancelling] = useState<boolean>(false);
+  const [downloaderImporting, setDownloaderImporting] = useState<boolean>(false);
+  const [downloaderHandoffLoading, setDownloaderHandoffLoading] = useState<string | null>(null);
+
   // Active Task & History
   const [activeTask, setActiveTask] = useState<ToolkitTask | null>(null);
   const [tasks, setTasks] = useState<ToolkitTask[]>([]);
@@ -341,7 +362,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const full = await api.getToolkitTask(task.id);
       setActiveTask(full);
       let targetTool = full.tool_type;
-      if (full.tool_type === 'transcript_translation') {
+      if (full.tool_type === 'video_downloader') {
+        targetTool = 'video_downloader';
+        setDownloaderActiveTask(full);
+        const sourceUrl = (full.source_media_metadata && (full.source_media_metadata as any).url) || (full.source_file_path && full.source_file_path.startsWith('http') ? full.source_file_path : '');
+        if (sourceUrl) {
+          setDownloaderUrl(sourceUrl);
+        }
+      } else if (full.tool_type === 'transcript_translation') {
         targetTool = 'text_translation';
         setTransMode('transcript');
       } else if (full.tool_type === 'text_translation' || full.tool_type === 'translation') {
@@ -362,6 +390,34 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   useEffect(() => {
     fetchTasks();
   }, [fetchTasks]);
+
+  // Video Downloader Polling (Phase 13F)
+  useEffect(() => {
+    if (!downloaderActiveTaskId) return;
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const task = await api.getToolkitTask(downloaderActiveTaskId);
+        if (!isMounted) return;
+        setDownloaderActiveTask(task);
+        if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
+          setDownloaderActiveTaskId(null);
+          fetchTasks();
+          if (task.status === 'completed') {
+            setActiveTask(task);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to poll download task status:', err);
+      }
+    }, 1000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [downloaderActiveTaskId, fetchTasks]);
 
   // Load TTS voices when language or tool changes (Phase 13E.3)
   const fetchTtsVoices = useCallback(async (lang: string) => {
@@ -1274,6 +1330,112 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     navigateToTool('transcript_to_audio');
   };
 
+  // Video Downloader Handlers (Phase 13F)
+  const handleInspectUrl = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!downloaderUrl.trim()) {
+      setError('Please enter a valid video link.');
+      return;
+    }
+    try {
+      setDownloaderInspecting(true);
+      setError(null);
+      setDownloaderMeta(null);
+      const meta = await api.inspectDownloaderUrl(downloaderUrl.trim());
+      setDownloaderMeta(meta);
+      if (meta.available_video_qualities.length > 0) {
+        setDownloaderQuality(meta.available_video_qualities[0]);
+      }
+      if (meta.is_audio_only_source) {
+        setDownloaderOutputType('audio');
+      }
+    } catch (err: any) {
+      console.error('Failed to inspect URL:', err);
+      setError(err.message || 'Unable to fetch video information.');
+    } finally {
+      setDownloaderInspecting(false);
+    }
+  };
+
+  const handleStartDownload = async () => {
+    if (!downloaderUrl.trim()) {
+      setError('Please enter a video URL.');
+      return;
+    }
+    if (!downloaderRightsConfirmed) {
+      setError('Please confirm that you have rights or permission to download this media.');
+      return;
+    }
+    try {
+      setDownloaderStarting(true);
+      setError(null);
+      const task = await api.startDownloaderTask({
+        url: downloaderUrl.trim(),
+        output_type: downloaderOutputType,
+        quality: downloaderQuality,
+        audio_format: downloaderAudioFormat,
+        rights_confirmed: downloaderRightsConfirmed,
+      });
+      setDownloaderActiveTask(task);
+      setDownloaderActiveTaskId(task.id);
+      setActiveTask(task);
+      fetchTasks();
+    } catch (err: any) {
+      console.error('Download start failed:', err);
+      setError(err.message || 'Failed to start video download.');
+    } finally {
+      setDownloaderStarting(false);
+    }
+  };
+
+  const handleCancelDownload = async (taskId: string) => {
+    try {
+      setDownloaderCancelling(true);
+      await api.cancelDownloaderTask(taskId);
+      setDownloaderActiveTaskId(null);
+      fetchTasks();
+      const updated = await api.getToolkitTask(taskId);
+      setDownloaderActiveTask(updated);
+    } catch (err: any) {
+      console.error('Failed to cancel download:', err);
+      setError(err.message || 'Failed to cancel download task.');
+    } finally {
+      setDownloaderCancelling(false);
+    }
+  };
+
+  const handleImportToDubbing = async (taskId: string) => {
+    try {
+      setDownloaderImporting(true);
+      setError(null);
+      const res = await api.importDownloaderTaskToDubbing(taskId);
+      if (res && res.project_id) {
+        window.location.hash = `project/${res.project_id}`;
+      }
+    } catch (err: any) {
+      console.error('Import to dubbing failed:', err);
+      setError(err.message || 'Failed to import video into dubbing studio.');
+    } finally {
+      setDownloaderImporting(false);
+    }
+  };
+
+  const handleHandoffDownloader = async (taskId: string, targetTool: string) => {
+    try {
+      setDownloaderHandoffLoading(targetTool);
+      setError(null);
+      const newTask = await api.handoffDownloaderTask(taskId, targetTool);
+      setActiveTask(newTask);
+      fetchTasks();
+      navigateToTool(targetTool);
+    } catch (err: any) {
+      console.error(`Handoff to ${targetTool} failed:`, err);
+      setError(err.message || `Failed to transfer media to ${targetTool}.`);
+    } finally {
+      setDownloaderHandoffLoading(null);
+    }
+  };
+
   // Helpers
   const formatBytes = (bytes?: number | null) => {
     if (!bytes || bytes === 0) return '0 B';
@@ -1370,9 +1532,20 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       status: 'available' as const,
       category: 'translation' as const,
     },
+    {
+      id: 'video_downloader',
+      title: 'Video Downloader',
+      desc: 'Import permitted videos from supported links.',
+      icon: Download,
+      status: 'available' as const,
+      category: 'audio_asr' as const,
+    },
   ];
 
   const getToolTitle = (toolId: string) => {
+    if (toolId === 'video_downloader' || toolId === 'video-downloader') {
+      return 'Video Downloader';
+    }
     if (toolId === 'translation' || toolId === 'text_translation' || toolId === 'transcript_translation') {
       return 'Translation Studio';
     }
@@ -1558,7 +1731,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Audio & ASR (5)
+                Audio & Video ({toolsList.filter((t) => t.category === 'audio_asr').length})
               </button>
               <button
                 type="button"
@@ -4952,6 +5125,438 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             )}
           </div>
         </div>
+      ) : selectedTool === 'video_downloader' ? (
+        /* Video Downloader Studio (Phase 13F) */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          {/* Left Column: Input URL, Inspection & Download Controls */}
+          <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-6">
+            <div className="border-b border-slate-100 pb-4">
+              <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                <Download className="w-5 h-5 text-indigo-600" />
+                Video Downloader & URL Media Import
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Download permitted videos from supported links and import them into KhmerDub AI.
+              </p>
+            </div>
+
+            {error && (
+              <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-semibold">Error:</span> {error}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setError(null)}
+                  className="text-rose-400 hover:text-rose-700 text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* URL Input Form */}
+            <form onSubmit={handleInspectUrl} className="space-y-3">
+              <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                <span>Video or Media Link</span>
+                <span className="text-[11px] font-normal text-slate-400">YouTube, TikTok, Direct MP4/Audio</span>
+              </label>
+
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={downloaderUrl}
+                  onChange={(e) => setDownloaderUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=... or https://.../video.mp4"
+                  className="flex-1 p-2.5 rounded-xl border border-slate-200 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  disabled={downloaderInspecting || downloaderStarting || !!downloaderActiveTaskId}
+                />
+                <button
+                  type="submit"
+                  disabled={!downloaderUrl.trim() || downloaderInspecting || downloaderStarting || !!downloaderActiveTaskId}
+                  className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                >
+                  {downloaderInspecting ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Inspecting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-3.5 h-3.5" />
+                      <span>Fetch Info</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Supported Platforms Hints */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-slate-500">
+                <span className="font-medium text-slate-600">Supported:</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">YouTube</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">TikTok</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Direct MP4 / M4A / WAV</span>
+              </div>
+            </form>
+
+            {/* Metadata Preview Card (when metadata fetched) */}
+            {downloaderMeta && (
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="flex gap-3 items-start">
+                  {downloaderMeta.thumbnail_url ? (
+                    <img
+                      src={downloaderMeta.thumbnail_url}
+                      alt={downloaderMeta.title}
+                      className="w-24 h-16 object-cover rounded-lg bg-black shrink-0 border border-slate-200"
+                    />
+                  ) : (
+                    <div className="w-24 h-16 rounded-lg bg-slate-200 flex items-center justify-center shrink-0 text-slate-400">
+                      <Film className="w-6 h-6" />
+                    </div>
+                  )}
+
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-700">
+                        {downloaderMeta.source_platform}
+                      </span>
+                      {downloaderMeta.duration_seconds ? (
+                        <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          {formatDuration(downloaderMeta.duration_seconds)}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <h4 className="font-bold text-slate-900 text-xs sm:text-sm line-clamp-2" title={downloaderMeta.title}>
+                      {downloaderMeta.title}
+                    </h4>
+
+                    <div className="text-[11px] text-slate-500 flex items-center gap-2">
+                      <span>By: {downloaderMeta.uploader || 'Creator'}</span>
+                      {downloaderMeta.estimated_file_size_bytes ? (
+                        <>
+                          <span>•</span>
+                          <span>~{formatBytes(downloaderMeta.estimated_file_size_bytes)}</span>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Configuration: Output Type & Quality */}
+                <div className="pt-3 border-t border-slate-200/80 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDownloaderOutputType('video')}
+                      disabled={downloaderMeta.is_audio_only_source}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                        downloaderOutputType === 'video'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:text-slate-900'
+                      } ${downloaderMeta.is_audio_only_source ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <Film className="w-3.5 h-3.5" />
+                      <span>Video (MP4)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDownloaderOutputType('audio')}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                        downloaderOutputType === 'audio'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Volume2 className="w-3.5 h-3.5" />
+                      <span>Audio Only</span>
+                    </button>
+                  </div>
+
+                  {downloaderOutputType === 'video' ? (
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-600 block">
+                        Video Quality / Resolution
+                      </label>
+                      <select
+                        value={downloaderQuality}
+                        onChange={(e) => setDownloaderQuality(e.target.value)}
+                        className="w-full p-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                      >
+                        {downloaderMeta.available_video_qualities.map((q) => (
+                          <option key={q} value={q}>
+                            {q === 'best' ? 'Best Available Resolution' : `${q} Resolution`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-600 block">
+                        Output Audio Format
+                      </label>
+                      <select
+                        value={downloaderAudioFormat}
+                        onChange={(e) => setDownloaderAudioFormat(e.target.value)}
+                        className="w-full p-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                      >
+                        <option value="mp3">MP3 (High Quality 192k)</option>
+                        <option value="m4a">M4A (AAC Audio)</option>
+                        <option value="wav">WAV (Lossless 44.1kHz)</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Mandatory Legal & Rights Confirmation */}
+            <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200/80 space-y-2">
+              <div className="flex items-start gap-2 text-xs text-amber-900">
+                <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="leading-relaxed text-[11px]">
+                  Download or import only media you own, have permission to use, or are otherwise permitted to download. Availability depends on the source website.
+                </p>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer pt-1 text-xs text-slate-800 font-medium select-none">
+                <input
+                  type="checkbox"
+                  checked={downloaderRightsConfirmed}
+                  onChange={(e) => setDownloaderRightsConfirmed(e.target.checked)}
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                />
+                <span>I confirm that I own, have permission to use, or am legally permitted to download this media.</span>
+              </label>
+            </div>
+
+            {/* Action Buttons */}
+            {downloaderActiveTaskId ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span className="font-semibold flex items-center gap-1.5">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                    Downloading Media...
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCancelDownload(downloaderActiveTaskId)}
+                    disabled={downloaderCancelling}
+                    className="px-3 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs border border-rose-200 transition cursor-pointer"
+                  >
+                    {downloaderCancelling ? 'Cancelling...' : 'Cancel Download'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleStartDownload}
+                disabled={!downloaderMeta || !downloaderRightsConfirmed || downloaderStarting}
+                className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+              >
+                {downloaderStarting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Queuing Download...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    <span>Start Download</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+
+          {/* Right Column: Download Progress, Preview & Downstream Actions */}
+          <div className="lg:col-span-6 space-y-6">
+            {downloaderActiveTaskId && downloaderActiveTask ? (
+              /* In-Progress View */
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-5">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4 text-indigo-600 animate-spin" />
+                    <span>Download in Progress</span>
+                  </h4>
+                  <span className="text-xs font-bold text-indigo-600">
+                    {downloaderActiveTask.progress_percentage}%
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-indigo-600 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${downloaderActiveTask.progress_percentage}%` }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-slate-500">
+                    <span>
+                      {downloaderActiveTask.source_media_metadata?.stage === 'downloading'
+                        ? 'Transferring media stream...'
+                        : downloaderActiveTask.source_media_metadata?.stage === 'transcoding'
+                        ? 'Optimizing container with FFmpeg...'
+                        : 'Connecting to media server...'}
+                    </span>
+                    {downloaderActiveTask.source_media_metadata?.speed_bytes_per_sec ? (
+                      <span>{formatBytes(downloaderActiveTask.source_media_metadata.speed_bytes_per_sec)}/s</span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-xs text-slate-600">
+                  <div className="font-semibold text-slate-800 truncate">
+                    {downloaderActiveTask.source_filename}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Task ID: {downloaderActiveTask.id.slice(0, 8)}...
+                  </div>
+                </div>
+              </div>
+            ) : (downloaderActiveTask && downloaderActiveTask.status === 'completed') || (activeTask && activeTask.tool_type === 'video_downloader' && activeTask.status === 'completed') ? (
+              /* Completed Download View */
+              (() => {
+                const completedTask = (downloaderActiveTask && downloaderActiveTask.status === 'completed')
+                  ? downloaderActiveTask
+                  : activeTask!;
+                const isVideo = completedTask.target_format === 'mp4' || completedTask.output_filename?.endsWith('.mp4');
+
+                return (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-5">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        <h4 className="font-bold text-slate-900 text-sm">Media Ready</h4>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 uppercase">
+                          {completedTask.target_format}
+                        </span>
+                      </div>
+
+                      <a
+                        href={api.getToolkitAudioDownloadUrl(completedTask.id)}
+                        className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Download</span>
+                      </a>
+                    </div>
+
+                    {/* Media Player Preview */}
+                    <div className="rounded-xl overflow-hidden bg-black aspect-video flex items-center justify-center">
+                      {isVideo ? (
+                        <video
+                          controls
+                          src={api.getToolkitAudioStreamUrl(completedTask.id)}
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        <div className="p-6 w-full text-center space-y-3">
+                          <Volume2 className="w-12 h-12 text-slate-400 mx-auto" />
+                          <audio
+                            controls
+                            src={api.getToolkitAudioStreamUrl(completedTask.id)}
+                            className="w-full"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Media Details */}
+                    <div className="grid grid-cols-3 gap-2.5 text-center text-xs">
+                      <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                        <span className="text-[10px] text-slate-400 block uppercase">Duration</span>
+                        <span className="font-bold text-slate-800">
+                          {formatDuration(completedTask.output_duration_seconds)}
+                        </span>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                        <span className="text-[10px] text-slate-400 block uppercase">File Size</span>
+                        <span className="font-bold text-slate-800">
+                          {formatBytes(completedTask.output_file_size_bytes)}
+                        </span>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                        <span className="text-[10px] text-slate-400 block uppercase">Container</span>
+                        <span className="font-bold text-slate-800 uppercase">
+                          {completedTask.target_format}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Downstream Actions / Handoffs */}
+                    <div className="pt-3 border-t border-slate-100 space-y-2.5">
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block">
+                        Import & Connected Workflows
+                      </label>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {isVideo && (
+                          <button
+                            type="button"
+                            onClick={() => handleImportToDubbing(completedTask.id)}
+                            disabled={downloaderImporting}
+                            className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                          >
+                            {downloaderImporting ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            )}
+                            <span>Import to Video Dubbing</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleHandoffDownloader(completedTask.id, 'video_to_audio')}
+                          disabled={!!downloaderHandoffLoading}
+                          className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                        >
+                          <FileAudio className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Extract Audio</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleHandoffDownloader(completedTask.id, 'video_to_transcript')}
+                          disabled={!!downloaderHandoffLoading}
+                          className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Transcribe Video</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleHandoffDownloader(completedTask.id, 'video_to_text')}
+                          disabled={!!downloaderHandoffLoading}
+                          className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                        >
+                          <AlignLeft className="w-3.5 h-3.5 text-purple-600" />
+                          <span>Convert to Text</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              /* Idle Placeholder */
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-12 text-center text-slate-400 space-y-3">
+                <Download className="w-12 h-12 text-slate-300 mx-auto" />
+                <h4 className="font-semibold text-slate-700 text-sm">No Downloaded Media Yet</h4>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  Paste a video link on the left, fetch information, and start download. You can then preview the video, download it, or import it directly into Video Dubbing.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
       ) : null}
         </div>
       )}
@@ -5059,6 +5664,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
                 >
                   <option value="all">All Tool Types</option>
+                  <option value="video_downloader">Video Downloader</option>
                   <option value="video_to_audio">Video to Audio</option>
                   <option value="video_to_transcript">Video to Transcript</option>
                   <option value="video_to_text">Video to Text</option>

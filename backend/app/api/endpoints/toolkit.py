@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -25,6 +26,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.downloader.service import downloader_service
 from app.core.storage import (
     delete_toolkit_task_storage,
     get_toolkit_task_dir,
@@ -83,11 +85,20 @@ router = APIRouter()
 video_processor = FFmpegVideoProcessor()
 whisper_provider = FasterWhisperTranscriptionProvider()
 
-# MIME types for audio and exported file formats
+# MIME types for audio, video, and exported file formats
 AUDIO_MIME_TYPES = {
     "mp3": "audio/mpeg",
     "wav": "audio/wav",
     "m4a": "audio/mp4",
+}
+
+MEDIA_MIME_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "m4a": "audio/mp4",
+    "mp4": "video/mp4",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
 }
 
 EXPORT_MIME_TYPES = {
@@ -261,6 +272,28 @@ class SubtitleConvertRequest(BaseModel):
     source_format: str = "srt"
     target_format: str = "vtt"
     filename: Optional[str] = "subtitles.vtt"
+
+
+class DownloaderInfoRequest(BaseModel):
+    url: str
+
+
+class DownloaderStartRequest(BaseModel):
+    url: str
+    output_type: str = "video"
+    quality: str = "best"
+    audio_format: str = "mp3"
+    rights_confirmed: bool = False
+
+
+class DownloaderImportDubbingRequest(BaseModel):
+    title: Optional[str] = None
+    original_language: str = "en"
+    target_language: str = "km"
+
+
+class DownloaderHandoffRequest(BaseModel):
+    target_tool: str
 
 
 class ToolkitTaskResponse(BaseModel):
@@ -726,6 +759,15 @@ def get_toolkit_capabilities():
                 "status": "available",
                 "phase": "13E.5",
                 "supported_formats": ["srt", "vtt", "txt"],
+            },
+            {
+                "id": "video_downloader",
+                "title": "Video Downloader",
+                "description": "Import permitted videos from supported links (YouTube, TikTok, direct media).",
+                "category": "Import",
+                "status": "available",
+                "phase": "13F",
+                "supported_formats": ["mp4", "mp3", "wav", "m4a"],
             },
         ],
         "language_capabilities": {
@@ -1421,31 +1463,31 @@ def get_toolkit_task(task_id: str, db: Session = Depends(get_db)):
 
 @router.get("/tasks/{task_id}/stream")
 def stream_toolkit_audio(task_id: str, db: Session = Depends(get_db)):
-    """Stream extracted audio or prepared audio for in-browser audio preview player."""
+    """Stream extracted audio or video for in-browser preview player."""
     safe_id = sanitize_toolkit_task_id(task_id)
     task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
     if not task:
         raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
 
-    audio_path: Optional[Path] = None
-    if task.output_file_path and Path(task.output_file_path).suffix.lower() in [".mp3", ".wav", ".m4a"]:
-        audio_path = Path(task.output_file_path)
+    media_path: Optional[Path] = None
+    if task.output_file_path and Path(task.output_file_path).suffix.lower() in [".mp3", ".wav", ".m4a", ".mp4", ".mov", ".webm"]:
+        media_path = Path(task.output_file_path)
     else:
         # Check if prepared WAV exists in task workspace
         prep_wav = get_toolkit_task_dir(safe_id) / "prepared_audio_16k.wav"
         if prep_wav.exists() and prep_wav.stat().st_size > 0:
-            audio_path = prep_wav
+            media_path = prep_wav
 
-    if not audio_path or not audio_path.exists() or audio_path.stat().st_size == 0:
-        raise HTTPException(status_code=404, detail="Audio file not ready or missing from disk.")
+    if not media_path or not media_path.exists() or media_path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="Media file not ready or missing from disk.")
 
-    fmt = audio_path.suffix.lower().lstrip(".")
-    mime_type = AUDIO_MIME_TYPES.get(fmt, "audio/wav")
+    fmt = media_path.suffix.lower().lstrip(".")
+    mime_type = MEDIA_MIME_TYPES.get(fmt, "application/octet-stream")
 
     return FileResponse(
-        path=str(audio_path),
+        path=str(media_path),
         media_type=mime_type,
-        filename=audio_path.name,
+        filename=media_path.name,
         content_disposition_type="inline",
     )
 
@@ -1466,7 +1508,7 @@ def download_toolkit_file(task_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Task output file missing from disk.")
 
     ext = file_path.suffix.lower().lstrip(".")
-    mime_type = AUDIO_MIME_TYPES.get(ext) or EXPORT_MIME_TYPES.get(ext, "application/octet-stream")
+    mime_type = MEDIA_MIME_TYPES.get(ext) or EXPORT_MIME_TYPES.get(ext, "application/octet-stream")
 
     return FileResponse(
         path=str(file_path),
@@ -3083,4 +3125,115 @@ def download_task_bundle(task_id: str, db: Session = Depends(get_db)):
         filename=zip_file.name,
         content_disposition_type="attachment",
     )
+
+
+# ---------------- Video Downloader Endpoints (Phase 13F) ----------------
+
+
+@router.post("/downloader/info")
+def inspect_downloader_url(req: DownloaderInfoRequest):
+    """Inspect video/audio link metadata without downloading media."""
+    return downloader_service.inspect_url(req.url)
+
+
+@router.post("/downloader/start", response_model=ToolkitTaskResponse)
+def start_downloader_task(
+    req: DownloaderStartRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Start an asynchronous media download and normalization task."""
+    task = downloader_service.start_download(
+        db=db,
+        background_tasks=background_tasks,
+        url=req.url,
+        output_type=req.output_type,
+        quality=req.quality,
+        audio_format=req.audio_format,
+        rights_confirmed=req.rights_confirmed,
+    )
+    return _serialize_task(task)
+
+
+@router.post("/downloader/{task_id}/cancel")
+def cancel_downloader_task(task_id: str, db: Session = Depends(get_db)):
+    """Cancel an active or queued video download task."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    return downloader_service.cancel_task(db=db, task_id=safe_id)
+
+
+@router.post("/downloader/{task_id}/import-dubbing")
+def import_downloader_task_to_dubbing(
+    task_id: str,
+    req: DownloaderImportDubbingRequest,
+    db: Session = Depends(get_db),
+):
+    """Import a completed downloaded video into a Video Dubbing project."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    project = downloader_service.import_to_dubbing(
+        db=db,
+        task_id=safe_id,
+        title=req.title,
+        original_lang=req.original_language,
+        target_lang=req.target_language,
+    )
+    return {
+        "success": True,
+        "project_id": project.id,
+        "title": project.title,
+        "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+        "duration": project.video.duration_seconds if project.video else None,
+    }
+
+
+@router.post("/downloader/{task_id}/handoff", response_model=ToolkitTaskResponse)
+def handoff_downloader_task_to_toolkit(
+    task_id: str,
+    req: DownloaderHandoffRequest,
+    db: Session = Depends(get_db),
+):
+    """Transfer downloaded media directly into another Media Toolkit studio."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    source_task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
+    if not source_task:
+        raise HTTPException(status_code=404, detail="Source download task not found")
+    if source_task.status != "completed":
+        raise HTTPException(status_code=400, detail="Only completed download tasks can be transferred.")
+    if not source_task.output_file_path or not Path(source_task.output_file_path).exists():
+        raise HTTPException(status_code=404, detail="Downloaded media file not found on disk.")
+
+    valid_tools = {"video_to_audio", "video_to_transcript", "video_to_text"}
+    if req.target_tool not in valid_tools:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Target tool '{req.target_tool}' is not supported for video downloader handoff.",
+        )
+
+    # Create new task workspace and link/copy media
+    new_task_id = str(uuid.uuid4())
+    new_input_dir = get_toolkit_task_input_dir(new_task_id)
+    source_file = Path(source_task.output_file_path)
+    dest_file = new_input_dir / source_file.name
+    shutil.copy2(source_file, dest_file)
+
+    target_fmt = "mp3" if req.target_tool == "video_to_audio" else ("srt" if req.target_tool == "video_to_transcript" else "txt")
+
+    new_task = ToolkitTask(
+        id=new_task_id,
+        tool_type=req.target_tool,
+        source_type="task_transfer",
+        source_task_id=source_task.id,
+        source_filename=source_task.output_filename or source_file.name,
+        source_file_path=str(dest_file),
+        source_media_metadata=source_task.output_media_metadata,
+        target_format=target_fmt,
+        status="pending",
+        progress_percentage=0,
+    )
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+
+    return _serialize_task(new_task)
+
 

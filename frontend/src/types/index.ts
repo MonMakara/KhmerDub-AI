@@ -538,8 +538,9 @@ export interface ToolkitTask {
   source_task_id?: string | null;
   is_outdated?: boolean;
   source_filename: string;
+  source_file_path?: string | null;
   target_format: ToolkitTargetFormat | string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
   progress_percentage: number;
   output_filename?: string | null;
   output_duration_seconds?: number | null;
@@ -575,6 +576,43 @@ export interface ToolkitCapabilities {
     speech_synthesis: Record<string, string>;
   };
 }
+
+export interface VideoDownloaderMetadata {
+  url: string;
+  title: string;
+  source_platform: string;
+  uploader?: string | null;
+  duration_seconds?: number | null;
+  thumbnail_url?: string | null;
+  available_video_qualities: string[];
+  available_audio_formats: string[];
+  estimated_file_size_bytes?: number | null;
+  is_audio_only_source?: boolean;
+  notice?: string;
+}
+
+export interface VideoDownloaderStartPayload {
+  url: string;
+  output_type: 'video' | 'audio';
+  quality: string;
+  audio_format: string;
+  rights_confirmed: boolean;
+}
+
+export interface VideoDownloaderImportDubbingPayload {
+  title?: string;
+  original_language?: string;
+  target_language?: string;
+}
+
+export interface VideoDownloaderImportDubbingResponse {
+  success: boolean;
+  project_id: string;
+  title: string;
+  status: string;
+  duration?: number | null;
+}
+
 
 
 
