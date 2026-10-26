@@ -613,6 +613,49 @@ export interface VideoDownloaderImportDubbingResponse {
   duration?: number | null;
 }
 
+// ---------------- Media Trimmer (Phase 13G) ----------------
+export interface TrimmerMediaInfo {
+  duration_seconds: number;
+  formatted_duration: string;
+  has_video: boolean;
+  has_audio: boolean;
+  video_codec?: string | null;
+  audio_codec?: string | null;
+  width?: number | null;
+  height?: number | null;
+  size_bytes: number;
+  format_name: string;
+  waveform_peaks: number[];
+  source_filename: string;
+  source_type: string;
+  source_task_id?: string | null;
+  source_project_id?: string | null;
+  cached_upload_path?: string | null;
+}
+
+export interface TrimmerTrimPayload {
+  tool_type: 'video_trimmer' | 'audio_trimmer';
+  start_time: string;
+  end_time: string;
+  trim_mode: 'fast' | 'precise';
+  target_format?: string;
+  cached_upload_path?: string;
+  source_task_id?: string;
+  source_project_id?: string;
+  file?: File;
+}
+
+export interface TrimmerThumbnailsPayload {
+  source_task_id?: string;
+  source_project_id?: string;
+  count?: number;
+}
+
+export interface TrimmerImportDubbingPayload {
+  title?: string;
+}
+
+
 
 
 

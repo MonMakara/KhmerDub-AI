@@ -180,6 +180,9 @@ def test_tts_segment_regeneration(db_session: Session):
             "pause_duration_seconds": 0.4,
         },
     )
+    if resp.status_code == 500 and "free VRAM too low" in resp.text:
+        pytest.skip(f"GPU VRAM insufficient for VoxCPM2 live inference: {resp.text}")
+
     assert resp.status_code == 200
     task_data = resp.json()
     task_id = task_data["id"]
@@ -220,6 +223,9 @@ def test_tts_segment_streaming_and_downloading():
             "pause_duration_seconds": 0.4,
         },
     )
+    if resp.status_code == 500 and "free VRAM too low" in resp.text:
+        pytest.skip(f"GPU VRAM insufficient for VoxCPM2 live inference: {resp.text}")
+
     assert resp.status_code == 200
     task_data = resp.json()
     task_id = task_data["id"]
@@ -254,6 +260,9 @@ def test_tts_export_formats():
             "pause_duration_seconds": 0.4,
         },
     )
+    if resp.status_code == 500 and "free VRAM too low" in resp.text:
+        pytest.skip(f"GPU VRAM insufficient for VoxCPM2 live inference: {resp.text}")
+
     assert resp.status_code == 200
     task_id = resp.json()["id"]
 
@@ -285,6 +294,9 @@ def test_tts_task_cascade_deletion(db_session: Session):
             "target_format": "mp3",
         },
     )
+    if resp.status_code == 500 and "free VRAM too low" in resp.text:
+        pytest.skip(f"GPU VRAM insufficient for VoxCPM2 live inference: {resp.text}")
+
     assert resp.status_code == 200
     task_id = resp.json()["id"]
 
@@ -324,6 +336,9 @@ def test_tts_generate_voxcpm_custom_voice(db_session: Session):
             "pause_duration_seconds": 0.4,
         },
     )
+    if resp.status_code == 500 and "free VRAM too low" in resp.text:
+        pytest.skip(f"GPU VRAM insufficient for VoxCPM2 live inference: {resp.text}")
+
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "completed"

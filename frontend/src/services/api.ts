@@ -38,6 +38,10 @@ import {
   VideoDownloaderStartPayload,
   VideoDownloaderImportDubbingPayload,
   VideoDownloaderImportDubbingResponse,
+  TrimmerMediaInfo,
+  TrimmerTrimPayload,
+  TrimmerThumbnailsPayload,
+  TrimmerImportDubbingPayload,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
@@ -1309,6 +1313,120 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Failed to transfer media to ${targetTool}: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  // ---------------- Media Trimmer (Phase 13G) ----------------
+  async inspectTrimmerMedia(
+    file?: File | null,
+    sourceTaskId?: string | null,
+    sourceProjectId?: string | null
+  ): Promise<TrimmerMediaInfo> {
+    const formData = new FormData();
+    if (file) {
+      formData.append('file', file);
+    }
+    if (sourceTaskId) {
+      formData.append('source_task_id', sourceTaskId);
+    }
+    if (sourceProjectId) {
+      formData.append('source_project_id', sourceProjectId);
+    }
+
+    const res = await fetch(`${API_BASE}/toolkit/trimmer/info`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to inspect media: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getTrimmerThumbnails(payload: TrimmerThumbnailsPayload): Promise<string[]> {
+    const res = await fetch(`${API_BASE}/toolkit/trimmer/thumbnails`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      return [];
+    }
+    const data = await res.json();
+    return data.thumbnails || [];
+  },
+
+  async executeTrim(payload: TrimmerTrimPayload): Promise<ToolkitTask> {
+    const formData = new FormData();
+    formData.append('tool_type', payload.tool_type);
+    formData.append('start_time', payload.start_time);
+    formData.append('end_time', payload.end_time);
+    formData.append('trim_mode', payload.trim_mode);
+    if (payload.target_format) {
+      formData.append('target_format', payload.target_format);
+    }
+    if (payload.cached_upload_path) {
+      formData.append('cached_upload_path', payload.cached_upload_path);
+    }
+    if (payload.source_task_id) {
+      formData.append('source_task_id', payload.source_task_id);
+    }
+    if (payload.source_project_id) {
+      formData.append('source_project_id', payload.source_project_id);
+    }
+    if (payload.file) {
+      formData.append('file', payload.file);
+    }
+
+    const res = await fetch(`${API_BASE}/toolkit/trimmer/trim`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to trim media: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async importTrimmerToDubbing(
+    taskId: string,
+    payload?: TrimmerImportDubbingPayload
+  ): Promise<VideoDownloaderImportDubbingResponse> {
+    const res = await fetch(`${API_BASE}/toolkit/trimmer/${taskId}/import-dubbing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to import trimmed video into dubbing: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async handoffTrimmerTask(taskId: string, targetTool: string): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/trimmer/${taskId}/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_tool: targetTool }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to transfer media to ${targetTool}: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async cancelTrimmerTask(taskId: string): Promise<{ status: string; task_id: string }> {
+    const res = await fetch(`${API_BASE}/toolkit/trimmer/${taskId}/cancel`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to cancel trimming: ${res.statusText}`);
     }
     return res.json();
   },

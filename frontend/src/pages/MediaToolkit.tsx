@@ -45,9 +45,12 @@ import {
   ArrowDown,
   ShieldCheck,
   Film,
+  Scissors,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { DeleteToolkitTaskModal } from '../components/common/DeleteToolkitTaskModal';
+import { VideoTrimmer } from '../components/toolkit/VideoTrimmer';
+import { AudioTrimmer } from '../components/toolkit/AudioTrimmer';
 import { formatCambodiaDateTime } from '../utils/date';
 import {
   ProjectSummary,
@@ -87,6 +90,10 @@ export const SLUG_TO_TOOL_ID: Record<string, string> = {
   'subtitle_conversion': 'subtitle_conversion',
   'video-downloader': 'video_downloader',
   'video_downloader': 'video_downloader',
+  'video-trimmer': 'video_trimmer',
+  'video_trimmer': 'video_trimmer',
+  'audio-trimmer': 'audio_trimmer',
+  'audio_trimmer': 'audio_trimmer',
 };
 
 export const TOOL_ID_TO_SLUG: Record<string, string> = {
@@ -101,6 +108,8 @@ export const TOOL_ID_TO_SLUG: Record<string, string> = {
   'translation': 'translation',
   'subtitle_conversion': 'subtitle-converter',
   'video_downloader': 'video-downloader',
+  'video_trimmer': 'video-trimmer',
+  'audio_trimmer': 'audio-trimmer',
 };
 
 export const parseToolkitRoute = (hash: string): { mode: ToolkitViewMode; toolId?: string } => {
@@ -1536,11 +1545,33 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       status: 'available' as const,
       category: 'audio_asr' as const,
     },
+    {
+      id: 'video_trimmer',
+      title: 'Video Trimmer',
+      desc: 'Trim videos to keep only the sections you need.',
+      icon: Scissors,
+      status: 'available' as const,
+      category: 'audio_asr' as const,
+    },
+    {
+      id: 'audio_trimmer',
+      title: 'Audio Trimmer',
+      desc: 'Cut audio recordings and export selected sections.',
+      icon: Scissors,
+      status: 'available' as const,
+      category: 'audio_asr' as const,
+    },
   ];
 
   const getToolTitle = (toolId: string) => {
     if (toolId === 'video_downloader' || toolId === 'video-downloader') {
       return 'Video Downloader';
+    }
+    if (toolId === 'video_trimmer' || toolId === 'video-trimmer') {
+      return 'Video Trimmer';
+    }
+    if (toolId === 'audio_trimmer' || toolId === 'audio-trimmer') {
+      return 'Audio Trimmer';
     }
     if (toolId === 'translation' || toolId === 'text_translation' || toolId === 'transcript_translation') {
       return 'Translation Studio';
@@ -1916,7 +1947,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
                       {task.status === 'completed' && (
                         <>
-                          {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio') && (
+                          {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio' || task.tool_type === 'audio_trimmer') && (
                             <button
                               onClick={() => {
                                 setActiveTask(task);
@@ -5531,6 +5562,28 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                           <AlignLeft className="w-3.5 h-3.5 text-purple-600" />
                           <span>Convert to Text</span>
                         </button>
+
+                        {isVideo ? (
+                          <button
+                            type="button"
+                            onClick={() => handleHandoffDownloader(completedTask.id, 'video_trimmer')}
+                            disabled={!!downloaderHandoffLoading}
+                            className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                          >
+                            <Scissors className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Trim Video</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleHandoffDownloader(completedTask.id, 'audio_trimmer')}
+                            disabled={!!downloaderHandoffLoading}
+                            className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                          >
+                            <Scissors className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Trim Audio</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -5601,6 +5654,26 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             )}
           </div>
         </div>
+      ) : selectedTool === 'video_trimmer' ? (
+        <VideoTrimmer
+          tasks={tasks}
+          projects={projects}
+          onTaskCompleted={() => {
+            fetchTasks();
+          }}
+          onNavigateToTool={(toolId) => navigateToTool(toolId)}
+          initialSourceTaskId={activeTask?.id || undefined}
+        />
+      ) : selectedTool === 'audio_trimmer' ? (
+        <AudioTrimmer
+          tasks={tasks}
+          projects={projects}
+          onTaskCompleted={() => {
+            fetchTasks();
+          }}
+          onNavigateToTool={(toolId) => navigateToTool(toolId)}
+          initialSourceTaskId={activeTask?.id || undefined}
+        />
       ) : null}
         </div>
       )}
@@ -5718,6 +5791,8 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   <option value="transcript_to_audio">Transcript to Audio</option>
                   <option value="text_translation">Translation Studio</option>
                   <option value="subtitle_conversion">Subtitle Converter</option>
+                  <option value="video_trimmer">Video Trimmer</option>
+                  <option value="audio_trimmer">Audio Trimmer</option>
                 </select>
               </div>
 
@@ -5855,7 +5930,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
                             {task.status === 'completed' && (
                               <>
-                                {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio') && (
+                                {(task.tool_type === 'video_to_audio' || task.tool_type === 'text_to_speech' || task.tool_type === 'transcript_to_audio' || task.tool_type === 'audio_trimmer') && (
                                   <button
                                     onClick={() => {
                                       setActiveTask(task);

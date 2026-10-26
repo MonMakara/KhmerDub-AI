@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime
 from app.core.timezone import get_cambodia_now, get_cambodia_now_naive
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import (
     APIRouter,
@@ -28,12 +28,21 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.services.downloader.service import downloader_service
+from app.services.trimmer import (
+    trimmer_service,
+    request_trim_cancellation,
+    parse_timestamp,
+    format_timestamp,
+    InvalidTimestampError,
+    MediaTrimmingError,
+)
 from app.core.storage import (
     delete_toolkit_task_storage,
     get_toolkit_task_dir,
     get_toolkit_task_input_dir,
     get_toolkit_task_output_dir,
     sanitize_toolkit_task_id,
+    get_project_original_dir,
 )
 from app.core.credentials import is_api_key_configured
 from app.database.session import get_db
@@ -294,6 +303,27 @@ class DownloaderImportDubbingRequest(BaseModel):
 
 
 class DownloaderHandoffRequest(BaseModel):
+    target_tool: str
+
+
+class TrimmerInfoRequest(BaseModel):
+    source_task_id: Optional[str] = None
+    source_project_id: Optional[str] = None
+
+
+class TrimmerThumbnailsRequest(BaseModel):
+    source_task_id: Optional[str] = None
+    source_project_id: Optional[str] = None
+    count: int = 6
+
+
+class TrimmerImportDubbingRequest(BaseModel):
+    title: Optional[str] = None
+    original_language: str = "en"
+    target_language: str = "km"
+
+
+class TrimmerHandoffRequest(BaseModel):
     target_tool: str
 
 
@@ -3203,7 +3233,13 @@ def handoff_downloader_task_to_toolkit(
     if not source_task.output_file_path or not Path(source_task.output_file_path).exists():
         raise HTTPException(status_code=404, detail="Downloaded media file not found on disk.")
 
-    valid_tools = {"video_to_audio", "video_to_transcript", "video_to_text"}
+    valid_tools = {
+        "video_to_audio",
+        "video_to_transcript",
+        "video_to_text",
+        "video_trimmer",
+        "audio_trimmer",
+    }
     if req.target_tool not in valid_tools:
         raise HTTPException(
             status_code=400,
@@ -3217,7 +3253,18 @@ def handoff_downloader_task_to_toolkit(
     dest_file = new_input_dir / source_file.name
     shutil.copy2(source_file, dest_file)
 
-    target_fmt = "mp3" if req.target_tool == "video_to_audio" else ("srt" if req.target_tool == "video_to_transcript" else "txt")
+    if req.target_tool == "video_to_audio":
+        target_fmt = "mp3"
+    elif req.target_tool == "video_to_transcript":
+        target_fmt = "srt"
+    elif req.target_tool == "video_to_text":
+        target_fmt = "txt"
+    elif req.target_tool == "video_trimmer":
+        target_fmt = "mp4"
+    elif req.target_tool == "audio_trimmer":
+        target_fmt = "mp3"
+    else:
+        target_fmt = "mp4"
 
     new_task = ToolkitTask(
         id=new_task_id,
@@ -3236,5 +3283,390 @@ def handoff_downloader_task_to_toolkit(
     db.refresh(new_task)
 
     return _serialize_task(new_task)
+
+
+# ---------------- Video & Audio Trimmer Endpoints (Phase 13G) ----------------
+
+
+def _resolve_trimmer_media_file(
+    db: Session,
+    file: Optional[UploadFile] = None,
+    source_task_id: Optional[str] = None,
+    source_project_id: Optional[str] = None,
+    dest_dir: Optional[Path] = None,
+) -> Tuple[Path, str, str, Optional[str], Optional[str]]:
+    """Helper to resolve media path from upload, task, or project."""
+    if file and file.filename:
+        safe_name = Path(file.filename).name.strip() or f"media_{uuid.uuid4()}"
+        target_dir = dest_dir or (settings.TEMP_DIR / f"trim_upload_{uuid.uuid4()}")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = target_dir / safe_name
+
+        total_bytes = 0
+        max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+        with dest_path.open("wb") as out_f:
+            while chunk := file.file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    dest_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"Uploaded file exceeds maximum size limit of {settings.MAX_UPLOAD_SIZE_MB}MB.",
+                    )
+                out_f.write(chunk)
+
+        try:
+            dest_path.chmod(0o666)
+        except OSError:
+            pass
+
+        return dest_path, safe_name, "upload", None, None
+
+    if source_task_id:
+        safe_id = sanitize_toolkit_task_id(source_task_id)
+        task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Source toolkit task '{source_task_id}' not found.")
+
+        candidate_path = None
+        if task.output_file_path and Path(task.output_file_path).exists():
+            candidate_path = Path(task.output_file_path)
+        elif task.source_file_path and Path(task.source_file_path).exists():
+            candidate_path = Path(task.source_file_path)
+
+        if not candidate_path:
+            raise HTTPException(status_code=404, detail=f"Media file for task '{source_task_id}' not found on disk.")
+
+        src_name = task.output_filename or task.source_filename or candidate_path.name
+        if dest_dir:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            copied = dest_dir / candidate_path.name
+            shutil.copy2(candidate_path, copied)
+            return copied, src_name, "task_transfer", task.id, None
+        return candidate_path, src_name, "task_transfer", task.id, None
+
+    if source_project_id:
+        proj = db.query(Project).filter(Project.id == source_project_id.strip()).first()
+        if not proj:
+            raise HTTPException(status_code=404, detail=f"Source project '{source_project_id}' not found.")
+
+        candidate_path = None
+        if proj.original_video_path and Path(proj.original_video_path).exists():
+            candidate_path = Path(proj.original_video_path)
+        else:
+            p_dir = get_project_original_dir(proj.id)
+            if p_dir.exists():
+                for f in p_dir.glob("*"):
+                    if f.is_file() and f.stat().st_size > 0:
+                        candidate_path = f
+                        break
+
+        if not candidate_path or not candidate_path.exists():
+            raise HTTPException(status_code=404, detail=f"Original media for project '{source_project_id}' not found.")
+
+        src_name = f"{proj.title}.mp4"
+        if dest_dir:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            copied = dest_dir / candidate_path.name
+            shutil.copy2(candidate_path, copied)
+            return copied, src_name, "project", None, proj.id
+        return candidate_path, src_name, "project", None, proj.id
+
+    raise HTTPException(status_code=400, detail="Must provide an uploaded file, source_task_id, or source_project_id.")
+
+
+@router.post("/trimmer/info")
+def inspect_trimmer_media(
+    file: Optional[UploadFile] = File(None),
+    source_task_id: Optional[str] = Form(None),
+    source_project_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Inspect media format, duration, audio/video streams, and waveform peaks."""
+    temp_dir = settings.TEMP_DIR / f"info_{uuid.uuid4()}"
+    try:
+        media_path, filename, src_type, s_task_id, s_proj_id = _resolve_trimmer_media_file(
+            db=db,
+            file=file,
+            source_task_id=source_task_id,
+            source_project_id=source_project_id,
+            dest_dir=temp_dir if file else None,
+        )
+        info = trimmer_service.get_media_info(media_path)
+        info["source_filename"] = filename
+        info["source_type"] = src_type
+        info["source_task_id"] = s_task_id
+        info["source_project_id"] = s_proj_id
+
+        # If it was an upload, move to a persistent temporary path so the user can trim without re-uploading
+        if file:
+            perm_upload_dir = settings.TEMP_DIR / "trimmer_uploads"
+            perm_upload_dir.mkdir(parents=True, exist_ok=True)
+            cached_upload_name = f"trim_up_{uuid.uuid4()}_{media_path.name}"
+            cached_upload_path = perm_upload_dir / cached_upload_name
+            shutil.move(str(media_path), str(cached_upload_path))
+            info["cached_upload_path"] = str(cached_upload_path)
+
+        return info
+    except (InvalidTimestampError, MediaTrimmingError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error("Failed to inspect trimmer media: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to inspect media: {e}")
+    finally:
+        if file:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@router.post("/trimmer/trim", response_model=ToolkitTaskResponse)
+def execute_media_trim_task(
+    tool_type: str = Form("video_trimmer"),
+    start_time: str = Form(...),
+    end_time: str = Form(...),
+    trim_mode: str = Form("precise"),
+    target_format: Optional[str] = Form(None),
+    cached_upload_path: Optional[str] = Form(None),
+    source_task_id: Optional[str] = Form(None),
+    source_project_id: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+):
+    """Execute video or audio trimming task using fast or precise mode."""
+    if tool_type not in {"video_trimmer", "audio_trimmer"}:
+        raise HTTPException(status_code=400, detail=f"Invalid tool_type: '{tool_type}'. Must be video_trimmer or audio_trimmer.")
+
+    # Validate timestamps before creating task
+    try:
+        s_sec = parse_timestamp(start_time)
+        e_sec = parse_timestamp(end_time)
+        if e_sec <= s_sec:
+            raise InvalidTimestampError(f"End time ({format_timestamp(e_sec)}) must be greater than start time ({format_timestamp(s_sec)}).")
+    except InvalidTimestampError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+
+    task_id = str(uuid.uuid4())
+    task_input_dir = get_toolkit_task_input_dir(task_id)
+    task_output_dir = get_toolkit_task_output_dir(task_id)
+
+    # Resolve media file
+    media_path = None
+    src_type = "upload"
+    s_task_id = None
+    s_proj_id = None
+    filename = "media"
+
+    if cached_upload_path and Path(cached_upload_path).exists():
+        c_path = Path(cached_upload_path)
+        filename = c_path.name
+        task_input_dir.mkdir(parents=True, exist_ok=True)
+        media_path = task_input_dir / filename
+        shutil.copy2(c_path, media_path)
+        src_type = "upload"
+    else:
+        media_path, filename, src_type, s_task_id, s_proj_id = _resolve_trimmer_media_file(
+            db=db,
+            file=file,
+            source_task_id=source_task_id,
+            source_project_id=source_project_id,
+            dest_dir=task_input_dir,
+        )
+
+    # Format setup
+    if tool_type == "video_trimmer":
+        tgt_fmt = "mp4"
+    else:
+        tgt_fmt = (target_format or "mp3").lower().lstrip(".")
+        if tgt_fmt not in {"mp3", "wav", "m4a"}:
+            tgt_fmt = "mp3"
+
+    # Create task record
+    task = ToolkitTask(
+        id=task_id,
+        tool_type=tool_type,
+        source_type=src_type,
+        source_task_id=s_task_id,
+        source_project_id=s_proj_id,
+        source_filename=filename,
+        source_file_path=str(media_path),
+        target_format=tgt_fmt,
+        status="processing",
+        progress_percentage=0,
+        source_media_metadata=json.dumps({
+            "requested_start": start_time,
+            "requested_end": end_time,
+            "start_seconds": s_sec,
+            "end_seconds": e_sec,
+            "trim_mode": trim_mode,
+            "target_format": tgt_fmt,
+        }),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    try:
+        trim_res = trimmer_service.trim_media(
+            task_id=task_id,
+            source_path=media_path,
+            output_dir=task_output_dir,
+            tool_type=tool_type,
+            start_time_raw=start_time,
+            end_time_raw=end_time,
+            trim_mode=trim_mode,
+            target_format=tgt_fmt,
+        )
+
+        task.status = "completed"
+        task.progress_percentage = 100
+        task.output_file_path = trim_res["output_file_path"]
+        task.output_filename = trim_res["output_filename"]
+        task.output_duration_seconds = trim_res["output_duration_seconds"]
+        task.output_file_size_bytes = trim_res["output_file_size_bytes"]
+        task.output_media_metadata = json.dumps(trim_res)
+        task.updated_at = get_cambodia_now_naive()
+        db.commit()
+        db.refresh(task)
+
+        return _serialize_task(task)
+
+    except (InvalidTimestampError, MediaTrimmingError) as e:
+        task.status = "failed"
+        task.error_message = str(e)
+        task.updated_at = get_cambodia_now_naive()
+        db.commit()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        task.status = "failed"
+        task.error_message = str(e)
+        task.updated_at = get_cambodia_now_naive()
+        db.commit()
+        logger.error("Trim task %s failed unexpectedly: %s", task_id, e)
+        raise HTTPException(status_code=500, detail=f"Trimming failed: {e}")
+
+
+@router.post("/trimmer/thumbnails")
+def get_video_trimmer_thumbnails(
+    req: TrimmerThumbnailsRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate thumbnail frames for video trimming timeline."""
+    try:
+        media_path, _, _, _, _ = _resolve_trimmer_media_file(
+            db=db,
+            source_task_id=req.source_task_id,
+            source_project_id=req.source_project_id,
+        )
+        thumbs = trimmer_service.extract_video_thumbnails(media_path, count=req.count)
+        return {"thumbnails": thumbs}
+    except Exception as e:
+        logger.warning("Failed to generate thumbnails: %s", e)
+        return {"thumbnails": []}
+
+
+@router.post("/trimmer/{task_id}/import-dubbing")
+def import_trimmer_task_to_dubbing(
+    task_id: str,
+    req: TrimmerImportDubbingRequest,
+    db: Session = Depends(get_db),
+):
+    """Import a completed trimmed video directly into Video Dubbing Studio."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    project = trimmer_service.import_to_dubbing(
+        db=db,
+        task_id=safe_id,
+        title=req.title,
+    )
+    return {
+        "success": True,
+        "project_id": project.id,
+        "title": project.title,
+        "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+        "duration": project.video.duration_seconds if project.video else None,
+    }
+
+
+@router.post("/trimmer/{task_id}/handoff", response_model=ToolkitTaskResponse)
+def handoff_trimmer_task_to_toolkit(
+    task_id: str,
+    req: TrimmerHandoffRequest,
+    db: Session = Depends(get_db),
+):
+    """Transfer trimmed media into another Media Toolkit studio."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    source_task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
+    if not source_task:
+        raise HTTPException(status_code=404, detail="Source trimming task not found.")
+    if source_task.status != "completed":
+        raise HTTPException(status_code=400, detail="Only completed trimming tasks can be transferred.")
+    if not source_task.output_file_path or not Path(source_task.output_file_path).exists():
+        raise HTTPException(status_code=404, detail="Trimmed media file not found on disk.")
+
+    valid_tools = {
+        "video_to_audio",
+        "video_to_transcript",
+        "video_to_text",
+        "audio_to_transcript",
+        "audio_to_text",
+    }
+    if req.target_tool not in valid_tools:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Target tool '{req.target_tool}' is not supported for trimmer handoff.",
+        )
+
+    # Validate media type compatibility
+    if source_task.tool_type == "audio_trimmer" and req.target_tool in {"video_to_audio", "video_to_transcript", "video_to_text"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot transfer audio-only trimmed file to video tool '{req.target_tool}'.",
+        )
+
+    new_task_id = str(uuid.uuid4())
+    new_input_dir = get_toolkit_task_input_dir(new_task_id)
+    source_file = Path(source_task.output_file_path)
+    dest_file = new_input_dir / source_file.name
+    shutil.copy2(source_file, dest_file)
+
+    if req.target_tool in {"video_to_audio", "audio_to_transcript", "audio_to_text"}:
+        target_fmt = "mp3" if req.target_tool == "video_to_audio" else ("srt" if req.target_tool == "audio_to_transcript" else "txt")
+    elif req.target_tool == "video_to_transcript":
+        target_fmt = "srt"
+    else:
+        target_fmt = "txt"
+
+    new_task = ToolkitTask(
+        id=new_task_id,
+        tool_type=req.target_tool,
+        source_type="task_transfer",
+        source_task_id=source_task.id,
+        source_filename=source_task.output_filename or source_file.name,
+        source_file_path=str(dest_file),
+        source_media_metadata=source_task.output_media_metadata,
+        target_format=target_fmt,
+        status="pending",
+        progress_percentage=0,
+    )
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+
+    return _serialize_task(new_task)
+
+
+@router.post("/trimmer/{task_id}/cancel")
+def cancel_trimmer_task(task_id: str, db: Session = Depends(get_db)):
+    """Cancel an active media trimming task."""
+    safe_id = sanitize_toolkit_task_id(task_id)
+    request_trim_cancellation(safe_id)
+    task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
+    if task and task.status in {"pending", "processing"}:
+        task.status = "cancelled"
+        task.error_message = "Trimming cancelled by user."
+        task.updated_at = get_cambodia_now_naive()
+        db.commit()
+    return {"status": "cancelled", "task_id": safe_id}
+
 
 
