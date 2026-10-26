@@ -42,6 +42,10 @@ export const ExportTab: React.FC<ExportTabProps> = ({
   onAutoFitConflicts,
   isAutoFitting = false,
 }) => {
+  const [showReviewList, setShowReviewList] = React.useState(false);
+  const isV2 = project.pipeline_version === 'v2' || exportStatus?.pipeline_version === 'v2';
+  const timingSummary = exportStatus?.timing_summary;
+
   const isVideoReady = Boolean(project.video?.file_path || project.original_video_path);
   const isAudioExtracted = project.status !== 'uploaded' && project.status !== 'created';
   const isTranscribed = project.transcript_segments && project.transcript_segments.length > 0;
@@ -89,9 +93,11 @@ export const ExportTab: React.FC<ExportTabProps> = ({
       ready: isVoiceGenerated,
     },
     {
-      title: 'Timing Conflicts Resolved',
+      title: isV2 ? 'Timing Optimization' : 'Timing Conflicts Resolved',
       desc: hasTimingConflicts
         ? `${timingConflicts.length} segment(s) exceed available timing window`
+        : isV2 && timingSummary
+        ? `${timingSummary.total_segments} segments synchronized (${timingSummary.automatically_optimized} auto-optimized)`
         : 'All segments fit within original video timeline',
       ready: !hasTimingConflicts,
       isWarning: hasTimingConflicts,
@@ -161,8 +167,156 @@ export const ExportTab: React.FC<ExportTabProps> = ({
         </div>
       )}
 
-      {/* Timing Conflicts Details Card (if any) */}
-      {hasTimingConflicts && (
+      {/* V2: Khmer Dubbing Ready Compact Summary (Section 15) */}
+      {isV2 && timingSummary && timingSummary.unresolved_conflicts === 0 && (
+        <div className="p-6 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-slate-800 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <h3 className="text-base font-bold text-emerald-950">Khmer Dubbing Ready</h3>
+            </div>
+            <div className="text-xs text-slate-600 space-y-1 pl-7">
+              <p className="font-medium text-slate-800">
+                <span className="font-semibold text-slate-900">{timingSummary.total_segments}</span> speech segments processed
+              </p>
+              <p className="text-slate-600">
+                <span className="font-semibold text-slate-800">{timingSummary.fitted_without_changes ?? (timingSummary.total_segments - timingSummary.automatically_optimized)}</span> fitted without changes
+              </p>
+              <p className="text-slate-600">
+                <span className="font-semibold text-slate-800">{timingSummary.automatically_optimized}</span> automatically optimized
+              </p>
+              <p className="text-emerald-700 font-bold">
+                0 unresolved timing conflicts
+              </p>
+            </div>
+          </div>
+
+          <div className="shrink-0 flex items-center gap-2">
+            {!isExportComplete && (
+              <button
+                onClick={onExportVideo}
+                disabled={!isReadyToExport || isExporting}
+                className={`px-5 py-2.5 rounded-xl font-bold text-xs shadow-md transition-all flex items-center gap-2 ${
+                  isReadyToExport
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/30'
+                    : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                {isExporting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Exporting MP4...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    <span>Export Dubbed Video</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* V2: Khmer Dubbing — Review Required Compact Summary (Section 15) */}
+      {isV2 && timingSummary && timingSummary.unresolved_conflicts > 0 && (
+        <div className="p-6 rounded-2xl bg-amber-50/80 border border-amber-300 text-slate-800 shadow-sm space-y-4 animate-fadeIn">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                <h3 className="text-base font-bold text-amber-950">Khmer Dubbing — Review Required</h3>
+              </div>
+              <div className="text-xs text-slate-600 space-y-1 pl-7">
+                <p className="font-medium text-slate-800">
+                  <span className="font-semibold text-slate-900">{timingSummary.total_segments}</span> speech segments processed
+                </p>
+                <p className="text-slate-600">
+                  <span className="font-semibold text-slate-800">{timingSummary.synchronized_successfully ?? (timingSummary.total_segments - timingSummary.unresolved_conflicts)}</span> synchronized successfully
+                </p>
+                <p className="text-amber-900 font-bold">
+                  <span>{timingSummary.unresolved_conflicts}</span> require review
+                </p>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex items-center gap-2">
+              <button
+                onClick={() => setShowReviewList((prev) => !prev)}
+                className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-600 hover:bg-amber-700 text-white shadow-md transition-all flex items-center gap-1.5"
+              >
+                <span>{showReviewList ? 'Hide Review List' : `Review ${timingSummary.unresolved_conflicts} Segment${timingSummary.unresolved_conflicts > 1 ? 's' : ''}`}</span>
+              </button>
+              {onAutoFitConflicts && (
+                <button
+                  onClick={onAutoFitConflicts}
+                  disabled={isAutoFitting || isExporting}
+                  className="px-4 py-2.5 rounded-xl font-bold text-xs bg-indigo-600 hover:bg-indigo-700 text-white shadow-md transition-all flex items-center gap-1.5"
+                >
+                  {isAutoFitting ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Optimizing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="w-3.5 h-3.5" />
+                      <span>Auto-Optimize</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {showReviewList && (
+            <div className="pt-3 border-t border-amber-200 space-y-2">
+              <p className="text-amber-900 text-xs font-semibold">
+                Remaining Unresolved Segments:
+              </p>
+              {timingConflicts.map((c) => {
+                const seg = translationSegments.find((s) => s.segment_order === c.segment_order);
+                return (
+                  <div
+                    key={c.segment_order}
+                    className="p-3 bg-white rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-amber-900">Segment #{c.segment_order}</span>
+                        <span className="text-[11px] font-mono text-slate-500">
+                          ({c.start_time.toFixed(2)}s → {c.end_time.toFixed(2)}s)
+                        </span>
+                        <span className="text-[10px] bg-rose-100 text-rose-800 font-semibold px-2 py-0.5 rounded-full">
+                          +{c.overflow_seconds.toFixed(2)}s overflow
+                        </span>
+                      </div>
+                      {seg && (
+                        <p className="font-khmer text-xs text-slate-700 font-medium">
+                          {seg.khmer_text}
+                        </p>
+                      )}
+                    </div>
+                    {seg && (
+                      <button
+                        onClick={() => onOpenAIImprove(seg)}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0 shadow-sm"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Shorten with AI</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* V1 Legacy: Timing Conflicts Details Card (Preserved for existing v1 projects) */}
+      {!isV2 && hasTimingConflicts && (
         <div className="p-5 rounded-2xl bg-amber-50/70 border border-amber-300 text-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">

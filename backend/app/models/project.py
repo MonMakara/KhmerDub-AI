@@ -54,6 +54,7 @@ class Project(Base):
     translation_style = Column(String(50), default="natural", nullable=False)
     tts_provider = Column(String(50), default="gtts", nullable=False)
     tts_voice = Column(String(100), default="default", nullable=False)
+    pipeline_version = Column(String(20), default="v2", nullable=False)
     segmentation_mode = Column(String(50), default="sentence", nullable=True)
     raw_transcript_json = Column(Text, nullable=True)
     status = Column(

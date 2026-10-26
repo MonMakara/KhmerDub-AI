@@ -69,6 +69,7 @@ export interface ProjectSummary {
   tts_provider?: string;
   tts_voice?: string;
   status: ProjectStatus;
+  pipeline_version?: string;
   created_at: string;
   updated_at: string;
 }
@@ -191,6 +192,18 @@ export interface TimingConflict {
   message: string;
 }
 
+export interface TimingSummary {
+  total_segments: number;
+  fitted_naturally?: number;
+  fitted_without_changes?: number;
+  speed_adjusted?: number;
+  sentence_optimized?: number;
+  automatically_optimized: number;
+  synchronized_successfully?: number;
+  unresolved_conflicts: number;
+  status: 'ready' | 'review_required' | string;
+}
+
 export interface ExportStatusResponse {
   project_id: string;
   status: ProjectStatus;
@@ -202,6 +215,8 @@ export interface ExportStatusResponse {
   exported_duration_seconds?: number | null;
   exported_file_size_bytes?: number | null;
   timing_conflicts: TimingConflict[];
+  timing_summary?: TimingSummary | null;
+  pipeline_version?: string;
   video_url?: string | null;
   download_url?: string | null;
 }

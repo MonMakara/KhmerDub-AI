@@ -247,6 +247,7 @@ class DownloaderService:
             title=proj_title,
             original_language=original_lang.lower(),
             target_language=target_lang.lower(),
+            pipeline_version="v2",
             status="created",
         )
         db.add(new_project)

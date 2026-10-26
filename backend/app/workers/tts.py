@@ -55,6 +55,21 @@ def synthesize_segment_audio(
         **kwargs,
     )
 
+    # For v2 projects, trim edge silence immediately on newly synthesized audio
+    is_v2 = (getattr(project, "pipeline_version", "v1") == "v2") if project else False
+    if is_v2 and output_path.exists() and output_path.stat().st_size > 0:
+        try:
+            from app.services.dubbing.synchronizer import AudioSynchronizationService
+            from app.services.video.ffmpeg import FFmpegVideoProcessor
+            sync_svc = AudioSynchronizationService()
+            sync_svc.trim_audio_silence(output_path, output_path)
+            vp = FFmpegVideoProcessor()
+            measured_dur = vp.get_audio_duration(output_path)
+            if measured_dur > 0:
+                result.duration_seconds = measured_dur
+        except Exception as e:
+            logger.warning("Post-synthesis silence trim failed for segment %s: %s", segment.id, e)
+
     audio_record = (
         db.query(GeneratedAudio)
         .filter(GeneratedAudio.translation_segment_id == segment.id)
@@ -169,9 +184,30 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
                 raise TTSError(f"Error synthesizing segment {seg.segment_order}: {e}") from e
 
             # Update progress
-            progress = 10 + int(85 * ((idx + 1) / total_segments))
-            job.progress_percentage = min(progress, 95)
+            progress = 10 + int(80 * ((idx + 1) / total_segments))
+            job.progress_percentage = min(progress, 90)
             db.commit()
+
+        is_v2 = (getattr(project, "pipeline_version", "v1") == "v2")
+        if is_v2:
+            job.progress_percentage = 92
+            db.commit()
+            logger.info("Executing automated timing optimization for v2 project %s...", project_id)
+            try:
+                from app.services.dubbing.timing_optimizer import TimingOptimizerService
+                optimizer = TimingOptimizerService()
+                opt_res = optimizer.optimize_project(project_id, db)
+                logger.info(
+                    "Automated timing optimization finished for %s: %d total, %d fitted, %d speed-adjusted, %d sentence-optimized, %d unresolved",
+                    project_id,
+                    opt_res.total_segments,
+                    opt_res.fitted_naturally,
+                    opt_res.speed_adjusted,
+                    opt_res.sentence_optimized,
+                    opt_res.unresolved_conflicts,
+                )
+            except Exception as e:
+                logger.error("Automated timing optimization encountered an error for project %s: %s", project_id, e)
 
         if project.video and project.video.exported_video_path:
             project.video.is_export_outdated = True

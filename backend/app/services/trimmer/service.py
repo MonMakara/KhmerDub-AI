@@ -530,6 +530,7 @@ class TrimmerService:
             title=project_title[:200],
             original_language="en",
             target_language="km",
+            pipeline_version="v2",
             status=ProjectStatus.CREATED,
         )
         db.add(new_project)

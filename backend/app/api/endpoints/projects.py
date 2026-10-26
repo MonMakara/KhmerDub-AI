@@ -164,6 +164,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
         translation_style=trans_style,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
+        pipeline_version=payload.pipeline_version or "v2",
         status=ProjectStatus.CREATED,
     )
     db.add(project)
@@ -2042,8 +2043,59 @@ def get_export_status(
     download_url = f"/api/projects/{project_id}/export/download" if is_ready else None
 
     # Calculate any timing conflicts from current segments
+    pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+    timing_summary: Optional[Dict[str, Any]] = None
     timing_conflicts: List[TimingConflictResponse] = []
-    if project.translation_segments:
+
+    if pipeline_ver == "v2" and project.translation_segments:
+        from app.services.dubbing.timing_optimizer import TimingOptimizerService
+        optimizer = TimingOptimizerService(max_tempo=max_tempo)
+        analyses = optimizer.analyze_timeline(project_id, db, max_tempo=max_tempo)
+
+        fitted_naturally = sum(1 for a in analyses if a.status == "natural")
+        speed_adjusted = sum(1 for a in analyses if a.status == "speed_adjusted")
+        unresolved_items = [a for a in analyses if a.status == "needs_optimization" and a.overflow_seconds > 0.05]
+
+        timing_conflicts = [
+            TimingConflictResponse(
+                segment_order=u.segment_order,
+                transcript_segment_id=u.transcript_segment_id,
+                start_time=u.start_time,
+                end_time=u.end_time,
+                original_duration=u.slot_duration,
+                khmer_duration=u.raw_duration,
+                available_window=u.available_window,
+                effective_window=u.effective_window,
+                safety_margin_seconds=optimizer.safety_margin_seconds,
+                required_tempo=u.required_tempo,
+                max_tempo_factor=max_tempo,
+                tempo_factor=u.tempo_factor,
+                overflow_seconds=u.overflow_seconds,
+                suggested_action=(
+                    f"Shorten the Khmer translation for Segment #{u.segment_order} by approximately "
+                    f"{max(1, math.ceil(u.overflow_seconds / 0.35))} word(s) (~{u.overflow_seconds:.1f}s excess), regenerate audio, and retry export."
+                ),
+                message=(
+                    f"Segment #{u.segment_order} ({u.raw_duration:.1f}s) exceeds available window "
+                    f"({u.available_window:.2f}s raw, {u.effective_window:.2f}s effective with {int(optimizer.safety_margin_seconds * 1000)}ms safety margin) "
+                    f"by {u.overflow_seconds:.1f}s even at {max_tempo}x speed."
+                ),
+            )
+            for u in unresolved_items
+        ]
+
+        timing_summary = {
+            "total_segments": len(analyses),
+            "fitted_naturally": fitted_naturally,
+            "fitted_without_changes": fitted_naturally,
+            "speed_adjusted": speed_adjusted,
+            "sentence_optimized": 0,
+            "automatically_optimized": speed_adjusted,
+            "synchronized_successfully": len(analyses) - len(unresolved_items),
+            "unresolved_conflicts": len(unresolved_items),
+            "status": "ready" if len(unresolved_items) == 0 else "review_required",
+        }
+    elif project.translation_segments:
         target_dur = float(video.duration_seconds or 0.0) if video else 0.0
         sorted_trans = sorted(project.translation_segments, key=lambda s: s.segment_order)
         for idx, trans_seg in enumerate(sorted_trans):
@@ -2118,6 +2170,8 @@ def get_export_status(
         exported_duration_seconds=video.exported_duration_seconds if video else None,
         exported_file_size_bytes=video.exported_file_size_bytes if video else None,
         timing_conflicts=timing_conflicts,
+        timing_summary=timing_summary,
+        pipeline_version=pipeline_ver,
         video_url=video_url,
         download_url=download_url,
     )
