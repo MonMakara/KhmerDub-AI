@@ -95,7 +95,7 @@ class DownloaderService:
         target_fmt = audio_format if output_type == "audio" else "mp4"
 
         # Check for existing completed download to avoid duplicate network transfers
-        existing = (
+        candidate_tasks = (
             db.query(ToolkitTask)
             .filter(
                 ToolkitTask.tool_type == "video_downloader",
@@ -104,10 +104,44 @@ class DownloaderService:
                 ToolkitTask.target_format == target_fmt,
             )
             .order_by(ToolkitTask.created_at.desc())
-            .first()
+            .all()
         )
-        if existing and existing.output_file_path and Path(existing.output_file_path).exists():
-            logger.info("Reusing existing completed download task %s for URL: %s", existing.id, url)
+        for existing in candidate_tasks:
+            if not existing.output_file_path:
+                continue
+            cached_path = Path(existing.output_file_path)
+            try:
+                if not cached_path.exists() or cached_path.stat().st_size == 0:
+                    continue
+            except OSError:
+                continue
+
+            # Verify that format, quality, and processing options match the request
+            existing_meta = {}
+            if existing.source_media_metadata:
+                try:
+                    existing_meta = json.loads(existing.source_media_metadata)
+                except Exception:
+                    pass
+
+            cached_output_type = existing_meta.get("requested_output_type", "video")
+            cached_quality = existing_meta.get("requested_quality", "best")
+            cached_audio_fmt = existing_meta.get("requested_audio_format", "mp3")
+
+            if cached_output_type != output_type:
+                continue
+            if cached_quality != quality:
+                continue
+            if output_type == "audio" and cached_audio_fmt != audio_format:
+                continue
+
+            logger.info(
+                "Reusing existing completed download task %s for URL: %s (quality=%s, format=%s)",
+                existing.id,
+                url,
+                quality,
+                target_fmt,
+            )
             return existing
 
         # Pre-validate URL and fetch title for task display
