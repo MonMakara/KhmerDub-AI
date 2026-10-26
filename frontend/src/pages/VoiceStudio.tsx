@@ -24,6 +24,7 @@ import {
   CreateVoiceProfilePayload,
   UpdateVoiceProfilePayload,
 } from '../types';
+import { formatCambodiaDateTime } from '../utils/date';
 
 export const VoiceStudio: React.FC = () => {
   const [data, setData] = useState<VoiceStudioData | null>(null);
@@ -970,7 +971,7 @@ export const VoiceStudio: React.FC = () => {
                 <div className="col-span-2 pt-2 border-t border-slate-200/60">
                   <span className="text-slate-400 block font-medium">Granted At</span>
                   <span className="font-mono text-slate-700">
-                    {new Date(viewingConsentProfile.consent.granted_at).toLocaleString()}
+                    {formatCambodiaDateTime(viewingConsentProfile.consent.granted_at)}
                   </span>
                 </div>
               </div>

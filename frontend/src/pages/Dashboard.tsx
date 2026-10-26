@@ -17,6 +17,7 @@ import { HealthResponse, ProjectSummary, ProjectStatus } from '../types';
 import { ProjectActionMenu } from '../components/common/ProjectActionMenu';
 import { RenameProjectModal } from '../components/common/RenameProjectModal';
 import { DeleteProjectModal } from '../components/common/DeleteProjectModal';
+import { formatCambodiaDate } from '../utils/date';
 
 interface DashboardProps {
   health: HealthResponse | null;
@@ -272,7 +273,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <span>•</span>
                         <span className="flex items-center gap-1 text-[11px]">
                           <Calendar className="w-3 h-3" />
-                          {new Date(proj.updated_at || proj.created_at).toLocaleDateString()}
+                          {formatCambodiaDate(proj.updated_at || proj.created_at)}
                         </span>
                       </div>
 

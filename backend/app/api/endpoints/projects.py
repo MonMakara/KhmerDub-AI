@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import List
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 
 from fastapi import (
     APIRouter,
@@ -270,7 +271,7 @@ def update_project(
         )
 
     project.title = payload.title
-    project.updated_at = datetime.utcnow()
+    project.updated_at = get_cambodia_now_naive()
     db.commit()
     db.refresh(project)
     return project

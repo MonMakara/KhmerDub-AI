@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
+from app.core.timezone import get_cambodia_now_naive
 
 from app.models.project import (
     Project,
@@ -189,7 +190,7 @@ def recover_interrupted_toolkit_tasks(db: Session) -> int:
             "Task was interrupted by a server restart or shutdown. "
             "Temporary files have been cleaned up; please retry this operation."
         )
-        task.updated_at = datetime.utcnow()
+        task.updated_at = get_cambodia_now_naive()
 
         # Clean partial files in toolkit task directory
         try:

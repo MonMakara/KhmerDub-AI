@@ -1,6 +1,7 @@
 import hashlib
 import logging
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -66,7 +67,7 @@ def synthesize_segment_audio(
         audio_record.provider = result.provider_name
         audio_record.voice = result.voice
         audio_record.is_outdated = False
-        audio_record.updated_at = datetime.utcnow()
+        audio_record.updated_at = get_cambodia_now_naive()
     else:
         audio_record = GeneratedAudio(
             project_id=project_id,
@@ -76,8 +77,8 @@ def synthesize_segment_audio(
             provider=result.provider_name,
             voice=result.voice,
             is_outdated=False,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=get_cambodia_now_naive(),
+            updated_at=get_cambodia_now_naive(),
         )
         db.add(audio_record)
 

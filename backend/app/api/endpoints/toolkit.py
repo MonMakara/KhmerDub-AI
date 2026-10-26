@@ -7,6 +7,7 @@ import subprocess
 import uuid
 import zipfile
 from datetime import datetime
+from app.core.timezone import get_cambodia_now, get_cambodia_now_naive
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -661,7 +662,7 @@ def build_task_bundle_zip(task: ToolkitTask, db: Session) -> Path:
 
         manifest_text = (
             f"KhmerDub AI - Task Bundle Archive\n"
-            f"Generated At: {datetime.utcnow().isoformat()}Z\n"
+            f"Generated At: {get_cambodia_now().isoformat()}\n"
             f"Task ID: {task.id}\n"
             f"Tool Type: {task.tool_type}\n"
             f"Source Filename: {task.source_filename}\n"
@@ -1292,8 +1293,8 @@ def update_transcript_segment(
 
     new_text = body.text.strip()
     segment.edited_text = new_text
-    segment.updated_at = datetime.utcnow()
-    task.updated_at = datetime.utcnow()
+    segment.updated_at = get_cambodia_now_naive()
+    task.updated_at = get_cambodia_now_naive()
     db.commit()
     db.refresh(segment)
 
@@ -1339,9 +1340,9 @@ def reset_transcript_edits(
 
     for s in segments:
         s.edited_text = None
-        s.updated_at = datetime.utcnow()
+        s.updated_at = get_cambodia_now_naive()
 
-    task.updated_at = datetime.utcnow()
+    task.updated_at = get_cambodia_now_naive()
     db.commit()
 
     all_segments = (
@@ -2955,8 +2956,8 @@ def update_translation_segment(
 
     new_text = body.text.strip()
     seg.edited_text = new_text
-    seg.updated_at = datetime.utcnow()
-    task.updated_at = datetime.utcnow()
+    seg.updated_at = get_cambodia_now_naive()
+    task.updated_at = get_cambodia_now_naive()
     db.commit()
     db.refresh(seg)
 
@@ -3024,8 +3025,8 @@ def retry_translation_segment(
         seg.edited_text = None
         seg.status = "completed"
         seg.error_message = None
-        seg.updated_at = datetime.utcnow()
-        task.updated_at = datetime.utcnow()
+        seg.updated_at = get_cambodia_now_naive()
+        task.updated_at = get_cambodia_now_naive()
         db.commit()
         db.refresh(seg)
     except Exception as e:

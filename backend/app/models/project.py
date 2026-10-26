@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 from sqlalchemy import (
     Column,
     String,
@@ -58,11 +59,11 @@ class Project(Base):
         default=ProjectStatus.CREATED,
         nullable=False,
     )
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
     updated_at = Column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=get_cambodia_now_naive,
+        onupdate=get_cambodia_now_naive,
         nullable=False,
     )
 
@@ -118,8 +119,8 @@ class Video(Base):
     exported_duration_seconds = Column(Float, nullable=True)
     exported_file_size_bytes = Column(Integer, nullable=True)
     is_export_outdated = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=True)
 
     project = relationship("Project", back_populates="video")
 
@@ -133,7 +134,7 @@ class TranscriptSegment(Base):
     start_time = Column(Float, nullable=False)
     end_time = Column(Float, nullable=False)
     text = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="transcript_segments")
 
@@ -150,8 +151,8 @@ class TranslationSegment(Base):
     explanation = Column(Text, nullable=True)
     is_manually_edited = Column(Boolean, default=False, nullable=False)
     is_outdated = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="translation_segments")
     transcript_segment = relationship("TranscriptSegment", backref="translation_segments")
@@ -169,8 +170,8 @@ class GeneratedAudio(Base):
     provider = Column(String(50), default="gtts", nullable=False)
     voice = Column(String(50), default="default", nullable=False)
     is_outdated = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="generated_audios")
     translation_segment = relationship("TranslationSegment", back_populates="generated_audio")
@@ -185,8 +186,8 @@ class ProcessingJob(Base):
     status = Column(SQLEnum(JobStatus), default=JobStatus.PENDING, nullable=False)
     progress_percentage = Column(Integer, default=0, nullable=False)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="jobs")
 
@@ -206,8 +207,8 @@ class SubtitleSegment(Base):
     timing_confidence = Column(String(20), default="verified", nullable=False)  # "verified", "estimated", "manual"
     is_source_outdated = Column(Boolean, default=False, nullable=False)
     is_customized = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("project_id", "language", "segment_order", name="uq_project_language_segment"),

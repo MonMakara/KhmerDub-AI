@@ -11,9 +11,12 @@ services:
       - ./backend:/app
       - ./data:/app/data
       - model_cache:/root/.cache
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     env_file:
       - .env
     environment:
+      - TZ=Asia/Phnom_Penh
       - PYTHONUNBUFFERED=1
       - DATA_DIR=/app/data
       - UPLOADS_DIR=/app/data/uploads
@@ -38,7 +41,10 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
+      - TZ=Asia/Phnom_Penh
       - VITE_API_BASE_URL=http://localhost:8000
       - VITE_BACKEND_URL=http://backend:8000
     depends_on:

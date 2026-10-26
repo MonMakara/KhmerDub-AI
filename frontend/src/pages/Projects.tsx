@@ -15,6 +15,7 @@ import { ProjectSummary, ProjectStatus } from '../types';
 import { ProjectActionMenu } from '../components/common/ProjectActionMenu';
 import { RenameProjectModal } from '../components/common/RenameProjectModal';
 import { DeleteProjectModal } from '../components/common/DeleteProjectModal';
+import { formatCambodiaDate } from '../utils/date';
 
 interface ProjectsProps {
   projects: ProjectSummary[];
@@ -306,7 +307,7 @@ export const Projects: React.FC<ProjectsProps> = ({
                     <span>•</span>
                     <span className="text-[11px] text-slate-400 flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {new Date(proj.created_at).toLocaleDateString()}
+                      {formatCambodiaDate(proj.created_at)}
                     </span>
                   </div>
                 </div>
@@ -399,7 +400,7 @@ export const Projects: React.FC<ProjectsProps> = ({
                         </div>
                       </td>
                       <td className="px-6 py-4 text-xs text-slate-500">
-                        {new Date(proj.created_at).toLocaleDateString()}
+                        {formatCambodiaDate(proj.created_at)}
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">

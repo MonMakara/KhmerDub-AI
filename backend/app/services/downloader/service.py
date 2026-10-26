@@ -3,6 +3,7 @@ import logging
 import shutil
 import uuid
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -165,7 +166,7 @@ class DownloaderService:
 
         task.status = "cancelled"
         task.error_message = "Download cancelled by user."
-        task.updated_at = datetime.utcnow()
+        task.updated_at = get_cambodia_now_naive()
         db.commit()
 
         return {
@@ -263,7 +264,7 @@ class DownloaderService:
             )
             db.add(video)
             new_project.original_video_path = str(dest_video_path)
-            new_project.updated_at = datetime.utcnow()
+            new_project.updated_at = get_cambodia_now_naive()
             db.commit()
             db.refresh(new_project)
 
@@ -333,7 +334,7 @@ class DownloaderService:
                         t.output_file_size_bytes = update_data.get("output_file_size_bytes")
                         t.output_media_metadata = update_data.get("output_media_metadata")
 
-                    t.updated_at = datetime.utcnow()
+                    t.updated_at = get_cambodia_now_naive()
                     local_db.commit()
                 except Exception as ex:
                     logger.warning("Error in progress callback for %s: %s", task_id, ex)
@@ -356,7 +357,7 @@ class DownloaderService:
             if task:
                 task.status = "cancelled"
                 task.error_message = "Download cancelled by user."
-                task.updated_at = datetime.utcnow()
+                task.updated_at = get_cambodia_now_naive()
                 db.commit()
         except DownloadLimitExceededError as e:
             logger.warning("Task %s exceeded size/duration limits: %s", task_id, e)
@@ -364,7 +365,7 @@ class DownloaderService:
             if task:
                 task.status = "failed"
                 task.error_message = str(e)
-                task.updated_at = datetime.utcnow()
+                task.updated_at = get_cambodia_now_naive()
                 db.commit()
         except Exception as e:
             logger.error("Download failed for task %s: %s", task_id, e, exc_info=True)
@@ -372,7 +373,7 @@ class DownloaderService:
             if task:
                 task.status = "failed"
                 task.error_message = str(e)
-                task.updated_at = datetime.utcnow()
+                task.updated_at = get_cambodia_now_naive()
                 db.commit()
         finally:
             db.close()

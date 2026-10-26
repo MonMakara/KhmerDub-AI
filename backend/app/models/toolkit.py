@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 from sqlalchemy import Column, String, Float, Integer, DateTime, Text, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 
@@ -29,8 +30,8 @@ class ToolkitTask(Base):
     output_file_size_bytes = Column(Integer, nullable=True)
     output_media_metadata = Column(Text, nullable=True)  # JSON encoded metadata
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     segments = relationship(
         "ToolkitTranscriptSegment",
@@ -70,8 +71,8 @@ class ToolkitTranscriptSegment(Base):
     end_time = Column(Float, nullable=False)
     raw_text = Column(Text, nullable=False)
     edited_text = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     task = relationship("ToolkitTask", back_populates="segments")
 
@@ -91,8 +92,8 @@ class ToolkitTranslationSegment(Base):
     edited_text = Column(Text, nullable=True)
     status = Column(String(20), default="completed", nullable=False)  # completed, failed
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     task = relationship("ToolkitTask", back_populates="translation_segments")
 
@@ -115,8 +116,8 @@ class ToolkitTTSSegment(Base):
     file_size_bytes = Column(Integer, nullable=True)
     status = Column(String(20), default="pending", nullable=False)  # pending, completed, failed
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
 
     task = relationship("ToolkitTask", back_populates="tts_segments")
 

@@ -12,6 +12,7 @@ import {
   Calendar,
 } from 'lucide-react';
 import { ToolkitTask } from '../../types';
+import { formatCambodiaDateTime } from '../../utils/date';
 
 interface DeleteToolkitTaskModalProps {
   isOpen: boolean;
@@ -141,7 +142,7 @@ export const DeleteToolkitTaskModal: React.FC<DeleteToolkitTaskModalProps> = ({
             <div className="flex items-center gap-3 text-xs text-slate-500 pt-1 border-t border-slate-200/60">
               <span className="flex items-center gap-1 text-[11px]">
                 <Calendar className="w-3 h-3 text-slate-400" />
-                {new Date(task.created_at).toLocaleString()}
+                {formatCambodiaDateTime(task.created_at)}
               </span>
               <span>•</span>
               <span className="capitalize text-[11px] font-medium text-slate-600">

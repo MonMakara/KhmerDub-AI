@@ -22,9 +22,11 @@ import {
   Check,
   Search,
   ExternalLink,
+  Clock,
 } from 'lucide-react';
 import { HealthResponse, TranslationProviderInfo } from '../types';
 import { api } from '../services/api';
+import { formatCambodiaDate, formatCambodiaTime } from '../utils/date';
 
 interface SettingsProps {
   health: HealthResponse | null;
@@ -301,6 +303,15 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
   const [voiceData, setVoiceData] = useState<any>(null);
   const [loadingVoiceData, setLoadingVoiceData] = useState<boolean>(false);
 
+  // Real-time clock aligned with Cambodia Time
+  const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   // Active provider tab to configure (gemini, openai, claude, custom)
   const [activeTab, setActiveTab] = useState<string>('gemini');
 
@@ -525,7 +536,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
       {activeSection === 'status' && (
         <div className="space-y-6">
           {/* Main Status Cards Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
             {/* Backend Connection */}
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
               <div className="flex items-center justify-between">
@@ -546,6 +557,25 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
               </div>
               <p className="text-xs text-slate-500">
                 FastAPI Core v{health?.version || '0.1.0'}
+              </p>
+            </div>
+
+            {/* Cambodia Platform Time */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase text-slate-500 tracking-wider">
+                  Cambodia Time (ICT)
+                </span>
+                <Clock className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                <span className="text-base font-bold text-slate-900 font-mono">
+                  {formatCambodiaTime(currentTime, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 truncate" title="Indochina Time (Asia/Phnom_Penh, UTC+7)">
+                {formatCambodiaDate(currentTime, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
               </p>
             </div>
 

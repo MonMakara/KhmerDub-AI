@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# Install system dependencies including timezone data
+RUN apk add --no-cache tzdata
+
 WORKDIR /app
 
 # Install dependencies first for Docker caching

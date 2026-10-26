@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = True
     LOG_LEVEL: str = "INFO"
+    TIMEZONE: str = "Asia/Phnom_Penh"
 
     # Server
     BACKEND_HOST: str = "0.0.0.0"

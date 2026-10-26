@@ -48,6 +48,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { DeleteToolkitTaskModal } from '../components/common/DeleteToolkitTaskModal';
+import { formatCambodiaDateTime } from '../utils/date';
 import {
   ProjectSummary,
   ToolkitTask,
@@ -1875,7 +1876,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                           )}
                         </div>
                         <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
-                          <span>{new Date(task.created_at).toLocaleDateString()} {new Date(task.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>{formatCambodiaDateTime(task.created_at)}</span>
                           {task.output_duration_seconds ? (
                             <>
                               <span>·</span>
@@ -5798,8 +5799,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                         }`}
                       >
                         <td className="py-3 px-3 text-slate-400 whitespace-nowrap">
-                          {new Date(task.created_at).toLocaleDateString()}{' '}
-                          {new Date(task.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {formatCambodiaDateTime(task.created_at)}
                         </td>
                         <td className="py-3 px-3 whitespace-nowrap">
                           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">

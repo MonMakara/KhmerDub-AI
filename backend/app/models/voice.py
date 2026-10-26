@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 from sqlalchemy import (
     Column,
     String,
@@ -24,7 +25,7 @@ class VoiceConsent(Base):
     consent_statement = Column(Text, nullable=False)
     is_authorized = Column(Boolean, default=True, nullable=False)
     signature_hash = Column(String(64), nullable=False)
-    granted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    granted_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
 
     # Relationships
     profiles = relationship(
@@ -55,11 +56,11 @@ class VoiceProfile(Base):
         nullable=False,
     )
 
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
     updated_at = Column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=get_cambodia_now_naive,
+        onupdate=get_cambodia_now_naive,
         nullable=False,
     )
 

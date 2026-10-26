@@ -1,6 +1,7 @@
 import logging
 import re
 from datetime import datetime
+from app.core.timezone import get_cambodia_now_naive
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
@@ -384,7 +385,7 @@ class SubtitleService:
             target.timing_confidence = "manual"
 
         target.is_customized = True
-        target.updated_at = datetime.utcnow()
+        target.updated_at = get_cambodia_now_naive()
 
         db.commit()
         db.refresh(target)
