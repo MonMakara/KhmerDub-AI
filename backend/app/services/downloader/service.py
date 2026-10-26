@@ -243,7 +243,7 @@ class DownloaderService:
                 filename="original_video.mp4",
                 file_path=str(dest_video_path),
                 file_size_bytes=dest_video_path.stat().st_size if dest_video_path.exists() else 0,
-                duration_seconds=float(probe.duration) if getattr(probe, "duration", None) is not None else None,
+                duration_seconds=float(probe.duration_seconds) if getattr(probe, "duration_seconds", None) is not None else (float(probe.duration) if getattr(probe, "duration", None) is not None else None),
                 width=int(probe.width) if getattr(probe, "width", None) is not None else None,
                 height=int(probe.height) if getattr(probe, "height", None) is not None else None,
                 video_codec=str(probe.video_codec) if getattr(probe, "video_codec", None) is not None else None,

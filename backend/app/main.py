@@ -4,7 +4,11 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.recovery import recover_interrupted_jobs, recover_interrupted_deletions
+from app.core.recovery import (
+    recover_interrupted_jobs,
+    recover_interrupted_deletions,
+    recover_interrupted_toolkit_tasks,
+)
 from app.database.session import init_db, SessionLocal
 from app.api.router import api_router
 
@@ -22,6 +26,7 @@ async def lifespan(app: FastAPI):
     try:
         recover_interrupted_jobs(db, process_start_time=startup_time)
         recover_interrupted_deletions(db)
+        recover_interrupted_toolkit_tasks(db)
     except Exception as e:
         logger.error("Failed to run startup recovery: %s", e)
     finally:

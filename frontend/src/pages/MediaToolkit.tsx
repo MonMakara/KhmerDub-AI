@@ -5545,6 +5545,59 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   </div>
                 );
               })()
+            ) : (downloaderActiveTask && (downloaderActiveTask.status === 'failed' || downloaderActiveTask.status === 'cancelled')) || (activeTask && activeTask.tool_type === 'video_downloader' && (activeTask.status === 'failed' || activeTask.status === 'cancelled')) ? (
+              /* Failed / Cancelled View */
+              (() => {
+                const failedTask = (downloaderActiveTask && (downloaderActiveTask.status === 'failed' || downloaderActiveTask.status === 'cancelled'))
+                  ? downloaderActiveTask
+                  : activeTask!;
+                const isCancelled = failedTask.status === 'cancelled';
+
+                return (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7 space-y-4">
+                    <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                      <AlertCircle className={`w-5 h-5 ${isCancelled ? 'text-amber-500' : 'text-rose-500'}`} />
+                      <h4 className="font-bold text-slate-900 text-sm">
+                        {isCancelled ? 'Download Cancelled' : 'Download Failed'}
+                      </h4>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        isCancelled ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                      }`}>
+                        {failedTask.status}
+                      </span>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1.5">
+                      <div className="font-semibold text-slate-800">
+                        {failedTask.source_filename}
+                      </div>
+                      <p className="text-slate-600">
+                        {failedTask.error_message || (isCancelled ? 'This download was cancelled by the user.' : 'The download operation encountered an error.')}
+                      </p>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500">
+                      {isCancelled ? (
+                        <span>No partial files or temporary data were preserved on the server.</span>
+                      ) : (
+                        <span>Tip: Verify that the source video is public, permitted, and within the 500 MB limit. For YouTube videos requiring login or bot checks, downloading is restricted.</span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDownloaderActiveTaskId(null);
+                        setDownloaderActiveTask(null);
+                        setActiveTask(null);
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition cursor-pointer"
+                    >
+                      Clear & Try Another URL
+                    </button>
+                  </div>
+                );
+              })()
             ) : (
               /* Idle Placeholder */
               <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-12 text-center text-slate-400 space-y-3">

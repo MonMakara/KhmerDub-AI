@@ -14,7 +14,8 @@ from app.models.project import (
     JobStatus,
     ProjectStatus,
 )
-from app.core.storage import delete_project_storage
+from app.models.toolkit import ToolkitTask
+from app.core.storage import delete_project_storage, get_toolkit_task_dir
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,58 @@ def recover_interrupted_deletions(db: Session) -> int:
                 project_id,
                 db_err,
             )
+
+    return recovered_count
+
+
+def recover_interrupted_toolkit_tasks(db: Session) -> int:
+    """Recover and finalize any ToolkitTask left in pending or processing status on startup.
+
+    Guarantees:
+    - Finds tasks with status in ('pending', 'processing').
+    - Marks them as status='failed' with a clear error message.
+    - Cleans up any leftover temporary files (.part, .ytdl, .tmp, or raw downloads).
+    - Preserves completed outputs of finished tasks.
+    - Idempotent and safe to run on every startup.
+    """
+    interrupted_tasks = (
+        db.query(ToolkitTask)
+        .filter(ToolkitTask.status.in_(["pending", "processing"]))
+        .all()
+    )
+
+    if not interrupted_tasks:
+        logger.info("Startup check: No interrupted toolkit tasks found.")
+        return 0
+
+    logger.warning("Startup check: Found %d interrupted toolkit task(s) to finalize.", len(interrupted_tasks))
+    recovered_count = 0
+
+    for task in interrupted_tasks:
+        task_id = task.id
+        logger.info("Recovering interrupted toolkit task %s (type=%s, previous_status=%s)", task_id, task.tool_type, task.status)
+        task.status = "failed"
+        task.error_message = (
+            "Task was interrupted by a server restart or shutdown. "
+            "Temporary files have been cleaned up; please retry this operation."
+        )
+        task.updated_at = datetime.utcnow()
+
+        # Clean partial files in toolkit task directory
+        try:
+            task_dir = get_toolkit_task_dir(task_id)
+            if task_dir.exists():
+                for item in task_dir.rglob("*"):
+                    if item.is_file() and (item.suffix in {".part", ".ytdl", ".tmp"} or "temp" in item.name or "raw_" in item.name):
+                        item.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Error cleaning storage for interrupted task %s: %s", task_id, e)
+
+        recovered_count += 1
+
+    if recovered_count > 0:
+        db.commit()
+        logger.info("Successfully recovered %d interrupted toolkit task(s).", recovered_count)
 
     return recovered_count
 

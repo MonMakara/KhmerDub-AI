@@ -273,13 +273,19 @@ def validate_and_classify_url(url_str: str) -> Tuple[str, str]:
 _thread_local = threading.local()
 _orig_create_connection = socket.create_connection
 _orig_getaddrinfo = socket.getaddrinfo
+_orig_socket_connect = socket.socket.connect
+_orig_thread_start = threading.Thread.start
+
+
+def is_guard_active() -> bool:
+    """Check if the SSRF security guard is active in the current thread context."""
+    return getattr(_thread_local, "active_guard", False)
 
 
 def _guarded_create_connection(address, *args, **kwargs):
     """Wrapped socket.create_connection that verifies destination IP is safe."""
-    host, port = address[0], address[1]
-    # Check if this thread has active guard
-    if getattr(_thread_local, "active_guard", False):
+    if is_guard_active():
+        host, port = address[0], address[1]
         try:
             ipaddress.ip_address(host)
             if not is_safe_ip(host):
@@ -290,21 +296,72 @@ def _guarded_create_connection(address, *args, **kwargs):
     return _orig_create_connection(address, *args, **kwargs)
 
 
+def _guarded_socket_connect(self, address):
+    """Wrapped socket.socket.connect to block direct connections to restricted IPs."""
+    if is_guard_active():
+        if isinstance(address, (list, tuple)) and len(address) >= 2:
+            raw_ip = str(address[0])
+            try:
+                ip = ipaddress.ip_address(raw_ip)
+                if not is_safe_ip(str(ip)):
+                    raise SSRFSecurityError(f"Direct socket connection to restricted IP '{raw_ip}' is prohibited.")
+            except ValueError:
+                pass
+    return _orig_socket_connect(self, address)
+
+
 def _guarded_getaddrinfo(host, port, *args, **kwargs):
-    """Wrapped socket.getaddrinfo that verifies resolved IPs if guard is active."""
-    if getattr(_thread_local, "active_guard", False) and host:
-        clean_host = str(host).strip().lower().rstrip(".")
-        if clean_host in BLOCKED_HOSTNAMES:
-            raise SSRFSecurityError(f"Access to blocked hostname '{clean_host}' is prohibited.")
-        for suffix in BLOCKED_HOSTNAME_SUFFIXES:
-            if clean_host.endswith(suffix):
-                raise SSRFSecurityError(f"Access to local domain '{clean_host}' is prohibited.")
+    """Wrapped socket.getaddrinfo that inspects hostnames and validates EVERY resolved IP.
+
+    Completely neutralizes DNS rebinding, internal Docker subnets, and local address leaks.
+    """
+    if is_guard_active():
+        if host:
+            clean_host = str(host).strip().lower().rstrip(".")
+            if clean_host in BLOCKED_HOSTNAMES:
+                raise SSRFSecurityError(f"Access to blocked hostname '{clean_host}' is prohibited.")
+            for suffix in BLOCKED_HOSTNAME_SUFFIXES:
+                if clean_host.endswith(suffix):
+                    raise SSRFSecurityError(f"Access to local or internal domain '{clean_host}' is prohibited.")
+            try:
+                ipaddress.ip_address(clean_host)
+                if not is_safe_ip(clean_host):
+                    raise SSRFSecurityError(f"Access to restricted or private IP '{clean_host}' is prohibited.")
+            except ValueError:
+                pass
+
+        results = _orig_getaddrinfo(host, port, *args, **kwargs)
+        for res in results:
+            sockaddr = res[4]
+            ip = sockaddr[0]
+            if not is_safe_ip(ip):
+                raise SSRFSecurityError(
+                    f"Security check failed: host '{host}' resolved to restricted or private IP address '{ip}'."
+                )
+        return results
+
     return _orig_getaddrinfo(host, port, *args, **kwargs)
+
+
+def _guarded_thread_start(self, *args, **kwargs):
+    """Ensure child threads spawned from an active guard context inherit the SSRF guard."""
+    if is_guard_active():
+        orig_run = self.run
+
+        def _wrapped_run(*r_args, **r_kwargs):
+            _thread_local.active_guard = True
+            try:
+                return orig_run(*r_args, **r_kwargs)
+            finally:
+                _thread_local.active_guard = False
+
+        self.run = _wrapped_run
+    return _orig_thread_start(self, *args, **kwargs)
 
 
 @contextmanager
 def safe_connection_guard():
-    """Context manager that activates connection-time SSRF guards in the current thread.
+    """Context manager that activates connection-time SSRF guards in the current thread and child threads.
 
     Intercepts socket operations so that any DNS rebinding or redirect to private/internal IPs
     is rejected at connection time.
@@ -319,3 +376,5 @@ def safe_connection_guard():
 # Install global hooks once
 socket.create_connection = _guarded_create_connection
 socket.getaddrinfo = _guarded_getaddrinfo
+socket.socket.connect = _guarded_socket_connect
+threading.Thread.start = _guarded_thread_start

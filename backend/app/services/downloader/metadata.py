@@ -150,15 +150,32 @@ def _fetch_direct_media_metadata(url: str) -> Dict[str, Any]:
     is_audio_only = any(parsed.path.lower().endswith(ext) for ext in [".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac"])
 
     estimated_size: Optional[int] = None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+    }
     try:
-        with httpx.Client(follow_redirects=True, timeout=10.0) as client:
+        with httpx.Client(follow_redirects=True, timeout=10.0, headers=headers) as client:
             resp = client.head(url)
             if resp.status_code == 200:
                 cl = resp.headers.get("content-length")
                 if cl and cl.isdigit():
                     estimated_size = int(cl)
+            elif resp.status_code in {403, 405}:
+                # Some CDNs block HEAD requests; fallback to Range GET for 1 byte
+                range_resp = client.get(url, headers={"Range": "bytes=0-0"})
+                if range_resp.status_code in {200, 206}:
+                    cr = range_resp.headers.get("content-range")
+                    if cr and "/" in cr:
+                        total_str = cr.split("/")[-1]
+                        if total_str.isdigit():
+                            estimated_size = int(total_str)
+                    elif range_resp.headers.get("content-length"):
+                        cl = range_resp.headers.get("content-length")
+                        if cl and cl.isdigit() and range_resp.status_code == 200:
+                            estimated_size = int(cl)
     except Exception as e:
-        logger.warning("HEAD request failed for %s, continuing with fallback: %s", url, e)
+        logger.warning("HEAD/Range request failed for %s, continuing with fallback: %s", url, e)
 
     video_qualities = ["best"] if not is_audio_only else []
     audio_formats = ["mp3", "m4a", "wav"]
