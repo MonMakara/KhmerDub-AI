@@ -626,6 +626,7 @@ export interface TrimmerMediaInfo {
   size_bytes: number;
   format_name: string;
   waveform_peaks: number[];
+  peaks?: number[];
   source_filename: string;
   source_type: string;
   source_task_id?: string | null;
@@ -648,6 +649,7 @@ export interface TrimmerTrimPayload {
 export interface TrimmerThumbnailsPayload {
   source_task_id?: string;
   source_project_id?: string;
+  cached_upload_path?: string;
   count?: number;
 }
 

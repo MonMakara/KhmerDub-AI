@@ -166,7 +166,7 @@ class TrimmerService:
         peaks: List[float] = []
         if has_audio:
             try:
-                peaks = self.extract_waveform_peaks(media_path, num_peaks=150)
+                peaks = self.extract_waveform_peaks(media_path, num_peaks=150, duration=duration)
             except Exception as e:
                 logger.warning("Failed to extract waveform peaks: %s", e)
 
@@ -186,8 +186,9 @@ class TrimmerService:
             "waveform_peaks": peaks,
         }
 
-    def extract_waveform_peaks(self, media_path: Path, num_peaks: int = 150) -> List[float]:
-        """Extract normalized audio waveform peaks (0.0 to 1.0) using fast downsampled PCM."""
+    def extract_waveform_peaks(self, media_path: Path, num_peaks: int = 150, duration: float = 0.0) -> List[float]:
+        """Extract normalized audio waveform peaks (0.0 to 1.0) using fast downsampled PCM,
+        aligned to media presentation duration."""
         if not media_path.exists() or media_path.stat().st_size == 0:
             return [0.0] * num_peaks
 
@@ -196,6 +197,7 @@ class TrimmerService:
             "-v", "error",
             "-i", str(media_path),
             "-vn",
+            "-af", "aresample=async=1:first_pts=0",
             "-ac", "1",
             "-ar", "8000",
             "-f", "s16le",
@@ -210,6 +212,17 @@ class TrimmerService:
 
         if not raw:
             return [0.0] * num_peaks
+
+        # Align with presentation duration if provided
+        # 8000 Hz, 16-bit mono = 16,000 bytes per second
+        if duration > 0.0:
+            expected_bytes = int(duration * 8000) * 2
+            if len(raw) < expected_bytes:
+                # Pad remaining duration with silence
+                raw = raw + b"\x00" * (expected_bytes - len(raw))
+            elif len(raw) > expected_bytes:
+                # Truncate audio extending past video presentation duration
+                raw = raw[:expected_bytes]
 
         total_samples = len(raw) // 2
         if total_samples == 0:

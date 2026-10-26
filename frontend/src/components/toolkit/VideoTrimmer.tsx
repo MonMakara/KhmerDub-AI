@@ -19,6 +19,8 @@ import {
   Zap,
   Sliders,
   Check,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { formatTimestamp, parseTimestamp, formatShortDuration, clamp } from '../../utils/time';
@@ -59,6 +61,7 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
   // Player & Timeline State
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const waveformCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
@@ -160,11 +163,12 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
         }
 
         // Fetch thumbnails for timeline
-        if (taskId || projId) {
+        if (taskId || projId || info.cached_upload_path) {
           api
             .getTrimmerThumbnails({
               source_task_id: taskId || undefined,
               source_project_id: projId || undefined,
+              cached_upload_path: info.cached_upload_path || undefined,
               count: 8,
             })
             .then((thumbs) => setThumbnails(thumbs))
@@ -200,6 +204,74 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
       }
     };
   }, [mediaSourceUrl]);
+
+  // Handle dynamic resize for dual-track timeline canvas
+  const [timelineWidth, setTimelineWidth] = useState<number>(0);
+  useEffect(() => {
+    if (!timelineRef.current) return;
+    const updateWidth = () => {
+      if (timelineRef.current) {
+        setTimelineWidth(timelineRef.current.clientWidth);
+      }
+    };
+    updateWidth();
+    window.addEventListener('resize', updateWidth);
+    return () => window.removeEventListener('resize', updateWidth);
+  }, [mediaInfo]);
+
+  // Render synchronized audio waveform in dual-track timeline
+  useEffect(() => {
+    const canvas = waveformCanvasRef.current;
+    if (!canvas || !mediaInfo) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = timelineRef.current?.getBoundingClientRect();
+    const displayWidth = Math.round(rect?.width || canvas.clientWidth || 800);
+    const displayHeight = 56;
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+    }
+
+    const peaks = mediaInfo.waveform_peaks || mediaInfo.peaks || [];
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
+
+    if (!mediaInfo.has_audio || peaks.length === 0) {
+      // Subtle baseline for video without audio
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, height / 2);
+      ctx.lineTo(width, height / 2);
+      ctx.stroke();
+      return;
+    }
+
+    const centerY = height / 2;
+    const barWidth = width / peaks.length;
+    const gap = Math.max(1, barWidth * 0.2);
+    const actualBarWidth = Math.max(1, barWidth - gap);
+
+    for (let i = 0; i < peaks.length; i++) {
+      const peak = peaks[i];
+      const barHeight = Math.max(4, peak * (height - 8));
+      const x = i * barWidth;
+      const y = centerY - barHeight / 2;
+
+      // Color based on position in selection
+      const peakTime = (i / peaks.length) * (duration || 1);
+      const isSelected = peakTime >= startTime && peakTime <= endTime;
+
+      ctx.fillStyle = isSelected ? '#6366f1' : '#64748b';
+      ctx.beginPath();
+      ctx.roundRect(x, y, actualBarWidth, barHeight, 2);
+      ctx.fill();
+    }
+  }, [mediaInfo, startTime, endTime, duration, timelineWidth]);
 
   // Video playback time updates
   const handleTimeUpdate = () => {
@@ -642,10 +714,15 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
             </div>
           </div>
 
-          {/* Visual Timeline Bar */}
+          {/* Dual-Track Visual Timeline Bar */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-              <span>Timeline</span>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 font-medium">
+              <span className="flex items-center gap-1.5 font-semibold text-slate-700">
+                <span>Video & Audio Timeline</span>
+                <span className="text-[11px] font-normal text-slate-400">
+                  (Video Frames + Synchronized Waveform)
+                </span>
+              </span>
               <span className="font-mono text-indigo-600 font-semibold">
                 Selection: {formatTimestamp(startTime)} → {formatTimestamp(endTime)} (
                 {formatShortDuration(selectionDuration)})
@@ -655,45 +732,88 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
             <div
               ref={timelineRef}
               onClick={handleTimelineClick}
-              className="relative h-16 bg-slate-900 rounded-xl overflow-hidden cursor-pointer select-none shadow-inner border border-slate-700"
+              data-testid="video-trimmer-timeline"
+              className="relative bg-slate-950 rounded-xl overflow-hidden cursor-pointer select-none shadow-inner border border-slate-700"
             >
-              {/* Optional Thumbnails Row */}
-              {thumbnails.length > 0 && (
-                <div className="absolute inset-0 flex opacity-60 pointer-events-none">
-                  {thumbnails.map((thumb, idx) => (
-                    <img
-                      key={idx}
-                      src={thumb}
-                      alt=""
-                      className="h-full flex-1 object-cover border-r border-slate-800 last:border-r-0"
-                    />
-                  ))}
+              {/* Track 1: Video Frame Thumbnails */}
+              <div
+                data-testid="timeline-track-video"
+                className="relative h-14 bg-slate-950 flex items-center overflow-hidden"
+              >
+                {thumbnails.length > 0 ? (
+                  <div className="absolute inset-0 flex opacity-75 pointer-events-none">
+                    {thumbnails.map((thumb, idx) => (
+                      <img
+                        key={idx}
+                        src={thumb}
+                        alt=""
+                        className="h-full flex-1 object-cover border-r border-slate-800 last:border-r-0"
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="w-full flex items-center justify-center text-xs text-slate-500 font-medium gap-1.5 pointer-events-none">
+                    <Film className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Video Frames</span>
+                  </div>
+                )}
+                {/* Track 1 Badge */}
+                <div className="absolute top-1.5 left-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-xs text-[10px] font-semibold text-slate-300 flex items-center gap-1 pointer-events-none z-5">
+                  <Film className="w-2.5 h-2.5 text-indigo-400" />
+                  <span>Video</span>
                 </div>
-              )}
+              </div>
 
-              {/* Dimmed Region Left of Selection */}
+              {/* Track 2: Audio Waveform */}
+              <div
+                data-testid="timeline-track-audio"
+                className="relative h-14 bg-slate-900 border-t border-slate-800/80 flex items-center justify-center overflow-hidden"
+              >
+                {mediaInfo.has_audio ? (
+                  <>
+                    <canvas
+                      ref={waveformCanvasRef}
+                      className="w-full h-full block pointer-events-none"
+                    />
+                    {/* Track 2 Badge */}
+                    <div className="absolute top-1.5 left-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-xs text-[10px] font-semibold text-slate-300 flex items-center gap-1 pointer-events-none z-5">
+                      <Volume2 className="w-2.5 h-2.5 text-indigo-400" />
+                      <span>Audio</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-slate-500 text-xs font-medium pointer-events-none">
+                    <VolumeX className="w-3.5 h-3.5 text-slate-500" />
+                    <span>No audio track</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Shared Dimmed Region Left of Selection (Spans full height of both tracks) */}
               <div
                 className="absolute top-0 bottom-0 left-0 bg-black/60 pointer-events-none z-10"
                 style={{ width: `${startPercent}%` }}
               />
 
-              {/* Selected Highlight Window */}
+              {/* Shared Selected Highlight Window (Spans full height of both tracks) */}
               <div
-                className="absolute top-0 bottom-0 bg-indigo-500/25 border-y-2 border-indigo-400 pointer-events-none z-10 shadow-sm"
+                data-testid="timeline-selection-window"
+                className="absolute top-0 bottom-0 bg-indigo-500/20 border-y-2 border-indigo-400 pointer-events-none z-10 shadow-sm"
                 style={{
                   left: `${startPercent}%`,
                   width: `${Math.max(0, endPercent - startPercent)}%`,
                 }}
               />
 
-              {/* Dimmed Region Right of Selection */}
+              {/* Shared Dimmed Region Right of Selection (Spans full height of both tracks) */}
               <div
                 className="absolute top-0 bottom-0 right-0 bg-black/60 pointer-events-none z-10"
                 style={{ width: `${100 - endPercent}%` }}
               />
 
-              {/* Start Handle */}
+              {/* Shared Start Handle (Spans full height of both tracks) */}
               <div
+                data-testid="timeline-handle-start"
                 onMouseDown={(e) => {
                   e.stopPropagation();
                   setDraggingHandle('start');
@@ -706,11 +826,12 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
                 className="absolute top-0 bottom-0 -ml-2.5 w-5 bg-indigo-600 hover:bg-indigo-500 z-30 cursor-ew-resize flex items-center justify-center rounded-l-md shadow-md transition-colors"
                 title="Drag Start Handle"
               >
-                <div className="w-1 h-6 bg-white/80 rounded-full" />
+                <div className="w-1 h-10 bg-white/80 rounded-full" />
               </div>
 
-              {/* End Handle */}
+              {/* Shared End Handle (Spans full height of both tracks) */}
               <div
+                data-testid="timeline-handle-end"
                 onMouseDown={(e) => {
                   e.stopPropagation();
                   setDraggingHandle('end');
@@ -723,11 +844,12 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
                 className="absolute top-0 bottom-0 -mr-2.5 w-5 bg-indigo-600 hover:bg-indigo-500 z-30 cursor-ew-resize flex items-center justify-center rounded-r-md shadow-md transition-colors"
                 title="Drag End Handle"
               >
-                <div className="w-1 h-6 bg-white/80 rounded-full" />
+                <div className="w-1 h-10 bg-white/80 rounded-full" />
               </div>
 
-              {/* Current Playhead Line */}
+              {/* Shared Current Playhead Line (Spans full height of both tracks) */}
               <div
+                data-testid="timeline-playhead"
                 onMouseDown={(e) => {
                   e.stopPropagation();
                   setDraggingHandle('playhead');
@@ -738,6 +860,7 @@ export const VideoTrimmer: React.FC<VideoTrimmerProps> = ({
                 }}
                 style={{ left: `${currentPercent}%` }}
                 className="absolute top-0 bottom-0 w-0.5 bg-rose-500 z-40 cursor-pointer pointer-events-auto"
+                title="Playhead Position"
               >
                 <div className="w-3 h-3 bg-rose-500 rounded-full -ml-[5px] -mt-1 shadow-xs" />
               </div>

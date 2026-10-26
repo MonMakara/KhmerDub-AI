@@ -145,7 +145,52 @@ def test_trimmer_media_info_endpoint(sample_media_files):
     assert data["has_audio"] is True
     assert data["duration_seconds"] >= 4.9
     assert len(data["peaks"]) == 150
+    assert len(data["waveform_peaks"]) == 150
+    assert any(p > 0 for p in data["waveform_peaks"])
     assert data["cached_upload_path"] is not None
+
+
+def test_trimmer_media_info_no_audio(sample_media_files):
+    """Phase 13G.1: Verify video without audio returns empty waveform peaks and has_audio=False."""
+    vid_no_audio = sample_media_files["video_no_audio"]
+    with open(vid_no_audio, "rb") as f:
+        resp = client.post("/api/toolkit/trimmer/info", files={"file": ("silent.mp4", f, "video/mp4")})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["has_video"] is True
+    assert data["has_audio"] is False
+    assert data["peaks"] == []
+    assert data["waveform_peaks"] == []
+
+
+def test_delayed_audio_presentation_alignment(tmp_path):
+    """Phase 13G.1: Verify embedded audio with delay aligns properly to presentation duration."""
+    delayed_vid = tmp_path / "delayed_audio.mp4"
+    # 6-second video; audio delayed by 2 seconds using adelay
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc=duration=6:size=320x240:rate=25",
+            "-f", "lavfi", "-i", "sine=frequency=880:duration=4",
+            "-filter_complex", "[1:a]adelay=2000|2000[delayed_a]",
+            "-map", "0:v", "-map", "[delayed_a]",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            str(delayed_vid),
+        ],
+        check=True,
+    )
+
+    info = trimmer_service.get_media_info(delayed_vid)
+    assert info["has_audio"] is True
+    peaks = info["waveform_peaks"]
+    assert len(peaks) == 150
+
+    # 150 bins over 6 seconds -> 25 bins/sec. The first 2 seconds (first ~45 bins) should be 0.0 (silence)
+    assert all(peaks[i] == 0.0 for i in range(40))
+    # After 2 seconds (e.g. bin 60 onwards), active tone should produce positive peaks
+    assert any(peaks[i] > 0.0 for i in range(55, 120))
 
 
 def test_trimmer_thumbnails_endpoint(sample_media_files):
@@ -155,6 +200,17 @@ def test_trimmer_thumbnails_endpoint(sample_media_files):
     with open(vid_path, "rb") as f:
         info_resp = client.post("/api/toolkit/trimmer/info", files={"file": ("test.mp4", f, "video/mp4")})
     assert info_resp.status_code == 200
+    cached_path = info_resp.json().get("cached_upload_path")
+
+    # Call thumbnails endpoint with cached_upload_path
+    resp = client.post(
+        "/api/toolkit/trimmer/thumbnails",
+        json={"cached_upload_path": cached_path, "count": 6},
+    )
+    assert resp.status_code == 200
+    thumbs_data = resp.json().get("thumbnails", [])
+    assert len(thumbs_data) > 0
+    assert thumbs_data[0].startswith("data:image/jpeg;base64,")
 
     # Direct service call for thumbnails
     thumbs = trimmer_service.extract_video_thumbnails(vid_path, count=5)

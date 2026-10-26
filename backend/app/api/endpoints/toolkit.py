@@ -314,6 +314,7 @@ class TrimmerInfoRequest(BaseModel):
 class TrimmerThumbnailsRequest(BaseModel):
     source_task_id: Optional[str] = None
     source_project_id: Optional[str] = None
+    cached_upload_path: Optional[str] = None
     count: int = 6
 
 
@@ -3553,6 +3554,13 @@ def get_video_trimmer_thumbnails(
 ):
     """Generate thumbnail frames for video trimming timeline."""
     try:
+        if req.cached_upload_path:
+            c_path = Path(req.cached_upload_path).resolve()
+            perm_upload_dir = (settings.TEMP_DIR / "trimmer_uploads").resolve()
+            if c_path.exists() and (perm_upload_dir in c_path.parents or c_path == perm_upload_dir or c_path.is_file()):
+                thumbs = trimmer_service.extract_video_thumbnails(c_path, count=req.count)
+                return {"thumbnails": thumbs}
+
         media_path, _, _, _, _ = _resolve_trimmer_media_file(
             db=db,
             source_task_id=req.source_task_id,
