@@ -316,7 +316,14 @@ def _download_yt_dlp(
     output_template = str(dest_dir / f"raw_download_{task_id}.%(ext)s")
 
     # Format selector based on requested quality and output_type
-    format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    format_spec = (
+        "bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/"
+        "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/"
+        "bestvideo[height<=1080]+bestaudio/"
+        "best[height<=1080][ext=mp4]/"
+        "best[height<=1080]/"
+        "bestvideo+bestaudio/best"
+    )
     if output_type == "audio":
         format_spec = "bestaudio/best"
     elif quality == "original":
@@ -327,6 +334,7 @@ def _download_yt_dlp(
         if m:
             height = m.group(1)
             format_spec = (
+                f"bestvideo[height<={height}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/"
                 f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
                 f"bestvideo[height<={height}]+bestaudio/"
                 f"best[height<={height}][ext=mp4]/"
@@ -563,7 +571,7 @@ def _transcode_and_normalize(
         # If user requested M4A and source audio is already AAC, stream copy lossless without re-encoding
         if fmt == "m4a" and probe and str(getattr(probe, "audio_codec", "")).lower() in {"aac", "mp4a"}:
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
                 "-vn", "-c:a", "copy",
@@ -574,7 +582,7 @@ def _transcode_and_normalize(
             transcode_performed = False
         elif fmt == "mp3":
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
                 "-vn", "-c:a", "libmp3lame", "-b:a", "192k",
@@ -582,7 +590,7 @@ def _transcode_and_normalize(
             ]
         elif fmt == "m4a":
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
                 "-vn", "-c:a", "aac", "-b:a", "192k",
@@ -590,7 +598,7 @@ def _transcode_and_normalize(
             ]
         else:  # wav
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
                 "-vn", "-c:a", "pcm_s16le", "-ar", "44100",
@@ -609,7 +617,7 @@ def _transcode_and_normalize(
         if is_h264 and is_aac and is_mp4:
             # Complete lossless stream copy / remux without quality loss or re-encoding
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
                 "-c", "copy",
@@ -623,7 +631,7 @@ def _transcode_and_normalize(
         elif is_h264:
             # Video stream copy (lossless video copy!), transcode only audio track to AAC
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
                 "-c:v", "copy",
@@ -636,12 +644,13 @@ def _transcode_and_normalize(
             audio_copied = False
             transcode_performed = True
         else:
-            # Full transcoding for non-H.264 video
+            # Full transcoding for non-H.264 video (e.g. AV1, VP9) - downscale to 1080p if larger to avoid CPU exhaustion
             cmd = [
-                "ffmpeg", "-y", "-nostdin",
+                "ffmpeg", "-y", "-nostdin", "-v", "error",
                 "-protocol_whitelist", "file,pipe",
                 "-i", str(raw_path),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "22",
+                "-vf", "scale='min(1920,iw)':-2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "22",
                 "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart",
                 str(out_file),
@@ -652,7 +661,21 @@ def _transcode_and_normalize(
             transcode_performed = True
 
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stderr_output = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+        def _drain_stderr():
+            try:
+                if proc.stderr:
+                    err_bytes = proc.stderr.read()
+                    if err_bytes:
+                        stderr_output.append(err_bytes.decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+
+        reader_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        reader_thread.start()
+
         while proc.poll() is None:
             if cancel_event.is_set():
                 proc.terminate()
@@ -660,6 +683,7 @@ def _transcode_and_normalize(
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                reader_thread.join(timeout=1)
                 if out_file.exists():
                     out_file.unlink(missing_ok=True)
                 raise DownloadCancelledException("Transcoding cancelled by user.")
@@ -670,6 +694,7 @@ def _transcode_and_normalize(
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                reader_thread.join(timeout=1)
                 if out_file.exists():
                     out_file.unlink(missing_ok=True)
                 raise DownloadLimitExceededError(
@@ -682,6 +707,7 @@ def _transcode_and_normalize(
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                reader_thread.join(timeout=1)
                 if out_file.exists():
                     out_file.unlink(missing_ok=True)
                 raise DownloadLimitExceededError(
@@ -690,10 +716,11 @@ def _transcode_and_normalize(
 
             time.sleep(0.3)
 
+        reader_thread.join(timeout=2)
         if proc.returncode != 0:
-            stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else "Unknown error"
-            logger.error("FFmpeg processing failed: %s", stderr)
-            raise VideoDownloadError(f"Transcoding failed: {stderr[-200:]}")
+            err_text = "".join(stderr_output) or "Unknown error"
+            logger.error("FFmpeg processing failed: %s", err_text)
+            raise VideoDownloadError(f"Transcoding failed: {err_text[-200:]}")
     except (DownloadCancelledException, DownloadLimitExceededError):
         raise
     except Exception as e:
@@ -708,30 +735,3 @@ def _transcode_and_normalize(
         "audio_stream_copied": audio_copied,
     }
     return out_file, transcode_info
-
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        while proc.poll() is None:
-            if cancel_event.is_set():
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                if out_file.exists():
-                    out_file.unlink(missing_ok=True)
-                raise DownloadCancelledException("Transcoding cancelled by user.")
-            time.sleep(0.3)
-
-        if proc.returncode != 0:
-            stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else "Unknown error"
-            logger.error("FFmpeg transcoding failed: %s", stderr)
-            raise VideoDownloadError(f"Transcoding failed: {stderr[-200:]}")
-    except DownloadCancelledException:
-        raise
-    except Exception as e:
-        if out_file.exists():
-            out_file.unlink(missing_ok=True)
-        raise VideoDownloadError(f"Error during media normalization: {e}") from e
-
-    return out_file
