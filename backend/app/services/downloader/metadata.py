@@ -55,7 +55,6 @@ def _fetch_yt_dlp_metadata(url: str, platform: str) -> Dict[str, Any]:
         "socket_timeout": 15,
         "no_color": True,
         "no_cookies": True,
-        "max_downloads": 1,
     }
 
     try:

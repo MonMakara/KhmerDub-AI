@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -384,7 +385,6 @@ def _download_yt_dlp(
         "no_warnings": True,
         "quiet": True,
         "socket_timeout": 30,
-        "max_downloads": 1,
         "no_cookies": True,
         "concurrent_fragment_downloads": 1,
         "hls_prefer_native": True,
