@@ -197,7 +197,7 @@ class ExportStatusResponse(BaseModel):
     exported_file_size_bytes: Optional[int] = None
     timing_conflicts: List[TimingConflictResponse] = []
     timing_summary: Optional[Dict[str, Any]] = None
-    pipeline_version: str = "v1"
+    pipeline_version: str = "v2.1"
     video_url: Optional[str] = None
     download_url: Optional[str] = None
 
@@ -334,7 +334,7 @@ class ProjectCreate(BaseModel):
     translation_style: Optional[str] = "natural"
     tts_provider: Optional[str] = "gtts"
     tts_voice: Optional[str] = "default"
-    pipeline_version: Optional[str] = "v2"
+    pipeline_version: Optional[str] = "v2.1"
 
 
 class ProjectUpdate(BaseModel):
@@ -368,7 +368,7 @@ class ProjectSummaryResponse(BaseModel):
     translation_style: str = "natural"
     tts_provider: str = "gtts"
     tts_voice: str = "default"
-    pipeline_version: str = "v1"
+    pipeline_version: str = "v2.1"
     status: ProjectStatus
     created_at: datetime
     updated_at: datetime

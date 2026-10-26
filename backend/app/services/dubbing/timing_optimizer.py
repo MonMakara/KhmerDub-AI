@@ -127,6 +127,103 @@ class TimingOptimizerService:
         )
 
         analysis_items: List[SegmentTimingAnalysis] = []
+        pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+
+        if pipeline_ver == "v2.1":
+            # --- V2.1: Phrase-Group Budget Analysis ---
+            items_meta = []
+            for idx, trans_seg in enumerate(sorted_trans):
+                t_seg = (
+                    trans_seg.transcript_segment
+                    or db.query(TranscriptSegment).filter(TranscriptSegment.id == trans_seg.transcript_segment_id).first()
+                )
+                audio_rec = (
+                    trans_seg.generated_audio
+                    or db.query(GeneratedAudio).filter(GeneratedAudio.translation_segment_id == trans_seg.id).first()
+                )
+                if not t_seg:
+                    continue
+                start_time = max(0.0, float(t_seg.start_time))
+                end_time = max(start_time, float(t_seg.end_time))
+                slot_dur = max(0.1, end_time - start_time)
+                raw_dur = float(audio_rec.duration_seconds or 0.0) if audio_rec else 0.0
+                items_meta.append({
+                    "trans_seg": trans_seg,
+                    "t_seg": t_seg,
+                    "audio_rec": audio_rec,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "slot_dur": slot_dur,
+                    "raw_dur": raw_dur,
+                })
+
+            # Group into phrase-groups with gap <= 1.5s
+            groups = []
+            curr_g = []
+            for item in items_meta:
+                if not curr_g:
+                    curr_g.append(item)
+                else:
+                    if (item["start_time"] - curr_g[-1]["end_time"]) <= 1.5:
+                        curr_g.append(item)
+                    else:
+                        groups.append(curr_g)
+                        curr_g = [item]
+            if curr_g:
+                groups.append(curr_g)
+
+            for g_idx, g in enumerate(groups):
+                g_start = g[0]["start_time"]
+                g_limit = min(float(groups[g_idx + 1][0]["start_time"]), target_dur) if (g_idx < len(groups) - 1 and target_dur > 0) else (target_dur if target_dur > 0 else g[-1]["end_time"])
+                g_avail = max(0.1, g_limit - g_start)
+                k = len(g)
+                p_min = 0.12
+                p_total = (k - 1) * p_min
+                avail_speech = max(0.05, g_avail - p_total - self.safety_margin_seconds)
+                sum_raw = sum(s["raw_dur"] for s in g)
+                req_tempo = round(sum_raw / avail_speech, 3) if avail_speech > 0 else 1.0
+
+                if (sum_raw + p_total) <= g_avail:
+                    group_status = "natural"
+                    group_tempo = 1.0
+                    group_overflow = 0.0
+                elif req_tempo <= tempo_cap:
+                    group_status = "speed_adjusted"
+                    group_tempo = round(req_tempo, 2)
+                    group_overflow = 0.0
+                else:
+                    group_status = "needs_optimization"
+                    group_tempo = tempo_cap
+                    group_overflow = round((sum_raw / tempo_cap) - avail_speech, 2)
+
+                for item in g:
+                    item_overflow = group_overflow if group_status == "needs_optimization" else 0.0
+                    analysis_items.append(
+                        SegmentTimingAnalysis(
+                            segment_order=item["t_seg"].segment_order,
+                            transcript_segment_id=item["t_seg"].id,
+                            translation_segment_id=item["trans_seg"].id,
+                            start_time=round(item["start_time"], 2),
+                            end_time=round(item["end_time"], 2),
+                            slot_duration=round(item["slot_dur"], 2),
+                            next_start=round(g_limit, 2),
+                            inter_segment_gap=round(max(0.0, g_limit - item["end_time"]), 2),
+                            available_window=round(g_avail, 2),
+                            effective_window=round(avail_speech, 2),
+                            audio_path=item["audio_rec"].audio_path if item["audio_rec"] else None,
+                            raw_duration=round(item["raw_dur"], 2),
+                            trimmed_duration=round(item["raw_dur"], 2),
+                            required_tempo=round(req_tempo, 2),
+                            tempo_factor=round(group_tempo, 2),
+                            status=group_status,
+                            overflow_seconds=item_overflow,
+                            khmer_text=item["trans_seg"].khmer_text or "",
+                            english_text=item["t_seg"].text or "",
+                            is_manually_edited=bool(item["trans_seg"].is_manually_edited),
+                        )
+                    )
+
+            return analysis_items
 
         for idx, trans_seg in enumerate(sorted_trans):
             t_seg = (
@@ -238,9 +335,9 @@ class TimingOptimizerService:
 
         pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
 
-        # Tier 1: Trim edge silence on all existing audio segments in-place
+        # Tier 1: Trim edge silence on all existing audio segments in-place (legacy only; v2.1 preserves complete speech)
         trimmed_count = 0
-        if project.translation_segments:
+        if pipeline_ver != "v2.1" and project.translation_segments:
             for trans_seg in project.translation_segments:
                 audio_rec = trans_seg.generated_audio
                 if audio_rec and audio_rec.audio_path:
@@ -282,7 +379,12 @@ class TimingOptimizerService:
         segments_updated_count = 0
 
         # Tier 3: Selective sentence optimization for overflow segments
-        overflow_items = [item for item in analysis if item.status == "needs_optimization"]
+        # In v2.1, speech completeness and translation preservation strictly take precedence over
+        # automated text deletion. We do not perform lossy character or word slicing.
+        if pipeline_ver == "v2.1":
+            overflow_items = []
+        else:
+            overflow_items = [item for item in analysis if item.status == "needs_optimization"]
 
         for item in overflow_items:
             # Safeguard: never overwrite manually approved translations without user intent

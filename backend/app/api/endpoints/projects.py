@@ -164,7 +164,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
         translation_style=trans_style,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
-        pipeline_version=payload.pipeline_version or "v2",
+        pipeline_version=payload.pipeline_version or "v2.1",
         status=ProjectStatus.CREATED,
     )
     db.add(project)

@@ -161,6 +161,42 @@ class AudioSynchronizationService:
             raise RuntimeError(f"FFmpeg atempo adjustment failed for {input_audio}: {res.stderr}")
         return output_path
 
+    def render_speech_piece(
+        self,
+        input_audio: Path,
+        output_path: Path,
+        tempo_factor: float = 1.0,
+        apply_micro_fade: bool = True,
+    ) -> Path:
+        """Render a speech piece with pitch-preserving tempo adjustment and
+        boundary micro-fades (8ms) to guarantee zero clicks and intact phonemes.
+        """
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tempo = max(0.5, min(2.0, float(tempo_factor)))
+        has_tempo = abs(tempo - 1.0) > 0.01
+
+        filters = []
+        if has_tempo:
+            filters.append(f"atempo={tempo:.3f}")
+        if apply_micro_fade:
+            # 8ms smooth cosine/linear micro-fade at head and tail
+            filters.append("afade=t=in:ss=0:d=0.008,areverse,afade=t=in:ss=0:d=0.008,areverse")
+
+        cmd = [self.ffmpeg_bin, "-y", "-i", str(input_audio)]
+        if filters:
+            cmd.extend(["-af", ",".join(filters)])
+        cmd.extend([
+            "-acodec", "pcm_s16le",
+            "-ar", str(self.sample_rate),
+            "-ac", str(self.channels),
+            str(output_path),
+        ])
+
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"FFmpeg failed to render speech piece {input_audio}: {res.stderr}")
+        return output_path
+
     def synchronize(
         self,
         project_id: str,
@@ -170,6 +206,7 @@ class AudioSynchronizationService:
         strict_validation: bool = True,
         max_tempo_factor: Optional[float] = None,
         trim_silence: bool = False,
+        pipeline_version: str = "v2.1",
     ) -> SynchronizationResult:
         """Align speech segments onto a unified timeline WAV matching target video duration."""
         if not segment_items:
@@ -189,166 +226,317 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
-            # 1. First pass: analyze timing windows and detect any unresolved conflicts
-            analyzed_segments: List[dict] = []
-            for idx, (t_seg, trans_seg, audio_rec) in enumerate(sorted_items):
-                start_time = max(0.0, float(t_seg.start_time))
-                end_time = max(start_time, float(t_seg.end_time))
-                orig_dur = max(0.1, end_time - start_time)
+            if pipeline_version == "v2.1":
+                # --- V2.1: Phrase-Group Scheduling with Non-Destructive Audio & Micro-Fades ---
+                phrase_groups: List[List[dict]] = []
+                curr_group: List[dict] = []
+                max_group_gap = 1.5  # sentences within 1.5s share timing flexibility
 
-                # Determine next boundary
-                if idx < total_segments - 1:
-                    next_start = float(sorted_items[idx + 1][0].start_time)
-                    if next_start > start_time:
-                        avail_window = min(next_start - start_time, target_duration - start_time)
-                    else:
-                        avail_window = max(0.1, min(orig_dur, target_duration - start_time))
-                else:
-                    avail_window = max(0.1, target_duration - start_time)
+                for idx, (t_seg, trans_seg, audio_rec) in enumerate(sorted_items):
+                    start_time = max(0.0, float(t_seg.start_time))
+                    end_time = max(start_time, float(t_seg.end_time))
+                    orig_dur = max(0.1, end_time - start_time)
 
-                avail_window = max(0.1, avail_window)
+                    audio_path = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
+                    if not audio_path.exists() or audio_path.stat().st_size == 0:
+                        raise FileNotFoundError(
+                            f"Generated audio file missing for segment {t_seg.segment_order} at {audio_path}"
+                        )
 
-                # Resolve source audio file
-                audio_path = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
-                if not audio_path.exists() or audio_path.stat().st_size == 0:
-                    raise FileNotFoundError(
-                        f"Generated audio file missing for segment {t_seg.segment_order} at {audio_path}"
-                    )
-
-                if trim_silence:
-                    trimmed_src = work_dir / f"trimmed_src_{idx}.wav"
-                    self.trim_audio_silence(audio_path, trimmed_src)
-                    source_for_piece = trimmed_src
-                    raw_dur = self.video_processor.get_audio_duration(trimmed_src)
-                else:
-                    source_for_piece = audio_path
                     raw_dur = self.video_processor.get_audio_duration(audio_path)
+                    if raw_dur <= 0.0:
+                        raw_dur = float(audio_rec.duration_seconds or 1.0)
 
-                if raw_dur <= 0.0:
-                    raw_dur = float(audio_rec.duration_seconds or 1.0)
+                    seg_info = {
+                        "idx": idx,
+                        "t_seg": t_seg,
+                        "trans_seg": trans_seg,
+                        "audio_rec": audio_rec,
+                        "audio_path": audio_path,
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "orig_dur": orig_dur,
+                        "raw_dur": raw_dur,
+                    }
 
-                # Timing strategy
-                tempo = 1.0
-                required_tempo = 1.0
+                    if not curr_group:
+                        curr_group.append(seg_info)
+                    else:
+                        prev_end = curr_group[-1]["end_time"]
+                        if (start_time - prev_end) <= max_group_gap:
+                            curr_group.append(seg_info)
+                        else:
+                            phrase_groups.append(curr_group)
+                            curr_group = [seg_info]
 
-                if raw_dur <= orig_dur:
+                if curr_group:
+                    phrase_groups.append(curr_group)
+
+                analyzed_groups: List[dict] = []
+                for g_idx, g_items in enumerate(phrase_groups):
+                    g_start = g_items[0]["start_time"]
+                    if g_idx < len(phrase_groups) - 1:
+                        next_g_start = float(phrase_groups[g_idx + 1][0]["start_time"])
+                        g_limit = min(next_g_start, target_duration)
+                    else:
+                        g_limit = target_duration
+
+                    g_avail_window = max(0.1, g_limit - g_start)
+                    k = len(g_items)
+                    sum_raw = sum(s["raw_dur"] for s in g_items)
+                    p_min = 0.12  # 120ms natural breath pause between sentences
+                    p_total = (k - 1) * p_min
+                    avail_speech = max(0.05, g_avail_window - p_total - self.safety_margin_seconds)
+                    req_tempo = round(sum_raw / avail_speech, 3)
+
+                    if (sum_raw + p_total) <= g_avail_window:
+                        group_tempo = 1.0
+                    elif req_tempo <= active_max_tempo:
+                        group_tempo = round(req_tempo, 2)
+                    else:
+                        group_tempo = active_max_tempo
+                        overflow = round((sum_raw / active_max_tempo) - avail_speech, 2)
+                        if overflow > 0.05:
+                            overflowing_segs = [s for s in g_items if (s["raw_dur"] / max(0.05, s["orig_dur"])) > active_max_tempo]
+                            if not overflowing_segs:
+                                overflowing_segs = [max(g_items, key=lambda s: s["raw_dur"] / max(0.1, s["orig_dur"]))]
+                            for seg_c in overflowing_segs:
+                                seg_overflow = round((seg_c["raw_dur"] / active_max_tempo) - max(0.05, seg_c["orig_dur"]), 2)
+                                if seg_overflow <= 0.05:
+                                    seg_overflow = overflow
+                                est_words = max(1, math.ceil(seg_overflow / 0.35))
+                                action = (
+                                    f"Shorten the Khmer translation for Segment #{seg_c['t_seg'].segment_order} by approximately "
+                                    f"{est_words} word(s) (~{seg_overflow:.1f}s), regenerate audio, and retry export."
+                                )
+                                conflicts.append(
+                                    TimingConflict(
+                                        segment_order=seg_c["t_seg"].segment_order,
+                                        transcript_segment_id=seg_c["t_seg"].id,
+                                        start_time=round(seg_c["start_time"], 2),
+                                        end_time=round(seg_c["end_time"], 2),
+                                        original_duration=round(seg_c["orig_dur"], 2),
+                                        khmer_duration=round(seg_c["raw_dur"], 2),
+                                        available_window=round(g_avail_window, 2),
+                                        effective_window=round(avail_speech, 2),
+                                        safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                                        required_tempo=round(req_tempo, 2),
+                                        max_tempo_factor=active_max_tempo,
+                                        tempo_factor=group_tempo,
+                                        overflow_seconds=seg_overflow,
+                                        suggested_action=action,
+                                        message=(
+                                            f"Phrase group starting at Segment #{g_items[0]['t_seg'].segment_order} ({sum_raw:.1f}s) "
+                                            f"exceeds available window ({g_avail_window:.2f}s) by {seg_overflow:.1f}s even at {group_tempo}x speed. "
+                                            f"{action}"
+                                        ),
+                                    )
+                                )
+
+                    analyzed_groups.append({
+                        "items": g_items,
+                        "tempo": group_tempo,
+                        "p_min": p_min,
+                    })
+
+                if strict_validation and conflicts:
+                    logger.warning(
+                        "Strict duration validation blocked export: %d timing conflict(s) detected.",
+                        len(conflicts),
+                    )
+                    raise TimingConflictError(conflicts=conflicts)
+
+                # Second pass: render pieces with micro-fades and construct timeline
+                current_time = 0.0
+                for g_data in analyzed_groups:
+                    g_items = g_data["items"]
+                    tempo = g_data["tempo"]
+                    p_min = g_data["p_min"]
+
+                    for s_idx, item in enumerate(g_items):
+                        desired_start = max(item["start_time"], current_time if s_idx == 0 else (current_time + p_min))
+                        if desired_start > current_time:
+                            gap_dur = desired_start - current_time
+                            gap_path = work_dir / f"gap_{item['idx']}.wav"
+                            self.generate_silence(gap_dur, gap_path)
+                            timeline_pieces.append(gap_path)
+                            current_time = desired_start
+
+                        piece_path = work_dir / f"piece_{item['idx']}_order_{item['t_seg'].segment_order}.wav"
+                        self.render_speech_piece(item["audio_path"], piece_path, tempo_factor=tempo, apply_micro_fade=True)
+                        piece_dur = self.video_processor.get_audio_duration(piece_path)
+                        timeline_pieces.append(piece_path)
+                        current_time += piece_dur
+
+                # Trailing silence
+                if target_duration > current_time:
+                    tail_dur = target_duration - current_time
+                    tail_path = work_dir / "gap_tail.wav"
+                    self.generate_silence(tail_dur, tail_path)
+                    timeline_pieces.append(tail_path)
+                    current_time = target_duration
+
+            else:
+                # 1. Legacy first pass: analyze timing windows and detect any unresolved conflicts
+                analyzed_segments: List[dict] = []
+                for idx, (t_seg, trans_seg, audio_rec) in enumerate(sorted_items):
+                    start_time = max(0.0, float(t_seg.start_time))
+                    end_time = max(start_time, float(t_seg.end_time))
+                    orig_dur = max(0.1, end_time - start_time)
+
+                    # Determine next boundary
+                    if idx < total_segments - 1:
+                        next_start = float(sorted_items[idx + 1][0].start_time)
+                        if next_start > start_time:
+                            avail_window = min(next_start - start_time, target_duration - start_time)
+                        else:
+                            avail_window = max(0.1, min(orig_dur, target_duration - start_time))
+                    else:
+                        avail_window = max(0.1, target_duration - start_time)
+
+                    avail_window = max(0.1, avail_window)
+
+                    # Resolve source audio file
+                    audio_path = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
+                    if not audio_path.exists() or audio_path.stat().st_size == 0:
+                        raise FileNotFoundError(
+                            f"Generated audio file missing for segment {t_seg.segment_order} at {audio_path}"
+                        )
+
+                    if trim_silence:
+                        trimmed_src = work_dir / f"trimmed_src_{idx}.wav"
+                        self.trim_audio_silence(audio_path, trimmed_src)
+                        source_for_piece = trimmed_src
+                        raw_dur = self.video_processor.get_audio_duration(trimmed_src)
+                    else:
+                        source_for_piece = audio_path
+                        raw_dur = self.video_processor.get_audio_duration(audio_path)
+
+                    if raw_dur <= 0.0:
+                        raw_dur = float(audio_rec.duration_seconds or 1.0)
+
+                    # Timing strategy
                     tempo = 1.0
                     required_tempo = 1.0
-                elif raw_dur <= avail_window:
-                    pause_left = avail_window - raw_dur
-                    if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
-                        target_dur = max(orig_dur, avail_window - 0.2)
-                        tempo = min(active_max_tempo, max(1.0, round(raw_dur / target_dur, 2)))
-                    else:
+
+                    if raw_dur <= orig_dur:
                         tempo = 1.0
-                    required_tempo = 1.0
-                else:
-                    # raw_dur > avail_window: exceeds available interval
-                    effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
-                    required_tempo = round(raw_dur / effective_window, 2)
-
-                    if required_tempo <= active_max_tempo:
-                        tempo = required_tempo
+                        required_tempo = 1.0
+                    elif raw_dur <= avail_window:
+                        pause_left = avail_window - raw_dur
+                        if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
+                            target_dur = max(orig_dur, avail_window - 0.2)
+                            tempo = min(active_max_tempo, max(1.0, round(raw_dur / target_dur, 2)))
+                        else:
+                            tempo = 1.0
+                        required_tempo = 1.0
                     else:
-                        tempo = active_max_tempo
-                        adjusted_est = raw_dur / tempo
-                        overflow = round(adjusted_est - effective_window, 2)
-                        if overflow > 0.05:
-                            est_words = max(1, math.ceil(overflow / 0.35))
-                            action = (
-                                f"Shorten the Khmer translation for Segment #{t_seg.segment_order} by approximately "
-                                f"{est_words} word(s) (~{overflow:.1f}s), regenerate audio, and retry export."
-                            )
-                            conflicts.append(
-                                TimingConflict(
-                                    segment_order=t_seg.segment_order,
-                                    transcript_segment_id=t_seg.id,
-                                    start_time=round(start_time, 2),
-                                    end_time=round(end_time, 2),
-                                    original_duration=round(orig_dur, 2),
-                                    khmer_duration=round(raw_dur, 2),
-                                    available_window=round(avail_window, 2),
-                                    effective_window=round(effective_window, 2),
-                                    safety_margin_seconds=round(self.safety_margin_seconds, 3),
-                                    required_tempo=required_tempo,
-                                    max_tempo_factor=active_max_tempo,
-                                    tempo_factor=tempo,
-                                    overflow_seconds=overflow,
-                                    suggested_action=action,
-                                    message=(
-                                        f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
-                                        f"({avail_window:.2f}s raw, {effective_window:.2f}s effective with {int(self.safety_margin_seconds * 1000)}ms safety margin) "
-                                        f"by {overflow:.1f}s even at {tempo}x speed. "
-                                        f"{action}"
-                                    ),
+                        # raw_dur > avail_window: exceeds available interval
+                        effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
+                        required_tempo = round(raw_dur / effective_window, 2)
+
+                        if required_tempo <= active_max_tempo:
+                            tempo = required_tempo
+                        else:
+                            tempo = active_max_tempo
+                            adjusted_est = raw_dur / tempo
+                            overflow = round(adjusted_est - effective_window, 2)
+                            if overflow > 0.05:
+                                est_words = max(1, math.ceil(overflow / 0.35))
+                                action = (
+                                    f"Shorten the Khmer translation for Segment #{t_seg.segment_order} by approximately "
+                                    f"{est_words} word(s) (~{overflow:.1f}s), regenerate audio, and retry export."
                                 )
-                            )
+                                conflicts.append(
+                                    TimingConflict(
+                                        segment_order=t_seg.segment_order,
+                                        transcript_segment_id=t_seg.id,
+                                        start_time=round(start_time, 2),
+                                        end_time=round(end_time, 2),
+                                        original_duration=round(orig_dur, 2),
+                                        khmer_duration=round(raw_dur, 2),
+                                        available_window=round(avail_window, 2),
+                                        effective_window=round(effective_window, 2),
+                                        safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                                        required_tempo=required_tempo,
+                                        max_tempo_factor=active_max_tempo,
+                                        tempo_factor=tempo,
+                                        overflow_seconds=overflow,
+                                        suggested_action=action,
+                                        message=(
+                                            f"Segment #{t_seg.segment_order} ({raw_dur:.1f}s) exceeds available window "
+                                            f"({avail_window:.2f}s raw, {effective_window:.2f}s effective with {int(self.safety_margin_seconds * 1000)}ms safety margin) "
+                                            f"by {overflow:.1f}s even at {tempo}x speed. "
+                                            f"{action}"
+                                        ),
+                                    )
+                                )
 
-                analyzed_segments.append({
-                    "idx": idx,
-                    "t_seg": t_seg,
-                    "trans_seg": trans_seg,
-                    "audio_rec": audio_rec,
-                    "audio_path": source_for_piece,
-                    "start_time": start_time,
-                    "raw_dur": raw_dur,
-                    "tempo": tempo,
-                })
+                    analyzed_segments.append({
+                        "idx": idx,
+                        "t_seg": t_seg,
+                        "trans_seg": trans_seg,
+                        "audio_rec": audio_rec,
+                        "audio_path": source_for_piece,
+                        "start_time": start_time,
+                        "raw_dur": raw_dur,
+                        "tempo": tempo,
+                    })
 
-            # In strict validation mode, halt immediately if there are conflicts to avoid
-            # generating an invalid or truncated export.
-            if strict_validation and conflicts:
-                logger.warning(
-                    "Strict duration validation blocked export: %d timing conflict(s) detected.",
-                    len(conflicts),
-                )
-                raise TimingConflictError(conflicts=conflicts)
-
-            # 2. Second pass: render pieces and construct timeline
-            for item in analyzed_segments:
-                idx = item["idx"]
-                t_seg = item["t_seg"]
-                audio_path = item["audio_path"]
-                start_time = item["start_time"]
-                raw_dur = item["raw_dur"]
-                tempo = item["tempo"]
-
-                piece_path = work_dir / f"piece_{idx}_order_{t_seg.segment_order}.wav"
-                if abs(tempo - 1.0) > 0.02:
-                    self.adjust_tempo(audio_path, piece_path, tempo)
-                else:
-                    self.convert_to_standard_wav(audio_path, piece_path)
-
-                piece_dur = self.video_processor.get_audio_duration(piece_path)
-                if piece_dur <= 0.0:
-                    piece_dur = raw_dur / tempo
-
-                # Insert silence gap before speech if needed
-                if start_time > current_time:
-                    gap_dur = start_time - current_time
-                    gap_path = work_dir / f"gap_{idx}.wav"
-                    self.generate_silence(gap_dur, gap_path)
-                    timeline_pieces.append(gap_path)
-                    current_time = start_time
-                elif start_time < current_time:
+                # In strict validation mode, halt immediately if there are conflicts to avoid
+                # generating an invalid or truncated export.
+                if strict_validation and conflicts:
                     logger.warning(
-                        "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
-                        t_seg.segment_order,
-                        start_time,
-                        current_time,
+                        "Strict duration validation blocked export: %d timing conflict(s) detected.",
+                        len(conflicts),
                     )
+                    raise TimingConflictError(conflicts=conflicts)
 
-                # Append speech segment (never truncated)
-                timeline_pieces.append(piece_path)
-                current_time += piece_dur
+                # 2. Second pass: render pieces and construct timeline
+                for item in analyzed_segments:
+                    idx = item["idx"]
+                    t_seg = item["t_seg"]
+                    audio_path = item["audio_path"]
+                    start_time = item["start_time"]
+                    raw_dur = item["raw_dur"]
+                    tempo = item["tempo"]
 
-            # Trailing silence to cover video target duration
-            if target_duration > current_time:
-                tail_dur = target_duration - current_time
-                tail_path = work_dir / "gap_tail.wav"
-                self.generate_silence(tail_dur, tail_path)
-                timeline_pieces.append(tail_path)
-                current_time = target_duration
+                    piece_path = work_dir / f"piece_{idx}_order_{t_seg.segment_order}.wav"
+                    if abs(tempo - 1.0) > 0.02:
+                        self.adjust_tempo(audio_path, piece_path, tempo)
+                    else:
+                        self.convert_to_standard_wav(audio_path, piece_path)
+
+                    piece_dur = self.video_processor.get_audio_duration(piece_path)
+                    if piece_dur <= 0.0:
+                        piece_dur = raw_dur / tempo
+
+                    # Insert silence gap before speech if needed
+                    if start_time > current_time:
+                        gap_dur = start_time - current_time
+                        gap_path = work_dir / f"gap_{idx}.wav"
+                        self.generate_silence(gap_dur, gap_path)
+                        timeline_pieces.append(gap_path)
+                        current_time = start_time
+                    elif start_time < current_time:
+                        logger.warning(
+                            "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
+                            t_seg.segment_order,
+                            start_time,
+                            current_time,
+                        )
+
+                    # Append speech segment (never truncated)
+                    timeline_pieces.append(piece_path)
+                    current_time += piece_dur
+
+                # Trailing silence to cover video target duration
+                if target_duration > current_time:
+                    tail_dur = target_duration - current_time
+                    tail_path = work_dir / "gap_tail.wav"
+                    self.generate_silence(tail_dur, tail_path)
+                    timeline_pieces.append(tail_path)
+                    current_time = target_duration
 
             # Concatenate all timeline pieces using FFmpeg concat demuxer
             concat_manifest = work_dir / "concat_list.txt"
@@ -407,6 +595,7 @@ class AudioSynchronizationService:
         strict_validation: bool = False,
         max_tempo_factor: Optional[float] = None,
         trim_silence: bool = False,
+        pipeline_version: str = "v2.1",
     ) -> SynchronizationResult:
         """Align arbitrary timed audio segments onto a timeline WAV matching target timestamps.
         Applies up to max_tempo_factor tempo adjustment without silent truncation,
@@ -432,150 +621,293 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
-            # First pass: analyze windows, tempo, and detect overflows
-            analyzed_segments: List[dict] = []
-            for idx, seg in enumerate(sorted_items):
-                start_time = max(0.0, float(seg.get("start_time", 0.0)))
-                end_time = max(start_time, float(seg.get("end_time", start_time + 1.0)))
-                orig_dur = max(0.1, end_time - start_time)
-                seg_order = int(seg.get("segment_order", idx + 1))
-                seg_id = str(seg.get("segment_id", seg_order))
+            if pipeline_version == "v2.1":
+                # --- V2.1 Phrase-Group Scheduling for Timed Segments ---
+                phrase_groups: List[List[dict]] = []
+                curr_group: List[dict] = []
+                max_group_gap = 1.5
 
-                if idx < total_segments - 1:
-                    next_start = float(sorted_items[idx + 1].get("start_time", 0.0))
-                    if next_start > start_time:
-                        avail_window = min(next_start - start_time, target_duration - start_time)
-                    else:
-                        avail_window = max(0.1, min(orig_dur, target_duration - start_time))
-                else:
-                    avail_window = max(0.1, target_duration - start_time)
+                for idx, seg in enumerate(sorted_items):
+                    start_time = max(0.0, float(seg.get("start_time", 0.0)))
+                    end_time = max(start_time, float(seg.get("end_time", start_time + 1.0)))
+                    orig_dur = max(0.1, end_time - start_time)
+                    seg_order = int(seg.get("segment_order", idx + 1))
+                    seg_id = str(seg.get("segment_id", seg_order))
+                    audio_path = Path(seg["audio_path"])
+                    if not audio_path.exists() or audio_path.stat().st_size == 0:
+                        raise FileNotFoundError(f"Segment audio file missing at {audio_path}")
 
-                avail_window = max(0.1, avail_window)
-                audio_path = Path(seg["audio_path"])
-                if not audio_path.exists() or audio_path.stat().st_size == 0:
-                    raise FileNotFoundError(f"Segment audio file missing at {audio_path}")
-
-                if trim_silence:
-                    trimmed_src = work_dir / f"trimmed_timed_{idx}.wav"
-                    self.trim_audio_silence(audio_path, trimmed_src)
-                    source_for_piece = trimmed_src
-                    raw_dur = self.video_processor.get_audio_duration(trimmed_src)
-                else:
-                    source_for_piece = audio_path
                     raw_dur = self.video_processor.get_audio_duration(audio_path)
+                    if raw_dur <= 0.0:
+                        raw_dur = float(seg.get("duration_seconds", 1.0))
 
-                if raw_dur <= 0.0:
-                    raw_dur = float(seg.get("duration_seconds", 1.0))
+                    seg_info = {
+                        "idx": idx,
+                        "seg_order": seg_order,
+                        "seg_id": seg_id,
+                        "audio_path": audio_path,
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "orig_dur": orig_dur,
+                        "raw_dur": raw_dur,
+                    }
 
-                tempo = 1.0
-                required_tempo = 1.0
+                    if not curr_group:
+                        curr_group.append(seg_info)
+                    else:
+                        prev_end = curr_group[-1]["end_time"]
+                        if (start_time - prev_end) <= max_group_gap:
+                            curr_group.append(seg_info)
+                        else:
+                            phrase_groups.append(curr_group)
+                            curr_group = [seg_info]
 
-                if raw_dur <= orig_dur:
+                if curr_group:
+                    phrase_groups.append(curr_group)
+
+                analyzed_groups: List[dict] = []
+                for g_idx, g_items in enumerate(phrase_groups):
+                    g_start = g_items[0]["start_time"]
+                    if g_idx < len(phrase_groups) - 1:
+                        next_g_start = float(phrase_groups[g_idx + 1][0]["start_time"])
+                        g_limit = min(next_g_start, target_duration)
+                    else:
+                        g_limit = target_duration
+
+                    g_avail_window = max(0.1, g_limit - g_start)
+                    k = len(g_items)
+                    sum_raw = sum(s["raw_dur"] for s in g_items)
+                    p_min = 0.12  # 120ms natural breath pause between sentences
+                    p_total = (k - 1) * p_min
+                    avail_speech = max(0.05, g_avail_window - p_total - self.safety_margin_seconds)
+                    req_tempo = round(sum_raw / avail_speech, 3)
+
+                    if (sum_raw + p_total) <= g_avail_window:
+                        group_tempo = 1.0
+                    elif req_tempo <= active_max_tempo:
+                        group_tempo = round(req_tempo, 2)
+                    else:
+                        group_tempo = active_max_tempo
+                        overflow = round((sum_raw / active_max_tempo) - avail_speech, 2)
+                        if overflow > 0.05:
+                            overflowing_segs = [s for s in g_items if (s["raw_dur"] / max(0.05, s["orig_dur"])) > active_max_tempo]
+                            if not overflowing_segs:
+                                overflowing_segs = [max(g_items, key=lambda s: s["raw_dur"] / max(0.1, s["orig_dur"]))]
+                            for seg_c in overflowing_segs:
+                                seg_overflow = round((seg_c["raw_dur"] / active_max_tempo) - max(0.05, seg_c["orig_dur"]), 2)
+                                if seg_overflow <= 0.05:
+                                    seg_overflow = overflow
+                                est_words = max(1, math.ceil(seg_overflow / 0.35))
+                                action = (
+                                    f"Shorten Segment #{seg_c['seg_order']} by approximately "
+                                    f"{est_words} word(s) (~{seg_overflow:.1f}s), regenerate audio, or switch to Narration Mode."
+                                )
+                                conflicts.append(
+                                    TimingConflict(
+                                        segment_order=seg_c["seg_order"],
+                                        transcript_segment_id=seg_c["seg_id"],
+                                        start_time=round(seg_c["start_time"], 2),
+                                        end_time=round(seg_c["end_time"], 2),
+                                        original_duration=round(seg_c["orig_dur"], 2),
+                                        khmer_duration=round(seg_c["raw_dur"], 2),
+                                        available_window=round(g_avail_window, 2),
+                                        effective_window=round(avail_speech, 2),
+                                        safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                                        required_tempo=round(req_tempo, 2),
+                                        max_tempo_factor=active_max_tempo,
+                                        tempo_factor=group_tempo,
+                                        overflow_seconds=seg_overflow,
+                                        suggested_action=action,
+                                        message=(
+                                            f"Phrase group starting at Segment #{g_items[0]['seg_order']} ({sum_raw:.1f}s) "
+                                            f"exceeds available window ({g_avail_window:.2f}s) by {seg_overflow:.1f}s even at {group_tempo}x speed. {action}"
+                                        ),
+                                    )
+                                )
+
+                    analyzed_groups.append({
+                        "items": g_items,
+                        "tempo": group_tempo,
+                        "p_min": p_min,
+                    })
+
+                if strict_validation and conflicts:
+                    raise TimingConflictError(conflicts=conflicts)
+
+                # Render pieces and construct timeline
+                current_time = 0.0
+                for g_data in analyzed_groups:
+                    g_items = g_data["items"]
+                    tempo = g_data["tempo"]
+                    p_min = g_data["p_min"]
+
+                    for s_idx, item in enumerate(g_items):
+                        desired_start = max(item["start_time"], current_time if s_idx == 0 else (current_time + p_min))
+                        if desired_start > current_time:
+                            gap_dur = desired_start - current_time
+                            gap_path = work_dir / f"gap_{item['idx']}.wav"
+                            self.generate_silence(gap_dur, gap_path)
+                            timeline_pieces.append(gap_path)
+                            current_time = desired_start
+
+                        piece_path = work_dir / f"piece_{item['idx']}_order_{item['seg_order']}.wav"
+                        self.render_speech_piece(item["audio_path"], piece_path, tempo_factor=tempo, apply_micro_fade=True)
+                        piece_dur = self.video_processor.get_audio_duration(piece_path)
+                        timeline_pieces.append(piece_path)
+                        current_time += piece_dur
+
+                if target_duration > current_time:
+                    tail_dur = target_duration - current_time
+                    tail_path = work_dir / "gap_tail.wav"
+                    self.generate_silence(tail_dur, tail_path)
+                    timeline_pieces.append(tail_path)
+                    current_time = target_duration
+
+            else:
+                # First pass: analyze windows, tempo, and detect overflows
+                analyzed_segments: List[dict] = []
+                for idx, seg in enumerate(sorted_items):
+                    start_time = max(0.0, float(seg.get("start_time", 0.0)))
+                    end_time = max(start_time, float(seg.get("end_time", start_time + 1.0)))
+                    orig_dur = max(0.1, end_time - start_time)
+                    seg_order = int(seg.get("segment_order", idx + 1))
+                    seg_id = str(seg.get("segment_id", seg_order))
+
+                    if idx < total_segments - 1:
+                        next_start = float(sorted_items[idx + 1].get("start_time", 0.0))
+                        if next_start > start_time:
+                            avail_window = min(next_start - start_time, target_duration - start_time)
+                        else:
+                            avail_window = max(0.1, min(orig_dur, target_duration - start_time))
+                    else:
+                        avail_window = max(0.1, target_duration - start_time)
+
+                    avail_window = max(0.1, avail_window)
+                    audio_path = Path(seg["audio_path"])
+                    if not audio_path.exists() or audio_path.stat().st_size == 0:
+                        raise FileNotFoundError(f"Segment audio file missing at {audio_path}")
+
+                    if trim_silence:
+                        trimmed_src = work_dir / f"trimmed_timed_{idx}.wav"
+                        self.trim_audio_silence(audio_path, trimmed_src)
+                        source_for_piece = trimmed_src
+                        raw_dur = self.video_processor.get_audio_duration(trimmed_src)
+                    else:
+                        source_for_piece = audio_path
+                        raw_dur = self.video_processor.get_audio_duration(audio_path)
+
+                    if raw_dur <= 0.0:
+                        raw_dur = float(seg.get("duration_seconds", 1.0))
+
                     tempo = 1.0
                     required_tempo = 1.0
-                elif raw_dur <= avail_window:
-                    pause_left = avail_window - raw_dur
-                    if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
-                        target_dur = max(orig_dur, avail_window - 0.2)
-                        tempo = min(active_max_tempo, max(1.0, round(raw_dur / target_dur, 2)))
-                    else:
+
+                    if raw_dur <= orig_dur:
                         tempo = 1.0
-                    required_tempo = 1.0
-                else:
-                    effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
-                    required_tempo = round(raw_dur / effective_window, 2)
-                    if required_tempo <= active_max_tempo:
-                        tempo = required_tempo
+                        required_tempo = 1.0
+                    elif raw_dur <= avail_window:
+                        pause_left = avail_window - raw_dur
+                        if pause_left < 0.2 and (raw_dur / orig_dur) > 1.1:
+                            target_dur = max(orig_dur, avail_window - 0.2)
+                            tempo = min(active_max_tempo, max(1.0, round(raw_dur / target_dur, 2)))
+                        else:
+                            tempo = 1.0
+                        required_tempo = 1.0
                     else:
-                        tempo = active_max_tempo
-                        adjusted_est = raw_dur / tempo
-                        overflow = round(adjusted_est - effective_window, 2)
-                        if overflow > 0.05:
-                            est_words = max(1, math.ceil(overflow / 0.35))
-                            action = (
-                                f"Shorten Segment #{seg_order} by approximately "
-                                f"{est_words} word(s) (~{overflow:.1f}s), regenerate audio, or switch to Narration Mode."
-                            )
-                            conflicts.append(
-                                TimingConflict(
-                                    segment_order=seg_order,
-                                    transcript_segment_id=seg_id,
-                                    start_time=round(start_time, 2),
-                                    end_time=round(end_time, 2),
-                                    original_duration=round(orig_dur, 2),
-                                    khmer_duration=round(raw_dur, 2),
-                                    available_window=round(avail_window, 2),
-                                    effective_window=round(effective_window, 2),
-                                    safety_margin_seconds=round(self.safety_margin_seconds, 3),
-                                    required_tempo=required_tempo,
-                                    max_tempo_factor=active_max_tempo,
-                                    tempo_factor=tempo,
-                                    overflow_seconds=overflow,
-                                    suggested_action=action,
-                                    message=(
-                                        f"Segment #{seg_order} ({raw_dur:.1f}s) exceeds available window "
-                                        f"({avail_window:.2f}s raw, {effective_window:.2f}s effective) "
-                                        f"by {overflow:.1f}s even at {tempo}x speed. {action}"
-                                    ),
+                        effective_window = max(0.05, round(avail_window - self.safety_margin_seconds, 3))
+                        required_tempo = round(raw_dur / effective_window, 2)
+                        if required_tempo <= active_max_tempo:
+                            tempo = required_tempo
+                        else:
+                            tempo = active_max_tempo
+                            adjusted_est = raw_dur / tempo
+                            overflow = round(adjusted_est - effective_window, 2)
+                            if overflow > 0.05:
+                                est_words = max(1, math.ceil(overflow / 0.35))
+                                action = (
+                                    f"Shorten Segment #{seg_order} by approximately "
+                                    f"{est_words} word(s) (~{overflow:.1f}s), regenerate audio, or switch to Narration Mode."
                                 )
-                            )
+                                conflicts.append(
+                                    TimingConflict(
+                                        segment_order=seg_order,
+                                        transcript_segment_id=seg_id,
+                                        start_time=round(start_time, 2),
+                                        end_time=round(end_time, 2),
+                                        original_duration=round(orig_dur, 2),
+                                        khmer_duration=round(raw_dur, 2),
+                                        available_window=round(avail_window, 2),
+                                        effective_window=round(effective_window, 2),
+                                        safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                                        required_tempo=required_tempo,
+                                        max_tempo_factor=active_max_tempo,
+                                        tempo_factor=tempo,
+                                        overflow_seconds=overflow,
+                                        suggested_action=action,
+                                        message=(
+                                            f"Segment #{seg_order} ({raw_dur:.1f}s) exceeds available window "
+                                            f"({avail_window:.2f}s raw, {effective_window:.2f}s effective) "
+                                            f"by {overflow:.1f}s even at {tempo}x speed. {action}"
+                                        ),
+                                    )
+                                )
 
-                analyzed_segments.append({
-                    "idx": idx,
-                    "seg_order": seg_order,
-                    "audio_path": source_for_piece,
-                    "start_time": start_time,
-                    "raw_dur": raw_dur,
-                    "tempo": tempo,
-                })
+                    analyzed_segments.append({
+                        "idx": idx,
+                        "seg_order": seg_order,
+                        "audio_path": source_for_piece,
+                        "start_time": start_time,
+                        "raw_dur": raw_dur,
+                        "tempo": tempo,
+                    })
 
-            if strict_validation and conflicts:
-                raise TimingConflictError(conflicts=conflicts)
+                if strict_validation and conflicts:
+                    raise TimingConflictError(conflicts=conflicts)
 
-            # Second pass: render pieces and construct timeline
-            for item in analyzed_segments:
-                idx = item["idx"]
-                seg_order = item["seg_order"]
-                audio_path = item["audio_path"]
-                start_time = item["start_time"]
-                raw_dur = item["raw_dur"]
-                tempo = item["tempo"]
+                # Second pass: render pieces and construct timeline
+                for item in analyzed_segments:
+                    idx = item["idx"]
+                    seg_order = item["seg_order"]
+                    audio_path = item["audio_path"]
+                    start_time = item["start_time"]
+                    raw_dur = item["raw_dur"]
+                    tempo = item["tempo"]
 
-                piece_path = work_dir / f"piece_{idx}_order_{seg_order}.wav"
-                if abs(tempo - 1.0) > 0.02:
-                    self.adjust_tempo(audio_path, piece_path, tempo)
-                else:
-                    self.convert_to_standard_wav(audio_path, piece_path)
+                    piece_path = work_dir / f"piece_{idx}_order_{seg_order}.wav"
+                    if abs(tempo - 1.0) > 0.02:
+                        self.adjust_tempo(audio_path, piece_path, tempo)
+                    else:
+                        self.convert_to_standard_wav(audio_path, piece_path)
 
-                piece_dur = self.video_processor.get_audio_duration(piece_path)
-                if piece_dur <= 0.0:
-                    piece_dur = raw_dur / tempo
+                    piece_dur = self.video_processor.get_audio_duration(piece_path)
+                    if piece_dur <= 0.0:
+                        piece_dur = raw_dur / tempo
 
-                # Silence gap before speech if needed
-                if start_time > current_time:
-                    gap_dur = start_time - current_time
-                    gap_path = work_dir / f"gap_{idx}.wav"
-                    self.generate_silence(gap_dur, gap_path)
-                    timeline_pieces.append(gap_path)
-                    current_time = start_time
-                elif start_time < current_time:
-                    logger.warning(
-                        "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
-                        seg_order,
-                        start_time,
-                        current_time,
-                    )
+                    # Silence gap before speech if needed
+                    if start_time > current_time:
+                        gap_dur = start_time - current_time
+                        gap_path = work_dir / f"gap_{idx}.wav"
+                        self.generate_silence(gap_dur, gap_path)
+                        timeline_pieces.append(gap_path)
+                        current_time = start_time
+                    elif start_time < current_time:
+                        logger.warning(
+                            "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
+                            seg_order,
+                            start_time,
+                            current_time,
+                        )
 
-                timeline_pieces.append(piece_path)
-                current_time += piece_dur
+                    timeline_pieces.append(piece_path)
+                    current_time += piece_dur
 
-            # Trailing silence if target_duration > current_time
-            if target_duration > current_time:
-                tail_dur = target_duration - current_time
-                tail_path = work_dir / "gap_tail.wav"
-                self.generate_silence(tail_dur, tail_path)
-                timeline_pieces.append(tail_path)
-                current_time = target_duration
+                # Trailing silence if target_duration > current_time
+                if target_duration > current_time:
+                    tail_dur = target_duration - current_time
+                    tail_path = work_dir / "gap_tail.wav"
+                    self.generate_silence(tail_dur, tail_path)
+                    timeline_pieces.append(tail_path)
+                    current_time = target_duration
 
             # Concat demuxer
             concat_manifest = work_dir / "concat_list.txt"

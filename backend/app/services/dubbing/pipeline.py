@@ -66,8 +66,12 @@ class DubbingPipeline:
         if not video or not video.file_path or not Path(video.file_path).exists():
             raise FileNotFoundError("Original video file is missing or not uploaded.")
 
-        is_v2 = (getattr(project, "pipeline_version", "v1") == "v2")
-        active_trim_silence = True if is_v2 else trim_silence
+        pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+        is_v2 = pipeline_ver in ("v2", "v2.1")
+        # In v2.1, destructive silence trimming is disabled by default to preserve speech phonemes
+        active_trim_silence = True if pipeline_ver == "v2" else False
+        if trim_silence is not None:
+            active_trim_silence = trim_silence
 
         video_path = Path(video.file_path)
         video_dur = float(video.duration_seconds or 0.0)
@@ -135,6 +139,7 @@ class DubbingPipeline:
             strict_validation=strict_validation,
             max_tempo_factor=max_tempo_factor,
             trim_silence=active_trim_silence,
+            pipeline_version=pipeline_ver,
         )
 
         report(75, "Remuxing video with synchronized Khmer audio timeline...")

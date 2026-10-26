@@ -43,7 +43,7 @@ export const ExportTab: React.FC<ExportTabProps> = ({
   isAutoFitting = false,
 }) => {
   const [showReviewList, setShowReviewList] = React.useState(false);
-  const isV2 = project.pipeline_version === 'v2' || exportStatus?.pipeline_version === 'v2';
+  const isV2 = ['v2', 'v2.1'].includes(project.pipeline_version || '') || ['v2', 'v2.1'].includes(exportStatus?.pipeline_version || '');
   const timingSummary = exportStatus?.timing_summary;
 
   const isVideoReady = Boolean(project.video?.file_path || project.original_video_path);

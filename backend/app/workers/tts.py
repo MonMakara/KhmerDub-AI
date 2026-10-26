@@ -55,20 +55,16 @@ def synthesize_segment_audio(
         **kwargs,
     )
 
-    # For v2 projects, trim edge silence immediately on newly synthesized audio
-    is_v2 = (getattr(project, "pipeline_version", "v1") == "v2") if project else False
-    if is_v2 and output_path.exists() and output_path.stat().st_size > 0:
+    # Measure real duration of synthesized audio without destructive silence trimming
+    if output_path.exists() and output_path.stat().st_size > 0:
         try:
-            from app.services.dubbing.synchronizer import AudioSynchronizationService
             from app.services.video.ffmpeg import FFmpegVideoProcessor
-            sync_svc = AudioSynchronizationService()
-            sync_svc.trim_audio_silence(output_path, output_path)
             vp = FFmpegVideoProcessor()
             measured_dur = vp.get_audio_duration(output_path)
             if measured_dur > 0:
                 result.duration_seconds = measured_dur
         except Exception as e:
-            logger.warning("Post-synthesis silence trim failed for segment %s: %s", segment.id, e)
+            logger.warning("Duration probe failed for segment %s: %s", segment.id, e)
 
     audio_record = (
         db.query(GeneratedAudio)
@@ -188,11 +184,11 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
             job.progress_percentage = min(progress, 90)
             db.commit()
 
-        is_v2 = (getattr(project, "pipeline_version", "v1") == "v2")
-        if is_v2:
+        is_timing_aware = (getattr(project, "pipeline_version", "v1") in ("v2", "v2.1"))
+        if is_timing_aware:
             job.progress_percentage = 92
             db.commit()
-            logger.info("Executing automated timing optimization for v2 project %s...", project_id)
+            logger.info("Executing automated timing optimization for project %s (pipeline=%s)...", project_id, project.pipeline_version)
             try:
                 from app.services.dubbing.timing_optimizer import TimingOptimizerService
                 optimizer = TimingOptimizerService()

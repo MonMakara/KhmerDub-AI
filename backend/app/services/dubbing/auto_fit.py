@@ -123,22 +123,6 @@ def shorten_khmer_text(text: str, target_char_count: Optional[int] = None) -> st
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"([។,])\1+", r"\1", s).strip()
 
-    # If target length is specified and text is still too long, do grammatical clause budgeting
-    if target_char_count and len(s) > target_char_count:
-        parts = re.split(KHMER_CLAUSE_MARKERS, s)
-        rebuilt = ""
-        for p in parts:
-            if not p:
-                continue
-            if len(rebuilt + p) <= target_char_count + 4:
-                rebuilt += p
-            else:
-                break
-        if len(rebuilt.strip()) >= 15:
-            s = rebuilt.strip()
-        else:
-            s = s[:target_char_count].strip()
-
     if not s.endswith("។") and not s.endswith(","):
         s += "។"
 
@@ -251,8 +235,9 @@ class AutoFitService:
         if not project:
             raise ValueError(f"Project not found: {project_id}")
 
-        # Pre-pass: If trim_silence is requested, trim excessive head/tail silence on existing audio
-        if trim_silence and project.translation_segments:
+        pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+        # Pre-pass: If trim_silence is requested and not v2.1, trim excessive head/tail silence on existing audio
+        if trim_silence and pipeline_ver != "v2.1" and project.translation_segments:
             for trans_seg in project.translation_segments:
                 audio_rec = trans_seg.generated_audio
                 if audio_rec and audio_rec.audio_path:
@@ -326,7 +311,7 @@ class AutoFitService:
                     output_path=audio_dest,
                     voice=tts_voice,
                 )
-                if trim_silence and audio_dest.exists():
+                if trim_silence and pipeline_ver != "v2.1" and audio_dest.exists():
                     try:
                         self.sync_service.trim_audio_silence(audio_dest, audio_dest)
                     except Exception as e:
