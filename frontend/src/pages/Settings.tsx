@@ -18,6 +18,10 @@ import {
   Layers,
   FileCode,
   Activity,
+  Copy,
+  Check,
+  Search,
+  ExternalLink,
 } from 'lucide-react';
 import { HealthResponse, TranslationProviderInfo } from '../types';
 import { api } from '../services/api';
@@ -60,6 +64,227 @@ const CUSTOM_PRESETS: ProviderPreset[] = [
   },
 ];
 
+interface CliCommandItem {
+  id: string;
+  category: 'docker' | 'logs' | 'testing' | 'database' | 'shell' | 'voice';
+  title: string;
+  description: string;
+  command: string;
+}
+
+const DEV_CATEGORIES = [
+  { id: 'all', label: 'All Commands' },
+  { id: 'docker', label: 'Docker & Services' },
+  { id: 'logs', label: 'Logs & Diagnostics' },
+  { id: 'testing', label: 'Testing & QA' },
+  { id: 'database', label: 'Database & Migrations' },
+  { id: 'shell', label: 'Interactive Shell' },
+  { id: 'voice', label: 'Voice Worker & AI' },
+];
+
+const CLI_COMMANDS: CliCommandItem[] = [
+  // 1. Docker & Services
+  {
+    id: 'docker-up-build',
+    category: 'docker',
+    title: 'Start All Services (with Build)',
+    description: 'Builds images if necessary and starts backend & frontend in detached background mode.',
+    command: 'docker compose up -d --build',
+  },
+  {
+    id: 'docker-up',
+    category: 'docker',
+    title: 'Start All Services Quickly',
+    description: 'Starts existing container services without rebuilding images.',
+    command: 'docker compose up -d',
+  },
+  {
+    id: 'docker-down',
+    category: 'docker',
+    title: 'Stop All Services',
+    description: 'Stops and removes running containers while preserving data volumes.',
+    command: 'docker compose down',
+  },
+  {
+    id: 'docker-restart-all',
+    category: 'docker',
+    title: 'Restart All Services',
+    description: 'Restarts both backend and frontend containers gracefully.',
+    command: 'docker compose restart',
+  },
+  {
+    id: 'docker-restart-backend',
+    category: 'docker',
+    title: 'Restart Backend Service Only',
+    description: 'Restarts FastAPI container to apply python backend or env changes.',
+    command: 'docker compose restart backend',
+  },
+  {
+    id: 'docker-ps',
+    category: 'docker',
+    title: 'Check Containers Health & Status',
+    description: 'Lists running containers, uptime, mapped ports, and healthcheck status.',
+    command: 'docker compose ps',
+  },
+
+  // 2. Logs & Monitoring
+  {
+    id: 'logs-all',
+    category: 'logs',
+    title: 'Stream All Live Logs',
+    description: 'Follows combined real-time stdout and stderr output for all services.',
+    command: 'docker compose logs -f',
+  },
+  {
+    id: 'logs-backend',
+    category: 'logs',
+    title: 'Stream Backend Server Logs',
+    description: 'Follows real-time FastAPI requests, AI job logs, and errors.',
+    command: 'docker compose logs -f backend',
+  },
+  {
+    id: 'logs-frontend',
+    category: 'logs',
+    title: 'Stream Frontend Dev Logs',
+    description: 'Follows Vite development server compilation and bundle logs.',
+    command: 'docker compose logs -f frontend',
+  },
+  {
+    id: 'logs-backend-tail',
+    category: 'logs',
+    title: 'Tail Recent Backend Logs (100 lines)',
+    description: 'Quickly shows the last 100 log lines from backend without streaming.',
+    command: 'docker compose logs --tail=100 backend',
+  },
+
+  // 3. Testing & Code Quality
+  {
+    id: 'test-all',
+    category: 'testing',
+    title: 'Run Entire Backend Test Suite',
+    description: 'Executes all 255+ unit, integration, and E2E tests inside Docker.',
+    command: 'docker compose exec backend pytest -v',
+  },
+  {
+    id: 'test-downloader',
+    category: 'testing',
+    title: 'Run Video Downloader Tests',
+    description: 'Runs SSRF, URL extraction, direct media, and yt-dlp downloader tests.',
+    command: 'docker compose exec backend pytest -v tests/test_video_downloader.py',
+  },
+  {
+    id: 'test-toolkit',
+    category: 'testing',
+    title: 'Run Media Toolkit Tests',
+    description: 'Runs tests for Video-to-Audio, Transcript, Translation, and TTS tools.',
+    command: 'docker compose exec backend pytest -v tests/test_media_toolkit.py',
+  },
+  {
+    id: 'test-dubbing-e2e',
+    category: 'testing',
+    title: 'Run Dubbing Pipeline & E2E Tests',
+    description: 'Tests audio synchronization, tempo adjustment, and video remuxing.',
+    command: 'docker compose exec backend pytest -v tests/test_dubbing.py tests/test_e2e_pipeline.py',
+  },
+  {
+    id: 'frontend-build',
+    category: 'testing',
+    title: 'Frontend Typecheck & Production Build',
+    description: 'Verifies strict TypeScript types (tsc) and generates production bundle.',
+    command: 'docker compose exec -T frontend npm run build',
+  },
+  {
+    id: 'frontend-lint',
+    category: 'testing',
+    title: 'Frontend ESLint Verification',
+    description: 'Runs ESLint static analysis across React TypeScript components.',
+    command: 'docker compose exec frontend npm run lint',
+  },
+
+  // 4. Database & Migrations
+  {
+    id: 'db-upgrade',
+    category: 'database',
+    title: 'Apply Database Migrations (Upgrade Head)',
+    description: 'Runs pending Alembic schema migrations on SQLite database.',
+    command: 'docker compose exec backend alembic upgrade head',
+  },
+  {
+    id: 'db-current',
+    category: 'database',
+    title: 'Show Current Migration Revision',
+    description: 'Displays the current active Alembic migration version.',
+    command: 'docker compose exec backend alembic current',
+  },
+  {
+    id: 'db-history',
+    category: 'database',
+    title: 'Show Migration History',
+    description: 'Lists all migration revisions and timestamps in chronological order.',
+    command: 'docker compose exec backend alembic history --verbose',
+  },
+  {
+    id: 'db-autogenerate',
+    category: 'database',
+    title: 'Autogenerate New Migration Script',
+    description: 'Detects model changes in SQLAlchemy and generates a migration script.',
+    command: 'docker compose exec backend alembic revision --autogenerate -m "update_schema"',
+  },
+
+  // 5. Interactive Shell & CLI
+  {
+    id: 'shell-backend',
+    category: 'shell',
+    title: 'Backend Interactive Bash Shell',
+    description: 'Opens an interactive bash terminal inside the running backend container.',
+    command: 'docker compose exec -it backend /bin/bash',
+  },
+  {
+    id: 'shell-frontend',
+    category: 'shell',
+    title: 'Frontend Interactive Shell',
+    description: 'Opens an interactive shell inside the running frontend container.',
+    command: 'docker compose exec -it frontend /bin/sh',
+  },
+  {
+    id: 'sqlite-cli',
+    category: 'shell',
+    title: 'Interactive SQLite Database CLI',
+    description: 'Directly opens SQLite CLI on the app database (.tables, .schema).',
+    command: 'docker compose exec -it backend sqlite3 /app/data/khmerdub.db',
+  },
+  {
+    id: 'inspect-storage',
+    category: 'shell',
+    title: 'Inspect Media Storage Usage',
+    description: 'Shows human-readable disk usage for uploads, outputs, temp, and toolkit.',
+    command: 'docker compose exec backend du -sh /app/data/*',
+  },
+
+  // 6. Voice Cloning & Worker
+  {
+    id: 'voice-worker-start',
+    category: 'voice',
+    title: 'Start VoxCPM2 Voice Worker (Host GPU)',
+    description: 'Starts the GPU-accelerated VoxCPM2 voice cloning worker daemon (port 8002).',
+    command: 'PYTHONPATH=backend /home/mark/miniconda3/envs/voxcpm-bench/bin/python backend/app/services/voice/worker.py',
+  },
+  {
+    id: 'voice-worker-health',
+    category: 'voice',
+    title: 'Check VoxCPM2 Worker Health',
+    description: 'Queries VoxCPM2 worker health status, GPU memory, and model state.',
+    command: 'curl -s http://localhost:8002/health | jq .',
+  },
+  {
+    id: 'backend-health',
+    category: 'voice',
+    title: 'Check Backend API Health',
+    description: 'Returns FastAPI server status, version, and FFmpeg capability check.',
+    command: 'curl -s http://localhost:8000/api/health | jq .',
+  },
+];
+
 type SettingsSection =
   | 'status'
   | 'translation'
@@ -90,6 +315,41 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [savingKey, setSavingKey] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  // Developer Controls & CLI States
+  const [devCategoryFilter, setDevCategoryFilter] = useState<string>('all');
+  const [devSearchQuery, setDevSearchQuery] = useState<string>('');
+  const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
+
+  const handleCopyCommand = (id: string, text: string) => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setCopiedCommandId(id);
+    setTimeout(() => {
+      setCopiedCommandId(null);
+    }, 2000);
+  };
+
+  const filteredCommands = CLI_COMMANDS.filter((cmd) => {
+    const matchesCategory = devCategoryFilter === 'all' || cmd.category === devCategoryFilter;
+    if (!matchesCategory) return false;
+    if (!devSearchQuery.trim()) return true;
+    const q = devSearchQuery.toLowerCase().trim();
+    return (
+      cmd.title.toLowerCase().includes(q) ||
+      cmd.description.toLowerCase().includes(q) ||
+      cmd.command.toLowerCase().includes(q) ||
+      cmd.category.toLowerCase().includes(q)
+    );
+  });
 
   const syncFormForProvider = (providerId: string, providerList: TranslationProviderInfo[]) => {
     const p = providerList.find((item) => item.id === providerId);
@@ -877,45 +1137,195 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
 
       {/* SECTION 6: Developer Controls */}
       {activeSection === 'developer' && (
-        <div className="bg-slate-950 rounded-2xl p-6 text-white text-xs space-y-4 border border-slate-800">
-          <div className="flex items-center gap-2 text-slate-300 font-semibold text-sm">
-            <Terminal className="w-4 h-4 text-indigo-400" />
-            <span>Developer Controls & Quick CLI</span>
+        <div className="bg-slate-950 rounded-2xl p-6 text-white text-xs space-y-6 border border-slate-800 shadow-sm">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                <Terminal className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>Developer Controls & Quick CLI</span>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    {filteredCommands.length} of {CLI_COMMANDS.length} Commands
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Click the <strong className="text-slate-200">Copy</strong> button on any command to copy it to clipboard, then paste into your terminal.
+                </p>
+              </div>
+            </div>
+
+            {/* Live Search Input */}
+            <div className="relative w-full sm:w-72">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={devSearchQuery}
+                onChange={(e) => setDevSearchQuery(e.target.value)}
+                placeholder="Search commands (e.g. pytest, logs, alembic)..."
+                className="w-full pl-9 pr-8 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+              />
+              {devSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setDevSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 hover:text-white"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="space-y-2 font-mono text-slate-300">
-            <div className="bg-slate-900 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
-              <span>docker compose logs -f backend</span>
-              <span className="text-slate-500 text-[10px]">View live server logs</span>
-            </div>
-            <div className="bg-slate-900 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
-              <span>docker compose exec backend pytest -v</span>
-              <span className="text-slate-500 text-[10px]">Run test suite</span>
-            </div>
-            <div className="bg-slate-900 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
-              <span>docker compose exec frontend npm run typecheck</span>
-              <span className="text-slate-500 text-[10px]">TypeScript check</span>
-            </div>
+          {/* Category Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px]">
+            {DEV_CATEGORIES.map((cat) => {
+              const isSelected = devCategoryFilter === cat.id;
+              const count =
+                cat.id === 'all'
+                  ? CLI_COMMANDS.length
+                  : CLI_COMMANDS.filter((c) => c.category === cat.id).length;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setDevCategoryFilter(cat.id)}
+                  className={`px-3 py-1.5 rounded-lg font-medium whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                    isSelected
+                      ? 'bg-indigo-600 text-white shadow-xs font-semibold'
+                      : 'bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 border border-slate-800/80'
+                  }`}
+                >
+                  <span>{cat.label}</span>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      isSelected
+                        ? 'bg-indigo-700/80 text-indigo-100'
+                        : 'bg-slate-800 text-slate-500'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
-          <div className="pt-2 text-slate-400 text-[11px] flex items-center gap-4">
+          {/* Commands List */}
+          <div className="space-y-3">
+            {filteredCommands.length === 0 ? (
+              <div className="p-8 text-center bg-slate-900/40 rounded-xl border border-slate-800/60 text-slate-400">
+                <Search className="w-6 h-6 mx-auto mb-2 text-slate-500 opacity-60" />
+                <p className="font-semibold text-xs">No matching commands found</p>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Try a different search keyword or reset the category filter.
+                </p>
+              </div>
+            ) : (
+              filteredCommands.map((cmd) => {
+                const isCopied = copiedCommandId === cmd.id;
+                return (
+                  <div
+                    key={cmd.id}
+                    className="bg-slate-900/90 rounded-xl p-3.5 border border-slate-800/90 hover:border-slate-700/90 transition-all space-y-2 group"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-200 text-xs">
+                          {cmd.title}
+                        </span>
+                        <span className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                          {cmd.category}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        {cmd.description}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 bg-slate-950 p-2.5 rounded-lg border border-slate-800/80 font-mono text-xs">
+                      <div className="overflow-x-auto text-indigo-300 font-medium select-all py-0.5">
+                        {cmd.command}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleCopyCommand(cmd.id, cmd.command)}
+                        title="Copy command to clipboard"
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                          isCopied
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                            : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                        }`}
+                      >
+                        {isCopied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5 text-slate-400 group-hover:text-white" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Useful Documentation & Endpoints Links */}
+          <div className="pt-4 border-t border-slate-800/80 text-slate-400 text-xs flex flex-wrap items-center gap-y-2 gap-x-4">
+            <span className="text-slate-500 font-semibold text-[11px] uppercase tracking-wider">
+              Quick Links:
+            </span>
             <a
               href="http://localhost:8000/docs"
               target="_blank"
               rel="noreferrer"
-              className="text-indigo-400 hover:underline flex items-center gap-1"
+              className="text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-1"
             >
               <FileCode className="w-3.5 h-3.5" />
-              <span>Interactive FastAPI Swagger Docs</span>
+              <span>Interactive Swagger Docs</span>
+              <ExternalLink className="w-3 h-3 opacity-60" />
             </a>
-            <span>•</span>
+            <span className="text-slate-700">•</span>
+            <a
+              href="http://localhost:8000/redoc"
+              target="_blank"
+              rel="noreferrer"
+              className="text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-1"
+            >
+              <FileCode className="w-3.5 h-3.5" />
+              <span>FastAPI ReDoc</span>
+              <ExternalLink className="w-3 h-3 opacity-60" />
+            </a>
+            <span className="text-slate-700">•</span>
             <a
               href="http://localhost:8000/api/health"
               target="_blank"
               rel="noreferrer"
-              className="text-indigo-400 hover:underline"
+              className="text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-1"
             >
-              System Health API Endpoint
+              <Activity className="w-3.5 h-3.5" />
+              <span>Backend Health API</span>
+              <ExternalLink className="w-3 h-3 opacity-60" />
+            </a>
+            <span className="text-slate-700">•</span>
+            <a
+              href="http://localhost:8002/health"
+              target="_blank"
+              rel="noreferrer"
+              className="text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-1"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>VoxCPM2 Worker Health</span>
+              <ExternalLink className="w-3 h-3 opacity-60" />
             </a>
           </div>
         </div>
