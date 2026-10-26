@@ -38,12 +38,10 @@ def fetch_media_metadata(url: str) -> Dict[str, Any]:
     normalized_url, platform = validate_and_classify_url(url)
 
     with safe_connection_guard():
-        if platform in {"YouTube", "TikTok"}:
-            return _fetch_yt_dlp_metadata(normalized_url, platform)
-        elif platform == "Direct Media":
+        if platform == "Direct Media":
             return _fetch_direct_media_metadata(normalized_url)
         else:
-            raise UnsupportedSourceError(f"Unsupported source platform '{platform}'.")
+            return _fetch_yt_dlp_metadata(normalized_url, platform)
 
 
 def _fetch_yt_dlp_metadata(url: str, platform: str) -> Dict[str, Any]:
@@ -107,22 +105,21 @@ def _fetch_yt_dlp_metadata(url: str, platform: str) -> Dict[str, Any]:
         if height and vcodec and vcodec != "none":
             available_heights.add(int(height))
 
-    standard_resolutions = [1080, 720, 480, 360, 240]
-    available_video_qualities: List[str] = []
+    standard_resolutions = [1080, 720, 480, 360]
+    available_video_qualities: List[str] = ["best"]
 
     for res in standard_resolutions:
-        if any(h >= res for h in available_heights):
+        # Only display resolutions actually present or within 30px of streams
+        if any(abs(h - res) <= 30 for h in available_heights):
             available_video_qualities.append(f"{res}p")
 
-    # If no standard matched but some height exists, add the max available
-    if not available_video_qualities and available_heights:
+    # If no standard resolution matched but some height exists, add the max available
+    if len(available_video_qualities) == 1 and available_heights:
         max_h = max(available_heights)
         available_video_qualities.append(f"{max_h}p")
 
-    if not available_video_qualities:
-        available_video_qualities.append("best")
-    elif "best" not in available_video_qualities:
-        available_video_qualities.insert(0, "best")
+    # Add option for original compatible format
+    available_video_qualities.append("original")
 
     available_audio_formats = ["mp3", "m4a", "wav"]
 
@@ -137,7 +134,7 @@ def _fetch_yt_dlp_metadata(url: str, platform: str) -> Dict[str, Any]:
         "available_audio_formats": available_audio_formats,
         "estimated_file_size_bytes": int(estimated_filesize) if estimated_filesize else None,
         "is_audio_only_source": False,
-        "notice": "Download or import only media you own, have permission to use, or are otherwise permitted to download.",
+        "notice": "Only download media you have the right to use. Availability depends on the source website and applicable restrictions.",
     }
 
 
@@ -177,7 +174,7 @@ def _fetch_direct_media_metadata(url: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("HEAD/Range request failed for %s, continuing with fallback: %s", url, e)
 
-    video_qualities = ["best"] if not is_audio_only else []
+    video_qualities = ["best", "original"] if not is_audio_only else []
     audio_formats = ["mp3", "m4a", "wav"]
 
     return {
@@ -191,5 +188,5 @@ def _fetch_direct_media_metadata(url: str) -> Dict[str, Any]:
         "available_audio_formats": audio_formats,
         "estimated_file_size_bytes": estimated_size,
         "is_audio_only_source": is_audio_only,
-        "notice": "Download or import only media you own, have permission to use, or are otherwise permitted to download.",
+        "notice": "Only download media you have the right to use. Availability depends on the source website and applicable restrictions.",
     }

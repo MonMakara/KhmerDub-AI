@@ -10,6 +10,31 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 
+# Cache for yt-dlp extractors to check compatibility dynamically
+_YTDLP_EXTRACTORS = None
+
+
+def _get_ytdlp_extractors():
+    global _YTDLP_EXTRACTORS
+    if _YTDLP_EXTRACTORS is None:
+        try:
+            import yt_dlp
+            _YTDLP_EXTRACTORS = yt_dlp.extractor.gen_extractors()
+        except Exception as e:
+            logger.warning("Failed to load yt-dlp extractors: %s", e)
+            _YTDLP_EXTRACTORS = []
+    return _YTDLP_EXTRACTORS
+
+
+def find_matching_extractor_name(url: str) -> Optional[str]:
+    """Check if yt-dlp has a non-generic extractor matching the given URL."""
+    extractors = _get_ytdlp_extractors()
+    for ie in extractors:
+        if ie.IE_NAME != "generic" and ie.suitable(url):
+            return ie.IE_NAME
+    return None
+
+
 class DownloaderSecurityError(Exception):
     """Base exception for security and SSRF violations in Video Downloader."""
     pass
@@ -234,31 +259,36 @@ def validate_and_classify_url(url_str: str) -> Tuple[str, str]:
         if clean_host.endswith(suffix):
             raise SSRFSecurityError(f"Access to local or internal domain '{clean_host}' is prohibited.")
 
-    # 3. Platform Classification & Whitelist Check
-    platform: Optional[str] = None
+    # 3. Platform Classification & Compatibility Detection
+    path_lower = parsed.path.lower()
 
-    # Check YouTube
-    if clean_host in YOUTUBE_DOMAINS or any(clean_host.endswith("." + d) for d in YOUTUBE_DOMAINS):
-        platform = "YouTube"
-    # Check TikTok
-    elif clean_host in TIKTOK_DOMAINS or any(clean_host.endswith("." + d) for d in TIKTOK_DOMAINS):
+    if any(clean_host == d or clean_host.endswith("." + d) for d in ["youtube.com", "youtu.be"]):
+        platform = "YouTube Shorts" if "/shorts/" in path_lower else "YouTube"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["tiktok.com"]):
         platform = "TikTok"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["facebook.com", "fb.watch", "fb.com"]):
+        platform = "Facebook"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["instagram.com"]):
+        platform = "Instagram"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["twitter.com", "x.com"]):
+        platform = "X (Twitter)"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["vimeo.com"]):
+        platform = "Vimeo"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["dailymotion.com", "dai.ly"]):
+        platform = "Dailymotion"
+    elif any(clean_host == d or clean_host.endswith("." + d) for d in ["reddit.com", "redd.it", "v.redd.it"]):
+        platform = "Reddit"
+    elif any(path_lower.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS):
+        platform = "Direct Media"
     else:
-        # Check if direct media URL
-        path_lower = parsed.path.lower()
-        if any(path_lower.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS):
-            platform = "Direct Media"
+        # Check if yt-dlp has a dedicated extractor for this source
+        extractor_name = find_matching_extractor_name(cleaned_url)
+        if extractor_name:
+            platform = extractor_name.split(":")[0].capitalize()
         else:
-            # Check for YouTube shorts or watch query without standard extension
-            if "youtube.com" in clean_host or "youtu.be" in clean_host:
-                platform = "YouTube"
-            elif "tiktok.com" in clean_host:
-                platform = "TikTok"
-            else:
-                raise UnsupportedSourceError(
-                    f"Domain '{clean_host}' is not a recognized video source. "
-                    "KhmerDub AI supports YouTube, TikTok, and direct public media files (.mp4, .mov, .webm, .mp3, .wav)."
-                )
+            raise UnsupportedSourceError(
+                f"Website '{clean_host}' is not a recognized video source or supported media host."
+            )
 
     # 4. Resolve & Verify DNS (SSRF check)
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)

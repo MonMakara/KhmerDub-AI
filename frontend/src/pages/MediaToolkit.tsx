@@ -245,7 +245,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
   // Video Downloader State (Phase 13F)
   const [downloaderUrl, setDownloaderUrl] = useState<string>('');
-  const [downloaderRightsConfirmed, setDownloaderRightsConfirmed] = useState<boolean>(false);
   const [downloaderOutputType, setDownloaderOutputType] = useState<'video' | 'audio'>('video');
   const [downloaderQuality, setDownloaderQuality] = useState<string>('best');
   const [downloaderAudioFormat, setDownloaderAudioFormat] = useState<string>('mp3');
@@ -1362,10 +1361,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setError('Please enter a video URL.');
       return;
     }
-    if (!downloaderRightsConfirmed) {
-      setError('Please confirm that you have rights or permission to download this media.');
-      return;
-    }
     try {
       setDownloaderStarting(true);
       setError(null);
@@ -1374,7 +1369,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         output_type: downloaderOutputType,
         quality: downloaderQuality,
         audio_format: downloaderAudioFormat,
-        rights_confirmed: downloaderRightsConfirmed,
+        rights_confirmed: true,
       });
       setDownloaderActiveTask(task);
       setDownloaderActiveTaskId(task.id);
@@ -5195,8 +5190,15 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-slate-500">
                 <span className="font-medium text-slate-600">Supported:</span>
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">YouTube</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Shorts</span>
                 <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">TikTok</span>
-                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Direct MP4 / M4A / WAV</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Facebook</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Instagram</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">X / Twitter</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Vimeo</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Dailymotion</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Reddit</span>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">Direct Media</span>
               </div>
             </form>
 
@@ -5312,24 +5314,12 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               </div>
             )}
 
-            {/* Mandatory Legal & Rights Confirmation */}
-            <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200/80 space-y-2">
-              <div className="flex items-start gap-2 text-xs text-amber-900">
-                <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <p className="leading-relaxed text-[11px]">
-                  Download or import only media you own, have permission to use, or are otherwise permitted to download. Availability depends on the source website.
-                </p>
-              </div>
-
-              <label className="flex items-center gap-2 cursor-pointer pt-1 text-xs text-slate-800 font-medium select-none">
-                <input
-                  type="checkbox"
-                  checked={downloaderRightsConfirmed}
-                  onChange={(e) => setDownloaderRightsConfirmed(e.target.checked)}
-                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
-                />
-                <span>I confirm that I own, have permission to use, or am legally permitted to download this media.</span>
-              </label>
+            {/* Informational Rights & Availability Notice */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 flex items-start gap-2.5 text-xs text-slate-600">
+              <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+              <p className="leading-relaxed text-[11px] text-slate-500">
+                Only download media you have the right to use. Availability depends on the source website and applicable restrictions.
+              </p>
             </div>
 
             {/* Action Buttons */}
@@ -5354,7 +5344,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               <button
                 type="button"
                 onClick={handleStartDownload}
-                disabled={!downloaderMeta || !downloaderRightsConfirmed || downloaderStarting}
+                disabled={!downloaderMeta || downloaderStarting}
                 className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
               >
                 {downloaderStarting ? (

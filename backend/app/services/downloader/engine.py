@@ -161,21 +161,21 @@ def _run_download_process(
     raw_download_path: Optional[Path] = None
 
     with safe_connection_guard():
-        if platform in {"YouTube", "TikTok"}:
-            raw_download_path = _download_yt_dlp(
+        if platform == "Direct Media":
+            raw_download_path = _download_direct_media(
                 task_id=task_id,
                 url=normalized_url,
-                output_type=output_type,
-                quality=quality,
                 dest_dir=input_dir,
                 cancel_event=cancel_event,
                 progress_callback=progress_callback,
                 job_start_time=job_start_time,
             )
         else:
-            raw_download_path = _download_direct_media(
+            raw_download_path = _download_yt_dlp(
                 task_id=task_id,
                 url=normalized_url,
+                output_type=output_type,
+                quality=quality,
                 dest_dir=input_dir,
                 cancel_event=cancel_event,
                 progress_callback=progress_callback,
@@ -318,6 +318,8 @@ def _download_yt_dlp(
     format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
     if output_type == "audio":
         format_spec = "bestaudio/best"
+    elif quality == "original":
+        format_spec = "best"
     elif quality != "best":
         # Extract numeric height (e.g., '720p' -> 720)
         m = re.match(r"^(\d+)", quality)

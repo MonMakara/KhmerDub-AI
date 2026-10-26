@@ -283,7 +283,7 @@ class DownloaderStartRequest(BaseModel):
     output_type: str = "video"
     quality: str = "best"
     audio_format: str = "mp3"
-    rights_confirmed: bool = False
+    rights_confirmed: bool = True
 
 
 class DownloaderImportDubbingRequest(BaseModel):

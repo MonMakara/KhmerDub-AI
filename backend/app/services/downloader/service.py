@@ -85,22 +85,33 @@ class DownloaderService:
         output_type: str,
         quality: str,
         audio_format: str,
-        rights_confirmed: bool,
+        rights_confirmed: bool = True,
     ) -> ToolkitTask:
-        """Create and queue a new media download task."""
-        if not rights_confirmed:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You must confirm that you have rights or permission to download this media.",
-            )
-
+        """Create and queue a new media download task or reuse an existing completed task."""
         if output_type not in {"video", "audio"}:
             output_type = "video"
+
+        target_fmt = audio_format if output_type == "audio" else "mp4"
+
+        # Check for existing completed download to avoid duplicate network transfers
+        existing = (
+            db.query(ToolkitTask)
+            .filter(
+                ToolkitTask.tool_type == "video_downloader",
+                ToolkitTask.source_file_path == url,
+                ToolkitTask.status == "completed",
+                ToolkitTask.target_format == target_fmt,
+            )
+            .order_by(ToolkitTask.created_at.desc())
+            .first()
+        )
+        if existing and existing.output_file_path and Path(existing.output_file_path).exists():
+            logger.info("Reusing existing completed download task %s for URL: %s", existing.id, url)
+            return existing
 
         # Pre-validate URL and fetch title for task display
         meta = self.inspect_url(url)
         title = meta.get("title") or "Downloaded Media"
-        target_fmt = audio_format if output_type == "audio" else "mp4"
 
         task = ToolkitTask(
             id=str(uuid.uuid4()),

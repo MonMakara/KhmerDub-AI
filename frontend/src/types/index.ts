@@ -596,7 +596,7 @@ export interface VideoDownloaderStartPayload {
   output_type: 'video' | 'audio';
   quality: string;
   audio_format: string;
-  rights_confirmed: boolean;
+  rights_confirmed?: boolean;
 }
 
 export interface VideoDownloaderImportDubbingPayload {

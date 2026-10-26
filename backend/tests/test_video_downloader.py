@@ -113,7 +113,7 @@ def test_unsupported_websites():
 
 
 def test_valid_permitted_urls_classification():
-    """Verify YouTube, TikTok, and direct media URLs are classified correctly."""
+    """Verify YouTube, Shorts, TikTok, Facebook, Instagram, Twitter/X, Vimeo, Dailymotion, Reddit, and direct media URLs are classified correctly."""
     # YouTube
     yt_url, platform = validate_and_classify_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
     assert platform == "YouTube"
@@ -122,9 +122,36 @@ def test_valid_permitted_urls_classification():
     yt_short, platform = validate_and_classify_url("https://youtu.be/dQw4w9WgXcQ")
     assert platform == "YouTube"
 
+    yt_shorts_page, platform = validate_and_classify_url("https://www.youtube.com/shorts/dQw4w9WgXcQ")
+    assert platform == "YouTube Shorts"
+
     # TikTok
     tt_url, platform = validate_and_classify_url("https://www.tiktok.com/@creator/video/1234567890")
     assert platform == "TikTok"
+
+    # Facebook
+    fb_url, platform = validate_and_classify_url("https://www.facebook.com/watch/?v=1234567890")
+    assert platform == "Facebook"
+
+    # Instagram
+    ig_url, platform = validate_and_classify_url("https://www.instagram.com/reel/C1234567890/")
+    assert platform == "Instagram"
+
+    # X (Twitter)
+    x_url, platform = validate_and_classify_url("https://twitter.com/user/status/1234567890")
+    assert platform == "X (Twitter)"
+
+    # Vimeo
+    vm_url, platform = validate_and_classify_url("https://vimeo.com/12345678")
+    assert platform == "Vimeo"
+
+    # Dailymotion
+    dm_url, platform = validate_and_classify_url("https://www.dailymotion.com/video/x7tgad0")
+    assert platform == "Dailymotion"
+
+    # Reddit
+    rd_url, platform = validate_and_classify_url("https://www.reddit.com/r/videos/comments/abc/title/")
+    assert platform == "Reddit"
 
     # Direct media on a valid domain
     media_url, platform = validate_and_classify_url("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")
@@ -208,17 +235,68 @@ def test_api_downloader_info_endpoint(client: TestClient):
     assert "not a recognized video source" in resp.json()["detail"]
 
 
-def test_api_downloader_start_rights_required(client: TestClient):
-    """Verify that start download without rights confirmation returns HTTP 400."""
+@patch("app.services.downloader.service.downloader_service.inspect_url")
+@patch("app.services.downloader.service.execute_download_job")
+def test_api_downloader_start_without_rights_checkbox(mock_exec, mock_inspect, client: TestClient):
+    """Verify that download starts directly without requiring a separate confirmation checkbox."""
+    mock_inspect.return_value = {
+        "title": "Public Media",
+        "source_platform": "YouTube",
+        "uploader": "Test Channel",
+        "duration_seconds": 60.0,
+        "thumbnail_url": "https://example.com/thumb.jpg",
+    }
     resp = client.post(
         "/api/toolkit/downloader/start",
         json={
-            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            "rights_confirmed": False,
+            "url": "https://www.youtube.com/watch?v=unique_test_rights_free",
+            "output_type": "video",
+            "quality": "best",
         },
     )
-    assert resp.status_code == 400
-    assert "rights or permission" in resp.json()["detail"]
+    assert resp.status_code == 200
+    res_data = resp.json()
+    assert res_data["status"] == "pending"
+    assert "video_downloader" in res_data["tool_type"]
+
+
+def test_downloader_avoids_duplicate_downloads(client: TestClient, db_session: Session):
+    """Verify that requesting an already downloaded URL and format reuses the existing task."""
+    task_id = "duplicate-test-task"
+    task_dir = Path("/app/data/toolkit") / task_id / "output"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    out_file = task_dir / "downloaded_video.mp4"
+    out_file.write_bytes(b"reusable content")
+
+    existing_task = ToolkitTask(
+        id=task_id,
+        tool_type="video_downloader",
+        source_type="url",
+        source_filename="Existing Download.mp4",
+        source_file_path="https://www.youtube.com/watch?v=reuse_me",
+        target_format="mp4",
+        status="completed",
+        progress_percentage=100,
+        output_file_path=str(out_file),
+        output_filename="downloaded_video.mp4",
+    )
+    db_session.add(existing_task)
+    db_session.commit()
+
+    resp = client.post(
+        "/api/toolkit/downloader/start",
+        json={
+            "url": "https://www.youtube.com/watch?v=reuse_me",
+            "output_type": "video",
+            "quality": "best",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == task_id
+    assert data["status"] == "completed"
+
+    shutil.rmtree(task_dir.parent, ignore_errors=True)
 
 
 @patch("app.services.downloader.service.downloader_service.inspect_url")
@@ -316,6 +394,7 @@ def test_api_downloader_import_to_dubbing(mock_extract, mock_probe, client: Test
 
     mock_probe.return_value = MagicMock(
         duration=45.0,
+        duration_seconds=45.0,
         has_audio=True,
         width=1280,
         height=720,
