@@ -316,17 +316,25 @@ def _download_yt_dlp(
     output_template = str(dest_dir / f"raw_download_{task_id}.%(ext)s")
 
     # Format selector based on requested quality and output_type
-    format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+    format_spec = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
     if output_type == "audio":
         format_spec = "bestaudio/best"
     elif quality == "original":
-        format_spec = "best"
+        format_spec = "bestvideo+bestaudio/best"
     elif quality != "best":
         # Extract numeric height (e.g., '720p' -> 720)
         m = re.match(r"^(\d+)", quality)
         if m:
             height = m.group(1)
-            format_spec = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}]/best"
+            format_spec = (
+                f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
+                f"bestvideo[height<={height}]+bestaudio/"
+                f"best[height<={height}][ext=mp4]/"
+                f"best[height<={height}]/"
+                f"best"
+            )
+        else:
+            format_spec = "bestvideo+bestaudio/best"
 
     last_update_time = [0.0]
 
