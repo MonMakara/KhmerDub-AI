@@ -67,8 +67,8 @@ class DubbingPipeline:
             raise FileNotFoundError("Original video file is missing or not uploaded.")
 
         pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
-        is_v2 = pipeline_ver in ("v2", "v2.1")
-        # In v2.1, destructive silence trimming is disabled by default to preserve speech phonemes
+        is_v2 = pipeline_ver in ("v2", "v2.1", "v2.2")
+        # In v2.1/v2.2, destructive silence trimming is disabled by default to preserve speech phonemes
         active_trim_silence = True if pipeline_ver == "v2" else False
         if trim_silence is not None:
             active_trim_silence = trim_silence

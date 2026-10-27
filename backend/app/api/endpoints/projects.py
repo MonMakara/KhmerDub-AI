@@ -2047,7 +2047,7 @@ def get_export_status(
     timing_summary: Optional[Dict[str, Any]] = None
     timing_conflicts: List[TimingConflictResponse] = []
 
-    if pipeline_ver == "v2" and project.translation_segments:
+    if pipeline_ver in ("v2", "v2.1", "v2.2") and project.translation_segments:
         from app.services.dubbing.timing_optimizer import TimingOptimizerService
         optimizer = TimingOptimizerService(max_tempo=max_tempo)
         analyses = optimizer.analyze_timeline(project_id, db, max_tempo=max_tempo)

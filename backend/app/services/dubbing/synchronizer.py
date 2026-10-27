@@ -7,6 +7,7 @@ from typing import List, Tuple, Optional
 
 from app.core.storage import resolve_audio_file
 from app.models.project import TranscriptSegment, TranslationSegment, GeneratedAudio
+from app.services.dubbing.scheduler import TimelineScheduler
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ class AudioSynchronizationService:
         self,
         max_tempo_factor: float = 1.25,
         safety_margin_seconds: float = 0.05,
+        min_pause_seconds: float = 0.12,
         sample_rate: int = 44100,
         channels: int = 2,
         ffmpeg_bin: str = "ffmpeg",
@@ -71,6 +73,7 @@ class AudioSynchronizationService:
     ):
         self.max_tempo_factor = max_tempo_factor
         self.safety_margin_seconds = max(0.0, float(safety_margin_seconds))
+        self.min_pause_seconds = max(0.0, float(min_pause_seconds))
         self.sample_rate = sample_rate
         self.channels = channels
         self.ffmpeg_bin = ffmpeg_bin
@@ -226,12 +229,9 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
-            if pipeline_version == "v2.1":
-                # --- V2.1: Phrase-Group Scheduling with Non-Destructive Audio & Micro-Fades ---
-                phrase_groups: List[List[dict]] = []
-                curr_group: List[dict] = []
-                max_group_gap = 1.5  # sentences within 1.5s share timing flexibility
-
+            if pipeline_version in ("v2.1", "v2.2"):
+                # --- V2.1/V2.2: Phrase-Group & Whole-Timeline Adaptive Scheduling with Non-Destructive Audio & Micro-Fades ---
+                raw_items = []
                 for idx, (t_seg, trans_seg, audio_rec) in enumerate(sorted_items):
                     start_time = max(0.0, float(t_seg.start_time))
                     end_time = max(start_time, float(t_seg.end_time))
@@ -247,97 +247,62 @@ class AudioSynchronizationService:
                     if raw_dur <= 0.0:
                         raw_dur = float(audio_rec.duration_seconds or 1.0)
 
-                    seg_info = {
+                    raw_items.append({
                         "idx": idx,
-                        "t_seg": t_seg,
-                        "trans_seg": trans_seg,
-                        "audio_rec": audio_rec,
+                        "segment_order": t_seg.segment_order,
+                        "segment_id": t_seg.id,
+                        "trans_seg_id": trans_seg.id,
                         "audio_path": audio_path,
                         "start_time": start_time,
                         "end_time": end_time,
-                        "orig_dur": orig_dur,
-                        "raw_dur": raw_dur,
-                    }
-
-                    if not curr_group:
-                        curr_group.append(seg_info)
-                    else:
-                        prev_end = curr_group[-1]["end_time"]
-                        if (start_time - prev_end) <= max_group_gap:
-                            curr_group.append(seg_info)
-                        else:
-                            phrase_groups.append(curr_group)
-                            curr_group = [seg_info]
-
-                if curr_group:
-                    phrase_groups.append(curr_group)
-
-                analyzed_groups: List[dict] = []
-                for g_idx, g_items in enumerate(phrase_groups):
-                    g_start = g_items[0]["start_time"]
-                    if g_idx < len(phrase_groups) - 1:
-                        next_g_start = float(phrase_groups[g_idx + 1][0]["start_time"])
-                        g_limit = min(next_g_start, target_duration)
-                    else:
-                        g_limit = target_duration
-
-                    g_avail_window = max(0.1, g_limit - g_start)
-                    k = len(g_items)
-                    sum_raw = sum(s["raw_dur"] for s in g_items)
-                    p_min = 0.12  # 120ms natural breath pause between sentences
-                    p_total = (k - 1) * p_min
-                    avail_speech = max(0.05, g_avail_window - p_total - self.safety_margin_seconds)
-                    req_tempo = round(sum_raw / avail_speech, 3)
-
-                    if (sum_raw + p_total) <= g_avail_window:
-                        group_tempo = 1.0
-                    elif req_tempo <= active_max_tempo:
-                        group_tempo = round(req_tempo, 2)
-                    else:
-                        group_tempo = active_max_tempo
-                        overflow = round((sum_raw / active_max_tempo) - avail_speech, 2)
-                        if overflow > 0.05:
-                            overflowing_segs = [s for s in g_items if (s["raw_dur"] / max(0.05, s["orig_dur"])) > active_max_tempo]
-                            if not overflowing_segs:
-                                overflowing_segs = [max(g_items, key=lambda s: s["raw_dur"] / max(0.1, s["orig_dur"]))]
-                            for seg_c in overflowing_segs:
-                                seg_overflow = round((seg_c["raw_dur"] / active_max_tempo) - max(0.05, seg_c["orig_dur"]), 2)
-                                if seg_overflow <= 0.05:
-                                    seg_overflow = overflow
-                                est_words = max(1, math.ceil(seg_overflow / 0.35))
-                                action = (
-                                    f"Shorten the Khmer translation for Segment #{seg_c['t_seg'].segment_order} by approximately "
-                                    f"{est_words} word(s) (~{seg_overflow:.1f}s), regenerate audio, and retry export."
-                                )
-                                conflicts.append(
-                                    TimingConflict(
-                                        segment_order=seg_c["t_seg"].segment_order,
-                                        transcript_segment_id=seg_c["t_seg"].id,
-                                        start_time=round(seg_c["start_time"], 2),
-                                        end_time=round(seg_c["end_time"], 2),
-                                        original_duration=round(seg_c["orig_dur"], 2),
-                                        khmer_duration=round(seg_c["raw_dur"], 2),
-                                        available_window=round(g_avail_window, 2),
-                                        effective_window=round(avail_speech, 2),
-                                        safety_margin_seconds=round(self.safety_margin_seconds, 3),
-                                        required_tempo=round(req_tempo, 2),
-                                        max_tempo_factor=active_max_tempo,
-                                        tempo_factor=group_tempo,
-                                        overflow_seconds=seg_overflow,
-                                        suggested_action=action,
-                                        message=(
-                                            f"Phrase group starting at Segment #{g_items[0]['t_seg'].segment_order} ({sum_raw:.1f}s) "
-                                            f"exceeds available window ({g_avail_window:.2f}s) by {seg_overflow:.1f}s even at {group_tempo}x speed. "
-                                            f"{action}"
-                                        ),
-                                    )
-                                )
-
-                    analyzed_groups.append({
-                        "items": g_items,
-                        "tempo": group_tempo,
-                        "p_min": p_min,
+                        "orig_duration": orig_dur,
+                        "raw_duration": raw_dur,
+                        "khmer_text": trans_seg.khmer_text or "",
+                        "english_text": t_seg.text or "",
+                        "is_manually_edited": bool(trans_seg.is_manually_edited),
                     })
+
+                scheduler = TimelineScheduler(
+                    max_tempo=active_max_tempo,
+                    safety_margin_seconds=self.safety_margin_seconds,
+                )
+                scheduled_groups = scheduler.schedule_timeline(
+                    raw_items,
+                    target_duration=target_duration,
+                    max_tempo=active_max_tempo,
+                )
+
+                for g in scheduled_groups:
+                    for p in g.pieces:
+                        if p.status == "needs_optimization" and p.overflow_seconds > 0.05:
+                            est_words = max(1, math.ceil(p.overflow_seconds / 0.35))
+                            action = (
+                                f"Shorten the Khmer translation for Segment #{p.segment_order} by approximately "
+                                f"{est_words} word(s) (~{p.overflow_seconds:.1f}s), regenerate audio, and retry export."
+                            )
+                            conflicts.append(
+                                TimingConflict(
+                                    segment_order=p.segment_order,
+                                    transcript_segment_id=p.segment_id,
+                                    start_time=p.start_time,
+                                    end_time=p.end_time,
+                                    original_duration=p.orig_duration,
+                                    khmer_duration=p.raw_duration,
+                                    available_window=p.available_window,
+                                    effective_window=p.effective_window,
+                                    safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                                    required_tempo=p.required_tempo,
+                                    max_tempo_factor=active_max_tempo,
+                                    tempo_factor=p.applied_tempo,
+                                    overflow_seconds=p.overflow_seconds,
+                                    suggested_action=action,
+                                    message=(
+                                        f"Segment #{p.segment_order} ({p.raw_duration:.1f}s) "
+                                        f"exceeds available window ({p.available_window:.2f}s) by {p.overflow_seconds:.1f}s even at {p.applied_tempo}x speed. "
+                                        f"{action}"
+                                    ),
+                                )
+                            )
 
                 if strict_validation and conflicts:
                     logger.warning(
@@ -348,22 +313,27 @@ class AudioSynchronizationService:
 
                 # Second pass: render pieces with micro-fades and construct timeline
                 current_time = 0.0
-                for g_data in analyzed_groups:
-                    g_items = g_data["items"]
-                    tempo = g_data["tempo"]
-                    p_min = g_data["p_min"]
-
-                    for s_idx, item in enumerate(g_items):
-                        desired_start = max(item["start_time"], current_time if s_idx == 0 else (current_time + p_min))
+                for g in scheduled_groups:
+                    for s_idx, piece in enumerate(g.pieces):
+                        # Anchor desired start time cleanly without overlap
+                        desired_start = max(
+                            piece.start_time,
+                            current_time if s_idx == 0 else (current_time + self.min_pause_seconds)
+                        )
                         if desired_start > current_time:
                             gap_dur = desired_start - current_time
-                            gap_path = work_dir / f"gap_{item['idx']}.wav"
+                            gap_path = work_dir / f"gap_{piece.idx}.wav"
                             self.generate_silence(gap_dur, gap_path)
                             timeline_pieces.append(gap_path)
                             current_time = desired_start
 
-                        piece_path = work_dir / f"piece_{item['idx']}_order_{item['t_seg'].segment_order}.wav"
-                        self.render_speech_piece(item["audio_path"], piece_path, tempo_factor=tempo, apply_micro_fade=True)
+                        piece_path = work_dir / f"piece_{piece.idx}_order_{piece.segment_order}.wav"
+                        self.render_speech_piece(
+                            piece.audio_path,
+                            piece_path,
+                            tempo_factor=piece.applied_tempo,
+                            apply_micro_fade=True,
+                        )
                         piece_dur = self.video_processor.get_audio_duration(piece_path)
                         timeline_pieces.append(piece_path)
                         current_time += piece_dur
@@ -621,12 +591,9 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
-            if pipeline_version == "v2.1":
-                # --- V2.1 Phrase-Group Scheduling for Timed Segments ---
-                phrase_groups: List[List[dict]] = []
-                curr_group: List[dict] = []
-                max_group_gap = 1.5
-
+            if pipeline_version in ("v2.1", "v2.2"):
+                # --- V2.1/V2.2 Phrase-Group & Whole-Timeline Adaptive Scheduling for Timed Segments ---
+                raw_items = []
                 for idx, seg in enumerate(sorted_items):
                     start_time = max(0.0, float(seg.get("start_time", 0.0)))
                     end_time = max(start_time, float(seg.get("end_time", start_time + 1.0)))
@@ -641,117 +608,84 @@ class AudioSynchronizationService:
                     if raw_dur <= 0.0:
                         raw_dur = float(seg.get("duration_seconds", 1.0))
 
-                    seg_info = {
+                    raw_items.append({
                         "idx": idx,
-                        "seg_order": seg_order,
-                        "seg_id": seg_id,
+                        "segment_order": seg_order,
+                        "segment_id": seg_id,
                         "audio_path": audio_path,
                         "start_time": start_time,
                         "end_time": end_time,
-                        "orig_dur": orig_dur,
-                        "raw_dur": raw_dur,
-                    }
-
-                    if not curr_group:
-                        curr_group.append(seg_info)
-                    else:
-                        prev_end = curr_group[-1]["end_time"]
-                        if (start_time - prev_end) <= max_group_gap:
-                            curr_group.append(seg_info)
-                        else:
-                            phrase_groups.append(curr_group)
-                            curr_group = [seg_info]
-
-                if curr_group:
-                    phrase_groups.append(curr_group)
-
-                analyzed_groups: List[dict] = []
-                for g_idx, g_items in enumerate(phrase_groups):
-                    g_start = g_items[0]["start_time"]
-                    if g_idx < len(phrase_groups) - 1:
-                        next_g_start = float(phrase_groups[g_idx + 1][0]["start_time"])
-                        g_limit = min(next_g_start, target_duration)
-                    else:
-                        g_limit = target_duration
-
-                    g_avail_window = max(0.1, g_limit - g_start)
-                    k = len(g_items)
-                    sum_raw = sum(s["raw_dur"] for s in g_items)
-                    p_min = 0.12  # 120ms natural breath pause between sentences
-                    p_total = (k - 1) * p_min
-                    avail_speech = max(0.05, g_avail_window - p_total - self.safety_margin_seconds)
-                    req_tempo = round(sum_raw / avail_speech, 3)
-
-                    if (sum_raw + p_total) <= g_avail_window:
-                        group_tempo = 1.0
-                    elif req_tempo <= active_max_tempo:
-                        group_tempo = round(req_tempo, 2)
-                    else:
-                        group_tempo = active_max_tempo
-                        overflow = round((sum_raw / active_max_tempo) - avail_speech, 2)
-                        if overflow > 0.05:
-                            overflowing_segs = [s for s in g_items if (s["raw_dur"] / max(0.05, s["orig_dur"])) > active_max_tempo]
-                            if not overflowing_segs:
-                                overflowing_segs = [max(g_items, key=lambda s: s["raw_dur"] / max(0.1, s["orig_dur"]))]
-                            for seg_c in overflowing_segs:
-                                seg_overflow = round((seg_c["raw_dur"] / active_max_tempo) - max(0.05, seg_c["orig_dur"]), 2)
-                                if seg_overflow <= 0.05:
-                                    seg_overflow = overflow
-                                est_words = max(1, math.ceil(seg_overflow / 0.35))
-                                action = (
-                                    f"Shorten Segment #{seg_c['seg_order']} by approximately "
-                                    f"{est_words} word(s) (~{seg_overflow:.1f}s), regenerate audio, or switch to Narration Mode."
-                                )
-                                conflicts.append(
-                                    TimingConflict(
-                                        segment_order=seg_c["seg_order"],
-                                        transcript_segment_id=seg_c["seg_id"],
-                                        start_time=round(seg_c["start_time"], 2),
-                                        end_time=round(seg_c["end_time"], 2),
-                                        original_duration=round(seg_c["orig_dur"], 2),
-                                        khmer_duration=round(seg_c["raw_dur"], 2),
-                                        available_window=round(g_avail_window, 2),
-                                        effective_window=round(avail_speech, 2),
-                                        safety_margin_seconds=round(self.safety_margin_seconds, 3),
-                                        required_tempo=round(req_tempo, 2),
-                                        max_tempo_factor=active_max_tempo,
-                                        tempo_factor=group_tempo,
-                                        overflow_seconds=seg_overflow,
-                                        suggested_action=action,
-                                        message=(
-                                            f"Phrase group starting at Segment #{g_items[0]['seg_order']} ({sum_raw:.1f}s) "
-                                            f"exceeds available window ({g_avail_window:.2f}s) by {seg_overflow:.1f}s even at {group_tempo}x speed. {action}"
-                                        ),
-                                    )
-                                )
-
-                    analyzed_groups.append({
-                        "items": g_items,
-                        "tempo": group_tempo,
-                        "p_min": p_min,
+                        "orig_duration": orig_dur,
+                        "raw_duration": raw_dur,
+                        "khmer_text": seg.get("text", "") or "",
                     })
+
+                scheduler = TimelineScheduler(
+                    max_tempo=active_max_tempo,
+                    safety_margin_seconds=self.safety_margin_seconds,
+                )
+                scheduled_groups = scheduler.schedule_timeline(
+                    raw_items,
+                    target_duration=target_duration,
+                    max_tempo=active_max_tempo,
+                )
+
+                for g in scheduled_groups:
+                    for p in g.pieces:
+                        if p.status == "needs_optimization" and p.overflow_seconds > 0.05:
+                            est_words = max(1, math.ceil(p.overflow_seconds / 0.35))
+                            action = (
+                                f"Shorten Segment #{p.segment_order} by approximately "
+                                f"{est_words} word(s) (~{p.overflow_seconds:.1f}s), regenerate audio, or switch to Narration Mode."
+                            )
+                            conflicts.append(
+                                TimingConflict(
+                                    segment_order=p.segment_order,
+                                    transcript_segment_id=p.segment_id,
+                                    start_time=p.start_time,
+                                    end_time=p.end_time,
+                                    original_duration=p.orig_duration,
+                                    khmer_duration=p.raw_duration,
+                                    available_window=p.available_window,
+                                    effective_window=p.effective_window,
+                                    safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                                    required_tempo=p.required_tempo,
+                                    max_tempo_factor=active_max_tempo,
+                                    tempo_factor=p.applied_tempo,
+                                    overflow_seconds=p.overflow_seconds,
+                                    suggested_action=action,
+                                    message=(
+                                        f"Segment #{p.segment_order} ({p.raw_duration:.1f}s) "
+                                        f"exceeds available window ({p.available_window:.2f}s) by {p.overflow_seconds:.1f}s even at {p.applied_tempo}x speed. {action}"
+                                    ),
+                                )
+                            )
 
                 if strict_validation and conflicts:
                     raise TimingConflictError(conflicts=conflicts)
 
                 # Render pieces and construct timeline
                 current_time = 0.0
-                for g_data in analyzed_groups:
-                    g_items = g_data["items"]
-                    tempo = g_data["tempo"]
-                    p_min = g_data["p_min"]
-
-                    for s_idx, item in enumerate(g_items):
-                        desired_start = max(item["start_time"], current_time if s_idx == 0 else (current_time + p_min))
+                for g in scheduled_groups:
+                    for s_idx, piece in enumerate(g.pieces):
+                        desired_start = max(
+                            piece.start_time,
+                            current_time if s_idx == 0 else (current_time + self.min_pause_seconds)
+                        )
                         if desired_start > current_time:
                             gap_dur = desired_start - current_time
-                            gap_path = work_dir / f"gap_{item['idx']}.wav"
+                            gap_path = work_dir / f"gap_{piece.idx}.wav"
                             self.generate_silence(gap_dur, gap_path)
                             timeline_pieces.append(gap_path)
                             current_time = desired_start
 
-                        piece_path = work_dir / f"piece_{item['idx']}_order_{item['seg_order']}.wav"
-                        self.render_speech_piece(item["audio_path"], piece_path, tempo_factor=tempo, apply_micro_fade=True)
+                        piece_path = work_dir / f"piece_{piece.idx}_order_{piece.segment_order}.wav"
+                        self.render_speech_piece(
+                            piece.audio_path,
+                            piece_path,
+                            tempo_factor=piece.applied_tempo,
+                            apply_micro_fade=True,
+                        )
                         piece_dur = self.video_processor.get_audio_duration(piece_path)
                         timeline_pieces.append(piece_path)
                         current_time += piece_dur

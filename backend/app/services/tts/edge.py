@@ -137,8 +137,29 @@ class EdgeTTSProvider(TTSProvider):
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Native Edge TTS speaking rate control (e.g. rate="+15%" or rate_factor=1.15)
+        rate_val = kwargs.get("rate")
+        rate_factor = kwargs.get("rate_factor")
+        rate_str: Optional[str] = None
+        if rate_val is not None:
+            r = str(rate_val).strip()
+            if not r.endswith("%"):
+                r = f"{r}%"
+            if not r.startswith(("+", "-")):
+                r = f"+{r}"
+            rate_str = r
+        elif rate_factor is not None:
+            pct = int(round((float(rate_factor) - 1.0) * 100))
+            if pct > 0:
+                rate_str = f"+{pct}%"
+            elif pct < 0:
+                rate_str = f"{pct}%"
+
         async def _synthesize():
-            communicate = edge_tts.Communicate(clean_text, target_voice)
+            if rate_str:
+                communicate = edge_tts.Communicate(clean_text, target_voice, rate=rate_str)
+            else:
+                communicate = edge_tts.Communicate(clean_text, target_voice)
             await communicate.save(str(output_path))
 
         last_exception = None
@@ -159,10 +180,11 @@ class EdgeTTSProvider(TTSProvider):
                 # Measure actual duration via ffprobe
                 duration = self.video_processor.get_audio_duration(output_path)
                 logger.info(
-                    "Synthesized %s (%.2fs) using Edge TTS [voice=%s]",
+                    "Synthesized %s (%.2fs) using Edge TTS [voice=%s, rate=%s]",
                     output_path.name,
                     duration,
                     target_voice,
+                    rate_str or "+0%",
                 )
 
                 return TTSAudioResult(

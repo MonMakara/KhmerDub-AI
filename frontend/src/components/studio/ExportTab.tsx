@@ -43,7 +43,7 @@ export const ExportTab: React.FC<ExportTabProps> = ({
   isAutoFitting = false,
 }) => {
   const [showReviewList, setShowReviewList] = React.useState(false);
-  const isV2 = ['v2', 'v2.1'].includes(project.pipeline_version || '') || ['v2', 'v2.1'].includes(exportStatus?.pipeline_version || '');
+  const isV2 = ['v2', 'v2.1', 'v2.2'].includes(project.pipeline_version || '') || ['v2', 'v2.1', 'v2.2'].includes(exportStatus?.pipeline_version || '');
   const timingSummary = exportStatus?.timing_summary;
 
   const isVideoReady = Boolean(project.video?.file_path || project.original_video_path);
@@ -282,11 +282,20 @@ export const ExportTab: React.FC<ExportTabProps> = ({
                     key={c.segment_order}
                     className="p-3 bg-white rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
                   >
-                    <div className="space-y-0.5">
-                      <div className="flex items-center gap-2">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-bold text-amber-900">Segment #{c.segment_order}</span>
                         <span className="text-[11px] font-mono text-slate-500">
                           ({c.start_time.toFixed(2)}s → {c.end_time.toFixed(2)}s)
+                        </span>
+                        <span className="text-[10px] bg-slate-100 text-slate-700 font-medium px-2 py-0.5 rounded-md">
+                          Window: {c.available_window.toFixed(2)}s
+                        </span>
+                        <span className="text-[10px] bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded-md">
+                          Speech: {c.khmer_duration.toFixed(2)}s
+                        </span>
+                        <span className="text-[10px] bg-amber-50 text-amber-800 font-medium px-2 py-0.5 rounded-md">
+                          Speed: {c.tempo_factor.toFixed(2)}x
                         </span>
                         <span className="text-[10px] bg-rose-100 text-rose-800 font-semibold px-2 py-0.5 rounded-full">
                           +{c.overflow_seconds.toFixed(2)}s overflow
@@ -359,11 +368,20 @@ export const ExportTab: React.FC<ExportTabProps> = ({
                   key={c.segment_order}
                   className="p-3 bg-white rounded-xl border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                 >
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-2">
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-bold text-amber-900">Segment #{c.segment_order}</span>
                       <span className="text-[11px] font-mono text-slate-500">
                         ({c.start_time.toFixed(2)}s → {c.end_time.toFixed(2)}s)
+                      </span>
+                      <span className="text-[10px] bg-slate-100 text-slate-700 font-medium px-2 py-0.5 rounded-md">
+                        Window: {c.available_window.toFixed(2)}s
+                      </span>
+                      <span className="text-[10px] bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded-md">
+                        Speech: {c.khmer_duration.toFixed(2)}s
+                      </span>
+                      <span className="text-[10px] bg-amber-50 text-amber-800 font-medium px-2 py-0.5 rounded-md">
+                        Speed: {c.tempo_factor.toFixed(2)}x
                       </span>
                       <span className="text-[10px] bg-rose-100 text-rose-800 font-semibold px-2 py-0.5 rounded-full">
                         +{c.overflow_seconds.toFixed(2)}s overflow
