@@ -184,7 +184,7 @@ def process_tts(project_id: str, job_id: str, db: Optional[Session] = None) -> N
             job.progress_percentage = min(progress, 90)
             db.commit()
 
-        is_timing_aware = (getattr(project, "pipeline_version", "v1") in ("v2", "v2.1", "v2.2"))
+        is_timing_aware = (getattr(project, "pipeline_version", "v1") in ("v2", "v2.1", "v2.2", "v2.3"))
         if is_timing_aware:
             job.progress_percentage = 92
             db.commit()

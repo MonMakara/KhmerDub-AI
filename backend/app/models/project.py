@@ -54,7 +54,7 @@ class Project(Base):
     translation_style = Column(String(50), default="natural", nullable=False)
     tts_provider = Column(String(50), default="gtts", nullable=False)
     tts_voice = Column(String(100), default="default", nullable=False)
-    pipeline_version = Column(String(20), default="v2.1", nullable=False)
+    pipeline_version = Column(String(20), default="v2.3", nullable=False)
     segmentation_mode = Column(String(50), default="sentence", nullable=True)
     raw_transcript_json = Column(Text, nullable=True)
     status = Column(
@@ -140,6 +140,7 @@ class TranscriptSegment(Base):
     words_json = Column(Text, nullable=True)
     is_approximate = Column(Boolean, default=False, nullable=False)
     is_manually_edited = Column(Boolean, default=False, nullable=False)
+    dubbing_unit_id = Column(String(36), nullable=True)
     created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="transcript_segments")
@@ -152,6 +153,10 @@ class TranslationSegment(Base):
     project_id = Column(String(36), ForeignKey("projects.id"), nullable=False)
     transcript_segment_id = Column(String(36), ForeignKey("transcript_segments.id"), nullable=True)
     segment_order = Column(Integer, nullable=False)
+    start_time = Column(Float, nullable=True)
+    end_time = Column(Float, nullable=True)
+    source_segment_ids = Column(Text, nullable=True)
+    source_text = Column(Text, nullable=True)
     khmer_text = Column(Text, nullable=False)
     style = Column(String(50), default="natural", nullable=True)
     explanation = Column(Text, nullable=True)

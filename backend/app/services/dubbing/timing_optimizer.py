@@ -130,8 +130,8 @@ class TimingOptimizerService:
         analysis_items: List[SegmentTimingAnalysis] = []
         pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
 
-        if pipeline_ver in ("v2.1", "v2.2"):
-            # --- V2.1/V2.2: Phrase-Group & Whole-Timeline Adaptive Budget Analysis ---
+        if pipeline_ver in ("v2.1", "v2.2", "v2.3"):
+            # --- V2.1/V2.2/V2.3: Phrase-Group & Whole-Timeline Adaptive Budget Analysis ---
             raw_items = []
             trans_seg_map = {}
             for idx, trans_seg in enumerate(sorted_trans):
@@ -143,25 +143,28 @@ class TimingOptimizerService:
                     trans_seg.generated_audio
                     or db.query(GeneratedAudio).filter(GeneratedAudio.translation_segment_id == trans_seg.id).first()
                 )
-                if not t_seg:
+                if not t_seg and trans_seg.start_time is None:
                     continue
-                start_time = max(0.0, float(t_seg.start_time))
-                end_time = max(start_time, float(t_seg.end_time))
+                start_time = max(0.0, float(trans_seg.start_time if trans_seg.start_time is not None else t_seg.start_time))
+                end_time = max(start_time, float(trans_seg.end_time if trans_seg.end_time is not None else t_seg.end_time))
                 slot_dur = max(0.1, end_time - start_time)
                 raw_dur = float(audio_rec.duration_seconds or 0.0) if audio_rec else 0.0
+                seg_order = trans_seg.segment_order
+                t_id = trans_seg.transcript_segment_id or (t_seg.id if t_seg else f"trans_{trans_seg.id}")
+                english_text = trans_seg.source_text or (t_seg.text if t_seg else "")
 
-                trans_seg_map[t_seg.id] = trans_seg
+                trans_seg_map[t_id] = trans_seg
                 raw_items.append({
                     "idx": idx,
-                    "segment_order": t_seg.segment_order,
-                    "segment_id": t_seg.id,
+                    "segment_order": seg_order,
+                    "segment_id": t_id,
                     "audio_path": Path(audio_rec.audio_path) if (audio_rec and audio_rec.audio_path) else None,
                     "start_time": start_time,
                     "end_time": end_time,
                     "orig_duration": slot_dur,
                     "raw_duration": raw_dur,
                     "khmer_text": trans_seg.khmer_text or "",
-                    "english_text": t_seg.text or "",
+                    "english_text": english_text,
                     "is_manually_edited": bool(trans_seg.is_manually_edited),
                 })
 
@@ -329,7 +332,7 @@ class TimingOptimizerService:
 
         # Tier 1: Trim edge silence on all existing audio segments in-place (legacy only; v2.1/v2.2 preserves complete speech)
         trimmed_count = 0
-        if pipeline_ver not in ("v2.1", "v2.2") and project.translation_segments:
+        if pipeline_ver not in ("v2.1", "v2.2", "v2.3") and project.translation_segments:
             for trans_seg in project.translation_segments:
                 audio_rec = trans_seg.generated_audio
                 if audio_rec and audio_rec.audio_path:
@@ -373,7 +376,7 @@ class TimingOptimizerService:
         # Tier 3: Selective sentence optimization for overflow segments
         # In v2.1/v2.2, speech completeness and translation preservation strictly take precedence over
         # automated text deletion. We do not perform lossy character or word slicing.
-        if pipeline_ver in ("v2.1", "v2.2"):
+        if pipeline_ver in ("v2.1", "v2.2", "v2.3"):
             overflow_items = []
         else:
             overflow_items = [item for item in analysis if item.status == "needs_optimization"]

@@ -164,7 +164,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
         translation_style=trans_style,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
-        pipeline_version=payload.pipeline_version or "v2.1",
+        pipeline_version=payload.pipeline_version or "v2.3",
         status=ProjectStatus.CREATED,
     )
     db.add(project)
@@ -741,16 +741,28 @@ def update_transcript_segment(
     # If transcript text changed, mark corresponding translation as outdated
     if old_text != clean_text:
         segment.is_manually_edited = True
-        linked_trans = (
-            db.query(TranslationSegment)
-            .filter(
-                TranslationSegment.project_id == project_id,
-                TranslationSegment.transcript_segment_id == segment_id,
+        linked_trans = None
+        if segment.dubbing_unit_id:
+            linked_trans = db.query(TranslationSegment).filter(TranslationSegment.id == segment.dubbing_unit_id).first()
+        if not linked_trans:
+            linked_trans = (
+                db.query(TranslationSegment)
+                .filter(
+                    TranslationSegment.project_id == project_id,
+                    TranslationSegment.transcript_segment_id == segment_id,
+                )
+                .first()
             )
-            .first()
-        )
         if linked_trans:
             linked_trans.is_outdated = True
+            # Update combined source text if member transcript changed
+            if linked_trans.source_segment_ids:
+                try:
+                    src_ids = json.loads(linked_trans.source_segment_ids)
+                    member_segs = db.query(TranscriptSegment).filter(TranscriptSegment.id.in_(src_ids)).order_by(TranscriptSegment.segment_order).all()
+                    linked_trans.source_text = " ".join(m.text for m in member_segs)
+                except Exception:
+                    pass
             if linked_trans.generated_audio:
                 linked_trans.generated_audio.is_outdated = True
         if project.video and project.video.exported_video_path:
@@ -1183,9 +1195,21 @@ def _enrich_translation_segment(
     trans_seg: TranslationSegment,
 ) -> TranslationSegmentResponse:
     """Enrich TranslationSegment with timing, style, explanation, and English transcript text."""
-    english_text = trans_seg.transcript_segment.text if trans_seg.transcript_segment else None
-    start_time = trans_seg.transcript_segment.start_time if trans_seg.transcript_segment else None
-    end_time = trans_seg.transcript_segment.end_time if trans_seg.transcript_segment else None
+    if trans_seg.start_time is not None and trans_seg.end_time is not None:
+        start_time = trans_seg.start_time
+        end_time = trans_seg.end_time
+        english_text = trans_seg.source_text or (trans_seg.transcript_segment.text if trans_seg.transcript_segment else None)
+    else:
+        start_time = trans_seg.transcript_segment.start_time if trans_seg.transcript_segment else None
+        end_time = trans_seg.transcript_segment.end_time if trans_seg.transcript_segment else None
+        english_text = trans_seg.transcript_segment.text if trans_seg.transcript_segment else None
+
+    src_ids = None
+    if trans_seg.source_segment_ids:
+        try:
+            src_ids = json.loads(trans_seg.source_segment_ids)
+        except Exception:
+            src_ids = None
 
     return TranslationSegmentResponse(
         id=trans_seg.id,
@@ -1196,6 +1220,8 @@ def _enrich_translation_segment(
         english_text=english_text,
         start_time=start_time,
         end_time=end_time,
+        source_segment_ids=src_ids,
+        source_text=trans_seg.source_text,
         style=getattr(trans_seg, "style", "natural") or "natural",
         explanation=getattr(trans_seg, "explanation", None),
         is_manually_edited=trans_seg.is_manually_edited,
@@ -1376,7 +1402,8 @@ def retranslate_segment(
     if not segment:
         raise HTTPException(status_code=404, detail="Translation segment not found")
 
-    if not segment.transcript_segment or not segment.transcript_segment.text:
+    source_en = segment.source_text or (segment.transcript_segment.text if segment.transcript_segment else None)
+    if not source_en:
         raise HTTPException(
             status_code=400,
             detail="Corresponding English transcript text is missing",
@@ -1399,7 +1426,7 @@ def retranslate_segment(
         )
         .first()
     )
-    context_text = f"{prev_seg.text + ' ' if prev_seg else ''}{segment.transcript_segment.text}{' ' + next_seg.text if next_seg else ''}".strip()
+    context_text = f"{prev_seg.text + ' ' if prev_seg else ''}{source_en}{' ' + next_seg.text if next_seg else ''}".strip()
 
     provider_id = (project.translation_provider or "nllb").lower()
     style = project.translation_style or "natural"
@@ -1409,7 +1436,7 @@ def retranslate_segment(
         else:
             provider = get_translation_provider(provider_id)
         translated_texts = provider.translate(
-            texts=[segment.transcript_segment.text],
+            texts=[source_en],
             source_lang=project.original_language or "eng_Latn",
             target_lang=project.target_language or "khm_Khmr",
             contexts=[context_text],
@@ -2047,7 +2074,7 @@ def get_export_status(
     timing_summary: Optional[Dict[str, Any]] = None
     timing_conflicts: List[TimingConflictResponse] = []
 
-    if pipeline_ver in ("v2", "v2.1", "v2.2") and project.translation_segments:
+    if pipeline_ver in ("v2", "v2.1", "v2.2", "v2.3") and project.translation_segments:
         from app.services.dubbing.timing_optimizer import TimingOptimizerService
         optimizer = TimingOptimizerService(max_tempo=max_tempo)
         analyses = optimizer.analyze_timeline(project_id, db, max_tempo=max_tempo)

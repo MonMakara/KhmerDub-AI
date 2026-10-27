@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,7 +68,7 @@ class DubbingPipeline:
             raise FileNotFoundError("Original video file is missing or not uploaded.")
 
         pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
-        is_v2 = pipeline_ver in ("v2", "v2.1", "v2.2")
+        is_v2 = pipeline_ver in ("v2", "v2.1", "v2.2", "v2.3")
         # In v2.1/v2.2, destructive silence trimming is disabled by default to preserve speech phonemes
         active_trim_silence = True if pipeline_ver == "v2" else False
         if trim_silence is not None:
@@ -102,6 +103,23 @@ class DubbingPipeline:
                     db.query(TranscriptSegment)
                     .filter(TranscriptSegment.id == trans_seg.transcript_segment_id)
                     .first()
+                )
+            if not t_seg and getattr(trans_seg, "source_segment_ids", None):
+                try:
+                    src_ids = json.loads(trans_seg.source_segment_ids)
+                    if src_ids:
+                        t_seg = db.query(TranscriptSegment).filter(TranscriptSegment.id == src_ids[0]).first()
+                except Exception:
+                    pass
+            if not t_seg and getattr(trans_seg, "start_time", None) is not None:
+                # In v2.3, dubbing units have independent timing
+                t_seg = TranscriptSegment(
+                    id=f"synth_{trans_seg.id}",
+                    project_id=project_id,
+                    segment_order=trans_seg.segment_order,
+                    start_time=trans_seg.start_time,
+                    end_time=trans_seg.end_time,
+                    text=trans_seg.source_text or "",
                 )
             if not t_seg:
                 raise ValueError(f"Missing transcript segment for translation #{trans_seg.segment_order}")

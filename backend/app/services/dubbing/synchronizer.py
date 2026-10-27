@@ -229,18 +229,20 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
-            if pipeline_version in ("v2.1", "v2.2"):
-                # --- V2.1/V2.2: Phrase-Group & Whole-Timeline Adaptive Scheduling with Non-Destructive Audio & Micro-Fades ---
+            if pipeline_version in ("v2.1", "v2.2", "v2.3"):
+                # --- V2.1/V2.2/V2.3: Phrase-Group & Whole-Timeline Adaptive Scheduling with Non-Destructive Audio & Micro-Fades ---
                 raw_items = []
                 for idx, (t_seg, trans_seg, audio_rec) in enumerate(sorted_items):
-                    start_time = max(0.0, float(t_seg.start_time))
-                    end_time = max(start_time, float(t_seg.end_time))
+                    start_time = max(0.0, float(trans_seg.start_time if trans_seg.start_time is not None else t_seg.start_time))
+                    end_time = max(start_time, float(trans_seg.end_time if trans_seg.end_time is not None else t_seg.end_time))
                     orig_dur = max(0.1, end_time - start_time)
+                    seg_order = trans_seg.segment_order
+                    english_text = trans_seg.source_text or (t_seg.text if t_seg else "")
 
                     audio_path = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
                     if not audio_path.exists() or audio_path.stat().st_size == 0:
                         raise FileNotFoundError(
-                            f"Generated audio file missing for segment {t_seg.segment_order} at {audio_path}"
+                            f"Generated audio file missing for segment {seg_order} at {audio_path}"
                         )
 
                     raw_dur = self.video_processor.get_audio_duration(audio_path)
@@ -249,8 +251,8 @@ class AudioSynchronizationService:
 
                     raw_items.append({
                         "idx": idx,
-                        "segment_order": t_seg.segment_order,
-                        "segment_id": t_seg.id,
+                        "segment_order": seg_order,
+                        "segment_id": t_seg.id if t_seg else f"trans_{trans_seg.id}",
                         "trans_seg_id": trans_seg.id,
                         "audio_path": audio_path,
                         "start_time": start_time,
@@ -258,7 +260,7 @@ class AudioSynchronizationService:
                         "orig_duration": orig_dur,
                         "raw_duration": raw_dur,
                         "khmer_text": trans_seg.khmer_text or "",
-                        "english_text": t_seg.text or "",
+                        "english_text": english_text,
                         "is_manually_edited": bool(trans_seg.is_manually_edited),
                     })
 
@@ -591,7 +593,7 @@ class AudioSynchronizationService:
         current_time = 0.0
 
         try:
-            if pipeline_version in ("v2.1", "v2.2"):
+            if pipeline_version in ("v2.1", "v2.2", "v2.3"):
                 # --- V2.1/V2.2 Phrase-Group & Whole-Timeline Adaptive Scheduling for Timed Segments ---
                 raw_items = []
                 for idx, seg in enumerate(sorted_items):

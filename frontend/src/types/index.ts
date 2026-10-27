@@ -82,6 +82,7 @@ export interface TranscriptSegment {
   text: string;
   is_approximate?: boolean;
   is_manually_edited?: boolean;
+  dubbing_unit_id?: string | null;
   created_at?: string;
 }
 
@@ -137,6 +138,8 @@ export interface TranslationSegment {
   english_text?: string | null;
   start_time?: number | null;
   end_time?: number | null;
+  source_segment_ids?: string[] | null;
+  source_text?: string | null;
   style?: string | null;
   explanation?: string | null;
   is_manually_edited: boolean;
