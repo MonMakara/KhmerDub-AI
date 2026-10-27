@@ -75,6 +75,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [isAutoFitting, setIsAutoFitting] = useState<boolean>(false);
 
   // Errors
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [translationError, setTranslationError] = useState<string | null>(null);
   const [ttsError, setTtsError] = useState<string | null>(null);
@@ -190,6 +191,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const fetchProjectData = useCallback(async (isInitial = false) => {
     try {
       if (isInitial) setLoading(true);
+      setProjectError(null);
       const data = await api.getProject(projectId);
       setProject(data);
 
@@ -256,6 +258,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       ]);
     } catch (err: any) {
       console.error('Failed to fetch project data:', err);
+      setProjectError(err?.message || 'Failed to load project data. Please verify backend connection.');
     } finally {
       if (isInitial) setLoading(false);
       setRefreshing(false);
@@ -546,11 +549,39 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const isVoiceReady = generatedAudios.length > 0;
   const isExportReady = project?.status === 'completed' || Boolean(exportStatus?.exported_video_path);
 
-  if (loading || !project) {
+  if (loading) {
     return (
       <div className="p-16 text-center space-y-3 max-w-7xl mx-auto">
         <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
         <p className="text-sm font-semibold text-slate-700">Loading Dubbing Studio...</p>
+      </div>
+    );
+  }
+
+  if (!project) {
+    return (
+      <div className="p-8 text-center space-y-4 max-w-lg mx-auto bg-white rounded-2xl border border-rose-200 shadow-sm my-16">
+        <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto font-bold text-lg">
+          !
+        </div>
+        <h3 className="text-base font-bold text-slate-900">Unable to Load Project</h3>
+        <p className="text-xs text-slate-600 leading-relaxed">
+          {projectError || 'The project could not be found or loaded from the backend server.'}
+        </p>
+        <div className="flex items-center justify-center gap-3 pt-2">
+          <button
+            onClick={onBack}
+            className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition"
+          >
+            Back to Projects
+          </button>
+          <button
+            onClick={() => fetchProjectData(true)}
+            className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition shadow-sm"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }

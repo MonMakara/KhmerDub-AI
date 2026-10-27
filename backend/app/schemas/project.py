@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -131,6 +132,26 @@ class TranslationSegmentResponse(BaseModel):
     is_outdated: bool = False
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("source_segment_ids", mode="before")
+    @classmethod
+    def parse_source_segment_ids(cls, v: Any) -> Optional[List[str]]:
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        if isinstance(v, str):
+            v_str = v.strip()
+            if not v_str:
+                return []
+            try:
+                parsed = json.loads(v_str)
+                if isinstance(parsed, list):
+                    return [str(x) for x in parsed]
+            except Exception:
+                pass
+            return [v_str]
+        return None
 
     model_config = ConfigDict(from_attributes=True)
 
