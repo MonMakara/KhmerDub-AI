@@ -1,0 +1,38 @@
+{
+  "wav": {
+    "duration": 1.0,
+    "video": false
+  },
+  "mp3": {
+    "duration": 1.0,
+    "video": false
+  },
+  "m4a": {
+    "duration": 1.021688,
+    "video": false
+  },
+  "flac": {
+    "duration": 1.0,
+    "video": false
+  },
+  "ogg": {
+    "duration": 0.997104,
+    "video": false
+  },
+  "mp4": {
+    "duration": 1.021688,
+    "video": true
+  },
+  "mov": {
+    "duration": 1.021688,
+    "video": true
+  },
+  "mkv": {
+    "duration": 1.044917,
+    "video": true
+  },
+  "webm": {
+    "duration": 1.0,
+    "video": true
+  }
+}

@@ -23,8 +23,13 @@ import {
   Search,
   ExternalLink,
   Clock,
+  Sparkles,
 } from 'lucide-react';
-import { HealthResponse, TranslationProviderInfo } from '../types';
+import {
+  HealthResponse,
+  TranslationProviderInfo,
+  StorageUsageResponse,
+} from '../types';
 import { api } from '../services/api';
 import { formatCambodiaDate, formatCambodiaTime } from '../utils/date';
 
@@ -36,33 +41,33 @@ interface ProviderPreset {
   name: string;
   baseUrl: string;
   defaultModel: string;
+  suggestedModels?: string[];
 }
 
 const CUSTOM_PRESETS: ProviderPreset[] = [
   {
+    name: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    defaultModel: 'openai/gpt-oss-120b',
+    suggestedModels: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'],
+  },
+  {
     name: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
     defaultModel: 'deepseek-chat',
-  },
-  {
-    name: 'Groq',
-    baseUrl: 'https://api.groq.com/openai/v1',
-    defaultModel: 'llama-3.3-70b-versatile',
+    suggestedModels: ['deepseek-chat', 'deepseek-reasoner'],
   },
   {
     name: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: 'deepseek/deepseek-chat',
+    suggestedModels: ['deepseek/deepseek-chat', 'meta-llama/llama-3.3-70b-instruct'],
   },
   {
     name: 'Mistral AI',
     baseUrl: 'https://api.mistral.ai/v1',
     defaultModel: 'mistral-large-latest',
-  },
-  {
-    name: 'Ollama (Local)',
-    baseUrl: 'http://host.docker.internal:11434/v1',
-    defaultModel: 'llama3.2',
+    suggestedModels: ['mistral-large-latest', 'mistral-small-latest'],
   },
 ];
 
@@ -76,12 +81,12 @@ interface CliCommandItem {
 
 const DEV_CATEGORIES = [
   { id: 'all', label: 'All Commands' },
+  { id: 'voice', label: 'Voice Worker & AI' },
   { id: 'docker', label: 'Docker & Services' },
   { id: 'logs', label: 'Logs & Diagnostics' },
   { id: 'testing', label: 'Testing & QA' },
   { id: 'database', label: 'Database & Migrations' },
   { id: 'shell', label: 'Interactive Shell' },
-  { id: 'voice', label: 'Voice Worker & AI' },
 ];
 
 const CLI_COMMANDS: CliCommandItem[] = [
@@ -265,18 +270,60 @@ const CLI_COMMANDS: CliCommandItem[] = [
 
   // 6. Voice Cloning & Worker
   {
-    id: 'voice-worker-start',
+    id: 'voice-worker-start-script',
     category: 'voice',
-    title: 'Start VoxCPM2 Voice Worker (Host GPU)',
-    description: 'Starts the GPU-accelerated VoxCPM2 voice cloning worker daemon (port 8002).',
-    command: 'PYTHONPATH=backend /home/mark/miniconda3/envs/voxcpm-bench/bin/python backend/app/services/voice/worker.py',
+    title: 'Start Voice Clone Service (Standard / Terminal)',
+    description: 'Launches GPU-accelerated VoxCPM2 voice cloning worker daemon (port 8002) in active terminal with CUDA optimizations.',
+    command: 'cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && ./scripts/run_voxcpm_worker.sh',
+  },
+  {
+    id: 'voice-worker-start-bg',
+    category: 'voice',
+    title: 'Start Voice Clone Service in Background (Daemon)',
+    description: 'Runs worker in background using nohup, logging output to data/logs/voxcpm_worker.log.',
+    command: 'cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && nohup ./scripts/run_voxcpm_worker.sh > data/logs/voxcpm_worker.log 2>&1 &',
   },
   {
     id: 'voice-worker-health',
     category: 'voice',
-    title: 'Check VoxCPM2 Worker Health',
-    description: 'Queries VoxCPM2 worker health status, GPU memory, and model state.',
+    title: 'Check Voice Clone Worker Health & GPU Status',
+    description: 'Queries worker health status, GPU memory allocation, and VoxCPM2 model state.',
     command: 'curl -s http://localhost:8002/health | jq .',
+  },
+  {
+    id: 'voice-worker-process',
+    category: 'voice',
+    title: 'Check Running Voice Worker Process (PID)',
+    description: 'Displays active process ID (PID) and status of the running voice cloning worker.',
+    command: 'pgrep -af "worker.py"',
+  },
+  {
+    id: 'voice-worker-logs',
+    category: 'voice',
+    title: 'Follow Voice Worker Live Logs',
+    description: 'Streams real-time CUDA inference, speech synthesis, and debug traces from the worker log.',
+    command: 'tail -f ~/Documents/MyDocuments/Projects/KhmerDub-AI/data/logs/voxcpm_worker.log',
+  },
+  {
+    id: 'voice-worker-restart',
+    category: 'voice',
+    title: 'Restart Voice Clone Service (Background)',
+    description: 'Stops existing worker process, waits 2s, and starts a fresh background daemon.',
+    command: 'pkill -f "worker.py" ; sleep 2 ; cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && nohup ./scripts/run_voxcpm_worker.sh > data/logs/voxcpm_worker.log 2>&1 &',
+  },
+  {
+    id: 'voice-worker-stop',
+    category: 'voice',
+    title: 'Stop Voice Clone Service',
+    description: 'Gracefully terminates the background voice clone worker process and frees GPU memory.',
+    command: 'pkill -f "worker.py"',
+  },
+  {
+    id: 'voice-worker-python',
+    category: 'voice',
+    title: 'Start Voice Worker via Direct Conda Python',
+    description: 'Direct Python invocation with PYTHONPATH in the miniforge voxcpm-bench environment.',
+    command: 'cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && PYTHONPATH=backend /home/mark/miniforge3/envs/voxcpm-bench/bin/python backend/app/services/voice/worker.py',
   },
   {
     id: 'backend-health',
@@ -284,6 +331,13 @@ const CLI_COMMANDS: CliCommandItem[] = [
     title: 'Check Backend API Health',
     description: 'Returns FastAPI server status, version, and FFmpeg capability check.',
     command: 'curl -s http://localhost:8000/api/health | jq .',
+  },
+  {
+    id: 'voice-studio-api',
+    category: 'voice',
+    title: 'List All Voices & Profiles via API',
+    description: 'Returns all system voices, custom voice profiles, and cloning engine status from backend.',
+    command: 'curl -s http://localhost:8000/api/voices | jq .',
   },
 ];
 
@@ -332,6 +386,14 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
   const [devSearchQuery, setDevSearchQuery] = useState<string>('');
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
 
+  // Storage Manager & Cache States
+  const [storageData, setStorageData] = useState<StorageUsageResponse | null>(null);
+  const [loadingStorage, setLoadingStorage] = useState<boolean>(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [cleaningTarget, setCleaningTarget] = useState<string | null>(null);
+  const [cleanSuccessMessage, setCleanSuccessMessage] = useState<string | null>(null);
+  const [cleanOlderThanDays, setCleanOlderThanDays] = useState<number>(7);
+
   const handleCopyCommand = (id: string, text: string) => {
     if (navigator?.clipboard?.writeText) {
       navigator.clipboard.writeText(text);
@@ -372,6 +434,12 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
     setStatusMessage(null);
 
     if (p.id === 'custom') {
+      setBaseUrlInput(p.base_url || 'https://openrouter.ai/api/v1');
+      setModelInput(p.configured_model || p.default_model || 'deepseek/deepseek-chat');
+    } else if (p.id === 'groq') {
+      setBaseUrlInput(p.base_url || 'https://api.groq.com/openai/v1');
+      setModelInput(p.configured_model || p.default_model || 'openai/gpt-oss-120b');
+    } else if (p.id === 'deepseek') {
       setBaseUrlInput(p.base_url || 'https://api.deepseek.com/v1');
       setModelInput(p.configured_model || p.default_model || 'deepseek-chat');
     } else {
@@ -405,10 +473,53 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
     }
   };
 
+  const fetchStorageData = async () => {
+    try {
+      setLoadingStorage(true);
+      setStorageError(null);
+      const data = await api.getStorageUsage();
+      setStorageData(data);
+    } catch (err: any) {
+      console.error('Failed to load storage data', err);
+      setStorageError(err.message || 'Failed to load storage data');
+    } finally {
+      setLoadingStorage(false);
+    }
+  };
+
+  const handleCleanStorage = async (targets: string[], days?: number) => {
+    const targetKey = targets.join('_');
+    try {
+      setCleaningTarget(targetKey);
+      setCleanSuccessMessage(null);
+      setStorageError(null);
+      const res = await api.cleanStorage({
+        targets,
+        older_than_days: days ?? cleanOlderThanDays,
+      });
+      if (res.success) {
+        setStorageData(res.storage);
+        setCleanSuccessMessage(`Cleaned successfully! Reclaimed ${res.freed_human}.`);
+        setTimeout(() => setCleanSuccessMessage(null), 6000);
+      }
+    } catch (err: any) {
+      console.error('Storage cleanup failed', err);
+      setStorageError(err.message || 'Cleanup operation failed');
+    } finally {
+      setCleaningTarget(null);
+    }
+  };
+
   useEffect(() => {
     fetchProviders();
     fetchVoiceData();
   }, []);
+
+  useEffect(() => {
+    if (activeSection === 'storage') {
+      fetchStorageData();
+    }
+  }, [activeSection]);
 
   const handleTabChange = (providerId: string) => {
     setActiveTab(providerId);
@@ -425,7 +536,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
       const res = await api.testTranslationConnection({
         provider: activeTab,
         api_key: apiKeyInput.trim() || undefined,
-        base_url: activeTab === 'custom' ? baseUrlInput.trim() || undefined : undefined,
+        base_url: baseUrlInput.trim() || undefined,
         model: modelInput.trim() || undefined,
       });
       setTestResult({ success: res.success, message: res.message });
@@ -450,7 +561,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
       const res = await api.saveTranslationCredentials(
         activeTab,
         apiKeyInput.trim(),
-        activeTab === 'custom' ? baseUrlInput.trim() : undefined,
+        baseUrlInput.trim() || undefined,
         modelInput.trim() || undefined
       );
       setStatusMessage({ text: res.message || `${currentProvider?.name || activeTab} credentials saved securely.`, isError: false });
@@ -490,7 +601,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
     { id: 'voices', label: 'Voice & TTS Providers', icon: Mic2 },
     { id: 'models', label: 'AI Models Catalog', icon: Layers },
     { id: 'hardware', label: 'Hardware & Compute', icon: Cpu },
-    { id: 'storage', label: 'Storage & Mounts', icon: HardDrive },
+    { id: 'storage', label: 'Storage & Cache', icon: HardDrive },
     { id: 'developer', label: 'Developer & CLI', icon: Terminal },
   ];
 
@@ -791,12 +902,14 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
               <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
                 Select Provider to Configure
               </span>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
                 {[
+                  { id: 'groq', label: 'Groq', tag: 'Fast / Free Tier' },
+                  { id: 'deepseek', label: 'DeepSeek', tag: 'V3 / R1 Reasoner' },
                   { id: 'gemini', label: 'Google Gemini', tag: 'Fast Spoken' },
                   { id: 'openai', label: 'OpenAI (GPT-4o)', tag: 'High Precision' },
                   { id: 'claude', label: 'Anthropic Claude', tag: 'Conversational' },
-                  { id: 'custom', label: 'Custom AI API', tag: 'DeepSeek / Groq / Ollama' },
+                  { id: 'custom', label: 'Custom AI API', tag: 'Any OpenAI API' },
                 ].map((tab) => {
                   const pInfo = providers.find((p) => p.id === tab.id);
                   const isSelected = activeTab === tab.id;
@@ -857,7 +970,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                         key={preset.name}
                         type="button"
                         onClick={() => applyCustomPreset(preset)}
-                        className="text-[11px] px-2.5 py-1 rounded-lg bg-purple-50 text-purple-800 hover:bg-purple-100 border border-purple-200 transition font-medium"
+                        className="text-[11px] px-2.5 py-1 rounded-lg bg-purple-50 text-purple-800 hover:bg-purple-100 border border-purple-200 transition font-medium cursor-pointer"
                       >
                         {preset.name}
                       </button>
@@ -868,15 +981,20 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
 
               {/* Form Inputs */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {activeTab === 'custom' && (
+                {(activeTab === 'custom' || activeTab === 'groq' || activeTab === 'deepseek') && (
                   <div className="md:col-span-3 space-y-1">
-                    <label className="text-[11px] font-medium text-slate-600 flex items-center gap-1">
-                      <Server className="w-3.5 h-3.5 text-slate-400" />
-                      <span>Custom OpenAI-Compatible Base URL</span>
+                    <label className="text-[11px] font-medium text-slate-600 flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <Server className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{currentProvider?.name || activeTab} Base URL</span>
+                      </span>
+                      {activeTab !== 'custom' && (
+                        <span className="text-[10px] text-slate-400 font-normal">Pre-configured endpoint</span>
+                      )}
                     </label>
                     <input
                       type="text"
-                      placeholder="https://api.deepseek.com/v1"
+                      placeholder={currentProvider?.base_url || 'https://api.openai.com/v1'}
                       value={baseUrlInput}
                       onChange={(e) => setBaseUrlInput(e.target.value)}
                       className="w-full text-xs font-mono px-3.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -904,7 +1022,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                     <button
                       type="button"
                       onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600"
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
                     >
                       {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
@@ -912,16 +1030,46 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                 </div>
 
                 {/* Model */}
-                <div className="space-y-1">
+                <div className="md:col-span-1 space-y-1">
                   <label className="text-[11px] font-medium text-slate-600">Model Name</label>
                   {activeTab === 'custom' ? (
-                    <input
-                      type="text"
-                      placeholder="deepseek-chat"
-                      value={modelInput}
-                      onChange={(e) => setModelInput(e.target.value)}
-                      className="w-full text-xs font-mono px-3.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <div className="space-y-1.5">
+                      <input
+                        type="text"
+                        placeholder="openai/gpt-oss-120b"
+                        value={modelInput}
+                        onChange={(e) => setModelInput(e.target.value)}
+                        className="w-full text-xs font-mono px-3.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      {(() => {
+                        const matchedPreset = CUSTOM_PRESETS.find(
+                          (p) =>
+                            p.baseUrl === baseUrlInput ||
+                            (baseUrlInput.includes('groq.com') && p.baseUrl.includes('groq.com')) ||
+                            (baseUrlInput.includes('deepseek.com') && p.baseUrl.includes('deepseek.com'))
+                        );
+                        const suggestions = matchedPreset?.suggestedModels || ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+                        return (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="text-[10px] text-slate-400">Quick pick:</span>
+                            {suggestions.map((m) => (
+                              <button
+                                key={m}
+                                type="button"
+                                onClick={() => setModelInput(m)}
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-mono transition cursor-pointer ${
+                                  modelInput === m
+                                    ? 'bg-purple-600 text-white font-semibold'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                }`}
+                              >
+                                {m}
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   ) : (
                     <select
                       value={modelInput}
@@ -943,7 +1091,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                 <button
                   onClick={handleSaveKey}
                   disabled={savingKey || (!apiKeyInput.trim() && !currentProvider?.is_configured)}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white text-xs font-semibold rounded-lg shadow-sm transition flex items-center gap-1.5"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white text-xs font-semibold rounded-lg shadow-sm transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <ShieldCheck className="w-4 h-4" />
                   <span>{savingKey ? 'Saving...' : 'Save Credentials'}</span>
@@ -952,7 +1100,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                 <button
                   onClick={handleTestConnection}
                   disabled={testingConnection || (!currentProvider?.is_configured && !apiKeyInput.trim())}
-                  className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 text-slate-700 text-xs font-semibold rounded-lg transition flex items-center gap-1.5"
+                  className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 text-slate-700 text-xs font-semibold rounded-lg transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${testingConnection ? 'animate-spin' : ''}`} />
                   <span>{testingConnection ? 'Testing...' : 'Test Connection'}</span>
@@ -961,7 +1109,7 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
                 {currentProvider?.is_configured && (
                   <button
                     onClick={handleDeleteKey}
-                    className="px-3.5 py-2 bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg transition flex items-center gap-1.5 ml-auto"
+                    className="px-3.5 py-2 bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg transition flex items-center gap-1.5 ml-auto cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Remove Key</span>
@@ -1135,33 +1283,335 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
         </div>
       )}
 
-      {/* SECTION 5: Storage & Mounts */}
+      {/* SECTION 5: Storage & Cache Manager */}
       {activeSection === 'storage' && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
-          <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-            <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
-              <HardDrive className="w-5 h-5" />
+        <div className="space-y-6">
+          {/* Header Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-600">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-800">Storage & Cache Manager</h3>
+                  <p className="text-xs text-slate-500">
+                    Live disk telemetry, storage volume breakdown, and safe 1-click cache purging
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={fetchStorageData}
+                  disabled={loadingStorage}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors disabled:opacity-50"
+                  title="Refresh storage metrics"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingStorage ? 'animate-spin text-indigo-600' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleCleanStorage(['temp_caches', 'logs', 'vacuum_db'])}
+                  disabled={cleaningTarget !== null || loadingStorage}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs transition-colors disabled:opacity-50"
+                  title="Clean all temporary audio caches, truncate old logs, and vacuum SQLite DB"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>
+                    {cleaningTarget === 'temp_caches_logs_vacuum_db' ? 'Cleaning...' : 'Quick Clean Caches'}
+                  </span>
+                </button>
+              </div>
             </div>
+
+            {/* Notification Banners */}
+            {cleanSuccessMessage && (
+              <div className="mt-4 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 flex items-center gap-2.5 text-xs animate-fadeIn">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="font-semibold">{cleanSuccessMessage}</span>
+              </div>
+            )}
+
+            {storageError && (
+              <div className="mt-4 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 flex items-center gap-2.5 text-xs animate-fadeIn">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span className="font-semibold">{storageError}</span>
+              </div>
+            )}
+
+            {/* Capacity Overview */}
+            {storageData ? (
+              <div className="mt-5 space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                    <span className="text-slate-500 block text-[11px] mb-1 font-medium">Total Disk Capacity</span>
+                    <span className="text-base font-bold text-slate-800">{storageData.disk.total_human}</span>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                    <span className="text-slate-500 block text-[11px] mb-1 font-medium">Used Space</span>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-base font-bold text-slate-800">{storageData.disk.used_human}</span>
+                      <span className="text-[11px] font-semibold text-slate-500">({storageData.disk.used_percent}%)</span>
+                    </div>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                    <span className="text-slate-500 block text-[11px] mb-1 font-medium">Available Free</span>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-base font-bold text-emerald-600">{storageData.disk.free_human}</span>
+                      <span className="text-[11px] font-semibold text-emerald-600/80">({storageData.disk.free_percent}%)</span>
+                    </div>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-indigo-50/50 border border-indigo-200/60">
+                    <span className="text-indigo-600 block text-[11px] mb-1 font-medium">Cleanable Caches</span>
+                    <span className="text-base font-bold text-indigo-700">{storageData.total_cleanable_human}</span>
+                  </div>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200/60">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        storageData.disk.used_percent > 85
+                          ? 'bg-rose-500'
+                          : storageData.disk.used_percent > 70
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                      }`}
+                      style={{ width: `${Math.min(100, storageData.disk.used_percent)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between items-center text-[11px] text-slate-400 font-medium px-0.5">
+                    <span>Used: {storageData.disk.used_percent}%</span>
+                    <span>Free: {storageData.disk.free_percent}% ({storageData.disk.free_human})</span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="py-8 flex justify-center items-center gap-2 text-xs text-slate-400">
+                <RefreshCw className="w-4 h-4 animate-spin text-indigo-600" />
+                <span>Scanning storage mounts...</span>
+              </div>
+            )}
+          </div>
+
+          {/* 1-Click Cleaners & Maintenance Panel */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
             <div>
-              <h3 className="text-sm font-bold text-slate-800">Storage & Volumes</h3>
-              <p className="text-xs text-slate-500">Persistent storage mounts and media caching</p>
+              <h4 className="text-sm font-bold text-slate-800">Safe Cache Purging & Maintenance</h4>
+              <p className="text-xs text-slate-500">
+                Safely reclaim storage. AI neural models, active project files, and system secrets are strictly protected.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+              {/* Card 1: Temporary & TTS Segment Caches */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <Trash2 className="w-4 h-4 text-indigo-600" />
+                      TTS & Audio Caches
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">
+                      {storageData?.categories?.temp?.cleanable_human || '0 B'}
+                    </span>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">
+                    Cleans raw TTS synthesis cache files, waveform audio previews, and temporary conversion buffers.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCleanStorage(['temp_caches'])}
+                  disabled={cleaningTarget !== null}
+                  className="w-full py-2 px-3 rounded-lg font-semibold text-xs text-indigo-700 bg-indigo-100/70 hover:bg-indigo-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>{cleaningTarget === 'temp_caches' ? 'Purging...' : 'Purge Temporary Caches'}</span>
+                </button>
+              </div>
+
+              {/* Card 2: Intermediate Toolkit Workdirs */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <Layers className="w-4 h-4 text-purple-600" />
+                      Toolkit Workdirs
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 text-purple-700">
+                      {storageData?.categories?.toolkit?.details?.intermediate_workdirs_human || '0 B'}
+                    </span>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">
+                    Removes intermediate FFmpeg workdirs ({storageData?.categories?.toolkit?.details?.intermediate_workdirs_count || 0} folders) left from speech fitting while preserving final narration files.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCleanStorage(['temp_caches'])}
+                  disabled={cleaningTarget !== null}
+                  className="w-full py-2 px-3 rounded-lg font-semibold text-xs text-purple-700 bg-purple-100/70 hover:bg-purple-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>{cleaningTarget === 'temp_caches' ? 'Cleaning...' : 'Clean Intermediate Workdirs'}</span>
+                </button>
+              </div>
+
+              {/* Card 3: Prune Completed Toolkit Tasks */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-blue-600" />
+                      Prune Completed Tasks
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <select
+                        value={cleanOlderThanDays}
+                        onChange={(e) => setCleanOlderThanDays(Number(e.target.value))}
+                        className="bg-white border border-slate-200 text-[10px] font-semibold rounded px-1.5 py-0.5 text-slate-700 focus:outline-none"
+                      >
+                        <option value={1}>&gt; 1 day</option>
+                        <option value={3}>&gt; 3 days</option>
+                        <option value={7}>&gt; 7 days</option>
+                        <option value={14}>&gt; 14 days</option>
+                        <option value={30}>&gt; 30 days</option>
+                      </select>
+                    </div>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">
+                    Deletes finished/failed toolkit tasks and generated audio from disk and database older than selected threshold.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCleanStorage(['old_toolkit_tasks'], cleanOlderThanDays)}
+                  disabled={cleaningTarget !== null}
+                  className="w-full py-2 px-3 rounded-lg font-semibold text-xs text-blue-700 bg-blue-100/70 hover:bg-blue-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>{cleaningTarget === 'old_toolkit_tasks' ? 'Pruning...' : `Prune Tasks (> ${cleanOlderThanDays}d)`}</span>
+                </button>
+              </div>
+
+              {/* Card 4: SQLite Database VACUUM */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <Zap className="w-4 h-4 text-amber-600" />
+                      Vacuum Database
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700">
+                      {storageData?.categories?.database?.size_human || '0 B'}
+                    </span>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">
+                    Runs SQLite VACUUM to defragment b-tree tables, rebuild indexes, and reclaim disk space from deleted records.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCleanStorage(['vacuum_db'])}
+                  disabled={cleaningTarget !== null}
+                  className="w-full py-2 px-3 rounded-lg font-semibold text-xs text-amber-800 bg-amber-100/70 hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>{cleaningTarget === 'vacuum_db' ? 'Vacuuming...' : 'Optimize & Vacuum DB'}</span>
+                </button>
+              </div>
+
+              {/* Card 5: Truncate Logs */}
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <Terminal className="w-4 h-4 text-slate-600" />
+                      Worker & App Logs
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-200 text-slate-700">
+                      {storageData?.categories?.logs?.cleanable_human || '0 B'}
+                    </span>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">
+                    Trims background worker logs exceeding 50KB while safely retaining recent log traces for diagnostics.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCleanStorage(['logs'])}
+                  disabled={cleaningTarget !== null}
+                  className="w-full py-2 px-3 rounded-lg font-semibold text-xs text-slate-700 bg-slate-200/80 hover:bg-slate-200 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>{cleaningTarget === 'logs' ? 'Truncating...' : 'Truncate Old Logs'}</span>
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-sans block text-[11px] mb-1">Uploads Path</span>
-              <span className="text-slate-800 font-semibold">/app/data/uploads</span>
+          {/* Categorized Storage Breakdown */}
+          {storageData && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+              <div>
+                <h4 className="text-sm font-bold text-slate-800">Storage Volumes & Protection Status</h4>
+                <p className="text-xs text-slate-500">
+                  Detailed inventory of data directories, physical mount points, and protection policies.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                {Object.values(storageData.categories).map((cat) => (
+                  <div
+                    key={cat.category}
+                    className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/40 hover:bg-slate-50 transition-colors space-y-2.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="space-y-0.5">
+                        <span className="font-bold text-slate-800 text-sm block">{cat.label}</span>
+                        <code className="text-[11px] font-mono text-slate-500 block truncate">{cat.path}</code>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-sm font-extrabold text-slate-800 block">{cat.size_human}</span>
+                        {cat.item_count !== null && cat.item_count !== undefined && (
+                          <span className="text-[10px] text-slate-400 block font-medium">
+                            {cat.item_count} {cat.category === 'projects' ? 'projects' : cat.category === 'toolkit' ? 'tasks' : 'items'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-slate-500 leading-relaxed">{cat.description}</p>
+
+                    <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px]">
+                      {cat.is_protected ? (
+                        <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2 py-0.5 rounded-full text-[10px]">
+                          <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                          Protected (Never Auto-Purged)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full text-[10px]">
+                          {cat.cleanable ? 'Cache Cleanable' : 'Managed Content'}
+                        </span>
+                      )}
+
+                      {cat.cleanable_bytes && cat.cleanable_bytes > 0 ? (
+                        <span className="font-semibold text-indigo-600">
+                          Reclaimable: {cat.cleanable_human}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-sans block text-[11px] mb-1">Outputs Path</span>
-              <span className="text-slate-800 font-semibold">/app/data/outputs</span>
-            </div>
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-sans block text-[11px] mb-1">AI Model Cache</span>
-              <span className="text-slate-800 font-semibold">/root/.cache</span>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -1242,6 +1692,59 @@ export const Settings: React.FC<SettingsProps> = ({ health }) => {
               );
             })}
           </div>
+
+          {/* Voice Cloning Quick Status & Launcher Banner */}
+          {(devCategoryFilter === 'voice' || devCategoryFilter === 'all') && (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-indigo-950/70 to-purple-950/50 border border-indigo-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shrink-0">
+                  <Mic2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-white text-xs">VoxCPM2 Voice Cloning Engine</span>
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        isWorkerOnline
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${isWorkerOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                      {isWorkerOnline ? `Online (${gpuCleanLabel})` : 'Worker Offline'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    {isWorkerOnline
+                      ? 'Inference worker is online and listening on port 8002. Custom voice cloning is ready.'
+                      : 'Worker is currently offline. Copy the command below to start the GPU worker on your host machine.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleCopyCommand('quick-start-voice', 'cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && ./scripts/run_voxcpm_worker.sh')}
+                  className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                  title="Copy: cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && ./scripts/run_voxcpm_worker.sh"
+                >
+                  {copiedCommandId === 'quick-start-voice' ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedCommandId === 'quick-start-voice' ? 'Copied Start Script!' : 'Start Script'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleCopyCommand('quick-daemon-voice', 'cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && nohup ./scripts/run_voxcpm_worker.sh > data/logs/voxcpm_worker.log 2>&1 &')}
+                  className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Copy: cd ~/Documents/MyDocuments/Projects/KhmerDub-AI && nohup ./scripts/run_voxcpm_worker.sh > data/logs/voxcpm_worker.log 2>&1 &"
+                >
+                  {copiedCommandId === 'quick-daemon-voice' ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedCommandId === 'quick-daemon-voice' ? 'Copied Daemon!' : 'Start Background (nohup)'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Commands List */}
           <div className="space-y-3">

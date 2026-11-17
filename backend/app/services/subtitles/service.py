@@ -1,6 +1,5 @@
 import logging
 import re
-from datetime import datetime
 from app.core.timezone import get_cambodia_now_naive
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -130,7 +129,7 @@ class SubtitleService:
                 current_src_hash = src["hash"] if src else None
 
                 # Detect if source has been updated since customization
-                is_outdated = False
+                is_outdated = bool(r.is_source_outdated)
                 if r.is_customized and r.source_text_hash and current_src_hash:
                     if r.source_text_hash != current_src_hash:
                         is_outdated = True
@@ -165,7 +164,7 @@ class SubtitleService:
                 if order in custom_map:
                     r = custom_map[order]
                     current_src_hash = src["hash"]
-                    is_outdated = False
+                    is_outdated = bool(r.is_source_outdated)
                     if r.is_customized and r.source_text_hash and current_src_hash:
                         if r.source_text_hash != current_src_hash:
                             is_outdated = True

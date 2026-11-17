@@ -22,6 +22,7 @@ import {
   TranslationSegment,
   GeneratedAudio,
   TimingConflict,
+  ScheduledSpeechUnit,
 } from '../../types';
 
 export interface DubbingTimelineProps {
@@ -31,6 +32,7 @@ export interface DubbingTimelineProps {
   translationSegments: TranslationSegment[];
   generatedAudios: GeneratedAudio[];
   timingConflicts: TimingConflict[];
+  scheduledUnits?: ScheduledSpeechUnit[];
   selectedSegmentId: string | null;
   onSelectSegment: (segmentId: string) => void;
   onSeek: (timeInSeconds: number) => void;
@@ -61,6 +63,8 @@ export interface TimelineSegmentItem {
   tempoFactor: number;
   overflowSeconds: number;
   translationSegment?: TranslationSegment;
+  alignmentNote?: string;
+  speakerLabel?: string | null;
 }
 
 export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
@@ -70,6 +74,7 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
   translationSegments,
   generatedAudios,
   timingConflicts,
+  scheduledUnits,
   selectedSegmentId,
   onSelectSegment,
   onSeek,
@@ -199,15 +204,46 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
         tempoFactor,
         overflowSeconds,
         translationSegment: transSeg,
+        speakerLabel: tSeg.speaker_label,
       };
     });
   }, [transcriptSegments, translationMap, audioMap, conflictMap]);
 
+  // Speech units have independent source mappings and measured backend timing.
+  const speechItems: TimelineSegmentItem[] = useMemo(() => {
+    if (!scheduledUnits) return timelineItems;
+    return translationSegments.map((unit) => {
+      const scheduled = scheduledUnits.find((s) => s.translation_segment_id === unit.id);
+      const source = transcriptSegments.find((s) => s.id === unit.transcript_segment_id)
+        || transcriptSegments.find((s) => unit.source_segment_ids?.includes(s.id));
+      const audio = audioMap.get(unit.id);
+      const conflict = conflictMap.get(unit.segment_order);
+      const start = scheduled?.scheduled_start ?? unit.start_time ?? source?.start_time ?? 0;
+      const end = scheduled?.scheduled_end ?? unit.end_time ?? source?.end_time ?? start;
+      const state: TimelineSegmentStatus = !audio ? 'no_audio'
+        : audio.is_outdated || unit.is_outdated ? 'outdated'
+        : scheduled?.status === 'needs_optimization' ? 'conflict'
+        : (scheduled?.tempo_factor ?? 1) > 1 ? 'speed_adjusted' : 'fit';
+      return {
+        id: source?.id ?? unit.id, order: unit.segment_order, start, end,
+        transcriptText: unit.source_text ?? source?.text ?? '', khmerText: unit.khmer_text,
+        audio, conflict, status: state,
+        speechDuration: scheduled?.processed_duration ?? audio?.duration_seconds ?? Math.max(0, end - start),
+        tempoFactor: scheduled?.tempo_factor ?? 1,
+        overflowSeconds: scheduled?.overflow_seconds ?? 0,
+        translationSegment: unit,
+        speakerLabel: unit.speaker_label ?? source?.speaker_label,
+        alignmentNote: scheduled && (scheduled.local_overflow_seconds > 0.05 || Math.abs(scheduled.alignment_delay_seconds) > 0.5)
+          ? `Alignment review: start offset ${scheduled.alignment_delay_seconds.toFixed(2)}s; neighboring space used ${scheduled.local_overflow_seconds.toFixed(2)}s.` : undefined,
+      };
+    });
+  }, [scheduledUnits, timelineItems, translationSegments, transcriptSegments, audioMap, conflictMap]);
+
   // Currently selected item
   const selectedItem = useMemo(() => {
     if (!selectedSegmentId) return null;
-    return timelineItems.find((item) => item.id === selectedSegmentId) || null;
-  }, [timelineItems, selectedSegmentId]);
+    return speechItems.find((item) => item.id === selectedSegmentId) || timelineItems.find((item) => item.id === selectedSegmentId) || null;
+  }, [speechItems, timelineItems, selectedSegmentId]);
 
   // Format seconds to mm:ss or mm:ss.s
   const formatTime = (seconds: number, includeTenths = false): string => {
@@ -373,7 +409,7 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
           {conflictsCount > 0 ? (
             <button
               onClick={() => {
-                const firstConflict = timelineItems.find((i) => i.status === 'conflict');
+                const firstConflict = speechItems.find((i) => i.status === 'conflict');
                 if (firstConflict) {
                   onSeek(firstConflict.start);
                   onSelectSegment(firstConflict.id);
@@ -603,6 +639,11 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
                         title={`#${item.order} [${formatTime(item.start, true)} - ${formatTime(item.end, true)}]: ${item.transcriptText}`}
                       >
                         <span className="font-mono font-bold shrink-0 opacity-80">#{item.order}</span>
+                        {item.speakerLabel && (
+                          <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-white/20 text-white font-semibold shrink-0">
+                            {item.speakerLabel.replace('SPEAKER_', 'S')}
+                          </span>
+                        )}
                         <span className="truncate">{item.transcriptText}</span>
                       </div>
                     );
@@ -611,7 +652,7 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
 
                 {/* 4. Khmer Speech Track */}
                 <div className="h-12 relative bg-slate-950/60 p-0.5">
-                  {timelineItems.map((item) => {
+                  {speechItems.map((item) => {
                     const left = item.start * pxPerSec;
                     const width = Math.max(18, item.speechDuration * pxPerSec);
                     const isSelected = selectedSegmentId === item.id;
@@ -666,11 +707,16 @@ export const DubbingTimeline: React.FC<DubbingTimelineProps> = ({
                         className={`absolute top-1 bottom-1 rounded-md px-1.5 text-[10px] flex items-center justify-between gap-1 cursor-pointer transition overflow-hidden border shadow-xs ${trackStyle} ${
                           isSelected ? 'ring-2 ring-white z-10 font-semibold' : isActive ? 'ring-1 ring-white/60' : ''
                         }`}
-                        title={`Khmer #${item.order} (${item.status.toUpperCase()}) Duration: ${item.speechDuration.toFixed(2)}s. Click to inspect.`}
+                        title={`Khmer #${item.order} (${item.status.toUpperCase()}) Duration: ${item.speechDuration.toFixed(2)}s. ${item.alignmentNote ?? ''} Click to inspect.`}
                       >
                         <div className="flex items-center gap-1 min-w-0">
                           {statusIcon}
                           <span className="font-mono font-bold shrink-0">#{item.order}</span>
+                          {item.speakerLabel && (
+                            <span className="font-mono text-[9px] px-1 py-0.2 rounded bg-black/25 font-semibold shrink-0">
+                              {item.speakerLabel.replace('SPEAKER_', 'S')}
+                            </span>
+                          )}
                           {item.khmerText && (
                             <span className="font-khmer truncate text-[11px] opacity-90 hidden sm:inline">
                               {item.khmerText}

@@ -28,8 +28,6 @@ Covers all 25 testing requirements:
 25. Correct FFprobe duration and codecs.
 """
 
-import io
-import json
 import subprocess
 from pathlib import Path
 import pytest
@@ -37,14 +35,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.main import app
-from app.models.toolkit import ToolkitTask
 from app.models.project import Project, Video
 from app.services.trimmer import (
     trimmer_service,
     parse_timestamp,
     format_timestamp,
     InvalidTimestampError,
-    MediaTrimmingError,
 )
 from app.core.storage import get_toolkit_task_dir
 

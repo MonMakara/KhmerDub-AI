@@ -1,15 +1,12 @@
 import subprocess
 from pathlib import Path
-from typing import List
 from unittest.mock import MagicMock, patch
 
-import pytest
 from sqlalchemy.orm import Session
 
 from app.database.session import SessionLocal
 from app.models.project import (
     Project,
-    Video,
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
@@ -17,7 +14,7 @@ from app.models.project import (
     ProcessingJob,
     JobStatus,
 )
-from app.services.dubbing.grouper import DubbingGrouper, DubbingGroupDefinition
+from app.services.dubbing.grouper import DubbingGrouper
 from app.services.dubbing.synchronizer import AudioSynchronizationService
 from app.services.dubbing.timing_optimizer import TimingOptimizerService
 from app.services.video.ffmpeg import FFmpegVideoProcessor

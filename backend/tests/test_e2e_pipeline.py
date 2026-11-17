@@ -10,14 +10,10 @@ from app.models.project import (
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
-    ProcessingJob,
-    JobStatus,
     ProjectStatus,
 )
 from app.services.dubbing.pipeline import DubbingPipeline
 from app.services.dubbing.synchronizer import TimingConflictError
-from app.services.video.ffmpeg import FFmpegVideoProcessor
-from app.workers.dubbing import process_dubbing
 
 
 def create_synthetic_video(output_path: Path, duration_seconds: float) -> Path:
@@ -299,7 +295,8 @@ def test_e2e_case_e_longer_khmer_translation_and_recovery(tmp_path: Path, db_ses
 
     assert len(exc_info.value.conflicts) == 1
     conflict = exc_info.value.conflicts[0]
-    assert conflict.overflow_seconds > 0.5
+    # Safe leading silence reduces the physical shortage, but does not erase it.
+    assert conflict.overflow_seconds > 0.05
     assert "Shorten the Khmer translation" in conflict.suggested_action
     assert video.exported_video_path is None
 

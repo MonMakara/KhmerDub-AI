@@ -6,6 +6,12 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        khmer: ['"Khmer OS Battambang"', '"Noto Sans Khmer"', '"Kantumruy Pro"', 'sans-serif'],
+        battambang: ['"Khmer OS Battambang"', '"Noto Sans Khmer"', 'sans-serif'],
+        muol: ['"Khmer OS Muol"', '"Noto Serif Khmer"', 'serif'],
+        content: ['"Khmer OS Content"', '"Noto Sans Khmer"', 'sans-serif'],
+      },
       colors: {
         brand: {
           50: '#eef2ff',

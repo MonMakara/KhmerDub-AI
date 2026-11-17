@@ -1,6 +1,5 @@
 import ipaddress
 import logging
-import re
 import socket
 import threading
 from contextlib import contextmanager

@@ -5,23 +5,18 @@ narration assembly with configurable pause duration, segment regeneration, expor
 and cascade deletion.
 """
 
-import json
-from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.api.endpoints.toolkit import assemble_tts_narration, split_tts_text
+from app.api.endpoints.toolkit import split_tts_text
 from app.core.storage import (
     get_toolkit_task_dir,
     get_toolkit_task_output_dir,
 )
 from app.database.session import SessionLocal
 from app.main import app
-from app.models.toolkit import ToolkitTask, ToolkitTTSSegment
-from app.services.tts.base import TTSAudioResult
+from app.models.toolkit import ToolkitTTSSegment
 
 client = TestClient(app)
 
@@ -41,16 +36,16 @@ def test_toolkit_tts_voices_listing():
     resp = client.get("/api/toolkit/tts/voices")
     assert resp.status_code == 200
     all_voices = resp.json()
-    assert len(all_voices) >= 5
+    assert len(all_voices) >= 4
     providers = {v["provider"] for v in all_voices}
-    assert "gtts" in providers
+    assert "gtts" not in providers
     assert "edge" in providers
 
     # 2. Filter language = km
     resp_km = client.get("/api/toolkit/tts/voices?language=km")
     assert resp_km.status_code == 200
     km_voices = resp_km.json()
-    assert len(km_voices) >= 3
+    assert len(km_voices) >= 2
     for v in km_voices:
         assert v.get("language") == "km"
 

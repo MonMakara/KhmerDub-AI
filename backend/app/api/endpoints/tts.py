@@ -13,7 +13,10 @@ from app.schemas.project import (
     VoiceListResponse,
     VoiceOptionResponse,
     VoicePreviewRequest,
+    EmotionListResponse,
+    EmotionStyleResponse,
 )
+from app.services.tts.emotions import list_emotion_styles, DEFAULT_EMOTION_STYLE
 from app.services.tts.registry import (
     list_supported_voices,
     is_valid_voice_combination,
@@ -43,9 +46,20 @@ def get_voices() -> VoiceListResponse:
     )
 
 
+@router.get("/emotions", response_model=EmotionListResponse)
+def get_emotion_styles_endpoint() -> EmotionListResponse:
+    """Retrieve all available emotion and acting styles for Khmer speech synthesis."""
+    styles_raw = list_emotion_styles()
+    emotions = [EmotionStyleResponse(**s) for s in styles_raw]
+    return EmotionListResponse(
+        emotions=emotions,
+        default_emotion=DEFAULT_EMOTION_STYLE,
+    )
+
+
 @router.post("/preview")
 def preview_voice(payload: VoicePreviewRequest):
-    """Generate a short speech preview audio file for a given voice and text."""
+    """Generate a short speech preview audio file for a given voice, emotion style, and text."""
     provider = (payload.provider or DEFAULT_PROVIDER).strip().lower()
     voice = (payload.voice or DEFAULT_VOICE).strip()
 
@@ -65,8 +79,9 @@ def preview_voice(payload: VoicePreviewRequest):
             detail=f"Preview text exceeds maximum allowed length of {MAX_PREVIEW_TEXT_LENGTH} characters.",
         )
 
-    # Hash text + voice to reuse/cache preview file cleanly in temp dir
-    text_hash = hashlib.md5(f"{provider}:{voice}:{text}".encode("utf-8")).hexdigest()[:12]
+    # Hash text + voice + emotion prosody to reuse/cache preview file cleanly in temp dir
+    cache_key = f"{provider}:{voice}:{payload.emotion_style}:{payload.pitch}:{payload.rate}:{payload.volume}:{text}"
+    text_hash = hashlib.md5(cache_key.encode("utf-8")).hexdigest()[:12]
     temp_dir = Path(settings.TEMP_DIR)
     temp_dir.mkdir(parents=True, exist_ok=True)
     preview_file = temp_dir / f"preview_{provider}_{voice}_{text_hash}.mp3"
@@ -74,11 +89,22 @@ def preview_voice(payload: VoicePreviewRequest):
     try:
         if not preview_file.exists() or preview_file.stat().st_size == 0:
             tts_provider = get_tts_provider(provider)
+            synth_kwargs = {}
+            if payload.emotion_style:
+                synth_kwargs["emotion_style"] = payload.emotion_style
+            if payload.pitch:
+                synth_kwargs["pitch"] = payload.pitch
+            if payload.volume:
+                synth_kwargs["volume"] = payload.volume
+            if payload.rate:
+                synth_kwargs["rate"] = payload.rate
+
             tts_provider.synthesize(
                 text=text,
                 output_path=preview_file,
                 language="km",
                 voice=voice,
+                **synth_kwargs,
             )
 
         return FileResponse(

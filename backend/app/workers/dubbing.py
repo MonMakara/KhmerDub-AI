@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -22,6 +21,19 @@ def process_dubbing(
     db: Optional[Session] = None,
     max_tempo_factor: Optional[float] = None,
     trim_silence: bool = False,
+    fill_mode: str = "natural",
+    overflow_policy: str = "allow_overlap",
+    strict_validation: bool = False,
+    preserve_bgm: bool = False,
+    ducking_preset: str = "balanced",
+    bgm_volume: float = 0.35,
+    attenuate_center_vocals: bool = True,
+    aspect_ratio: str = "original",
+    reframe_mode: str = "blur_pillar",
+    burn_subtitles: bool = False,
+    subtitle_style: str = "tiktok_yellow",
+    subtitle_language: str = "km",
+    subtitle_font: Optional[str] = None,
 ) -> None:
     """Background worker for audio synchronization and dubbed video export."""
     should_close = False
@@ -57,8 +69,21 @@ def process_dubbing(
             project_id=project_id,
             db=db,
             on_progress=on_progress,
+            strict_validation=strict_validation,
             max_tempo_factor=max_tempo_factor,
             trim_silence=trim_silence,
+            fill_mode=fill_mode,
+            overflow_policy=overflow_policy,
+            preserve_bgm=preserve_bgm,
+            ducking_preset=ducking_preset,
+            bgm_volume=bgm_volume,
+            attenuate_center_vocals=attenuate_center_vocals,
+            aspect_ratio=aspect_ratio,
+            reframe_mode=reframe_mode,
+            burn_subtitles=burn_subtitles,
+            subtitle_style=subtitle_style,
+            subtitle_language=subtitle_language,
+            subtitle_font=subtitle_font,
         )
 
         job.progress_percentage = 100

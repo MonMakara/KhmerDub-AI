@@ -156,7 +156,7 @@ def test_timing_conflict_detection(tmp_path: Path):
     c = result.conflicts[0]
     assert c.segment_order == 1
     assert c.tempo_factor == 1.25
-    assert c.overflow_seconds > 0.5
+    assert c.overflow_seconds > 0.3
     assert "exceeds available window" in c.message
 
 
@@ -434,7 +434,7 @@ def test_audio_longer_than_available_time(tmp_path: Path):
 
     assert len(exc_info.value.conflicts) == 1
     c = exc_info.value.conflicts[0]
-    assert c.overflow_seconds > 0.5
+    assert c.overflow_seconds > 0.3
     assert c.required_tempo > 1.25
     assert "Shorten the Khmer translation" in c.suggested_action
 
@@ -482,12 +482,10 @@ def test_last_segment_exceeding_video_duration(test_audio_file: Path, tmp_path: 
     tr = TranslationSegment(id="tr1", project_id="p1", segment_order=1, khmer_text="ពាក្យចុងក្រោយ")
     a = GeneratedAudio(id="a1", project_id="p1", translation_segment_id="tr1", audio_path=str(test_audio_file), duration_seconds=1.0)
 
-    with pytest.raises(TimingConflictError) as exc_info:
-        service.synchronize("p1", [(t, tr, a)], target_duration=2.0, output_timeline_path=timeline_path)
-
-    c = exc_info.value.conflicts[0]
-    assert c.segment_order == 1
-    assert c.overflow_seconds >= 0.25
+    # The scheduler can safely borrow 0.5s of preceding silence.
+    result = service.synchronize("p1", [(t, tr, a)], target_duration=2.0, output_timeline_path=timeline_path)
+    assert not result.conflicts
+    assert result.total_duration_seconds == pytest.approx(2.0, abs=0.05)
 
 
 def test_multiple_consecutive_segments(test_audio_file: Path, tmp_path: Path):
@@ -613,7 +611,7 @@ def test_unresolved_timing_conflicts_details(tmp_path: Path):
     assert c.khmer_duration >= 2.9
     assert c.required_tempo > 1.25
     assert c.max_tempo_factor == 1.25
-    assert c.overflow_seconds > 0.5
+    assert c.overflow_seconds > 0.3
     assert len(c.suggested_action) > 10
     assert len(c.message) > 20
 

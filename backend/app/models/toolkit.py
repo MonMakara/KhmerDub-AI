@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 from app.core.timezone import get_cambodia_now_naive
 from sqlalchemy import Column, String, Float, Integer, DateTime, Text, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
@@ -111,6 +110,7 @@ class ToolkitTTSSegment(Base):
     end_time = Column(Float, nullable=True)
     voice = Column(String(100), nullable=True)
     provider = Column(String(50), nullable=True)
+    emotion_style = Column(String(50), default="calm", nullable=True)
     audio_file_path = Column(String(1024), nullable=True)
     duration_seconds = Column(Float, nullable=True)
     file_size_bytes = Column(Integer, nullable=True)

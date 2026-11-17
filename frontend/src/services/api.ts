@@ -13,6 +13,7 @@ import {
   GeneratedAudioListResponse,
   ExportStatusResponse,
   VoiceListResponse,
+  VoiceOption,
   TranslationProviderListResponse,
   TestConnectionRequest,
   TestConnectionResponse,
@@ -24,17 +25,27 @@ import {
   ProjectDeleteResponse,
   SubtitleSegment,
   SubtitleListResponse,
+  ProjectSpeaker,
+  DiarizationRunResponse,
   VoiceProfile,
   VoiceStudioData,
   CreateVoiceProfilePayload,
   UpdateVoiceProfilePayload,
+  CloneCandidatesListResponse,
+  CloneFromVideoRequest,
+  CloneSpeakerVoiceRequest,
+  CloneSpeakerVoiceResponse,
+  AutoDiarizeAndCloneRequest,
+  AutoDiarizeAndCloneResponse,
   ToolkitTask,
   ToolkitTranscriptSegment,
   ToolkitCapabilities,
   TTSVoiceOption,
+  EmotionStyleOption,
   ToolkitTranslationSegment,
   TranslationLanguagePair,
   SubtitleConvertResponse,
+  TranscriptToTextRequest,
   TranslationProviderInfo,
   VideoDownloaderMetadata,
   VideoDownloaderStartPayload,
@@ -44,11 +55,32 @@ import {
   TrimmerTrimPayload,
   TrimmerThumbnailsPayload,
   TrimmerImportDubbingPayload,
+  StorageUsageResponse,
+  StorageCleanRequest,
+  StorageCleanResponse,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL
   ? `${import.meta.env.VITE_API_BASE_URL}/api`
   : '/api';
+
+export interface ExportOptions {
+  maxTempo?: number;
+  trimSilence?: boolean;
+  fillMode?: 'natural' | 'stretch';
+  overflowPolicy?: 'allow_overlap' | 'truncate_fade' | 'fail';
+  strictValidation?: boolean;
+  preserveBgm?: boolean;
+  duckingPreset?: 'light' | 'balanced' | 'strong' | 'mute';
+  bgmVolume?: number;
+  attenuateCenterVocals?: boolean;
+  aspectRatio?: 'original' | '9:16' | '1:1' | '16:9';
+  reframeMode?: 'blur_pillar' | 'center_crop' | 'fit_black';
+  burnSubtitles?: boolean;
+  subtitleStyle?: 'tiktok_yellow' | 'classic_white' | 'boxed_black' | 'headline_bold';
+  subtitleLanguage?: 'km' | 'en' | 'bilingual';
+  subtitleFont?: string;
+}
 
 export const api = {
   async getHealth(): Promise<HealthResponse> {
@@ -317,6 +349,33 @@ export const api = {
     return res.json();
   },
 
+  getProjectTranscriptExportUrl(projectId: string, format: string = 'srt', mode: string = 'cues'): string {
+    return `${API_BASE}/projects/${projectId}/transcript/export?format=${format}&mode=${mode}`;
+  },
+
+  async importProjectTranscript(
+    projectId: string,
+    file?: File,
+    rawContent?: string
+  ): Promise<{ message: string; segment_count: number; warnings?: string[] }> {
+    const formData = new FormData();
+    if (file) {
+      formData.append('file', file);
+    }
+    if (rawContent) {
+      formData.append('raw_content', rawContent);
+    }
+    const res = await fetch(`${API_BASE}/projects/${projectId}/transcript/import`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to import transcript: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
   async startTranslation(projectId: string): Promise<ProcessingJob> {
     const res = await fetch(`${API_BASE}/projects/${projectId}/translate`, {
       method: 'POST',
@@ -375,6 +434,125 @@ export const api = {
     return res.json();
   },
 
+  getProjectTranslationExportUrl(projectId: string, format: string = 'srt'): string {
+    return `${API_BASE}/projects/${projectId}/translation/export?format=${format}`;
+  },
+
+  async importProjectTranslation(
+    projectId: string,
+    file?: File,
+    rawContent?: string,
+    autoFit: boolean = true
+  ): Promise<{ message: string; segment_count: number }> {
+    const formData = new FormData();
+    if (file) {
+      formData.append('file', file);
+    }
+    if (rawContent) {
+      formData.append('raw_content', rawContent);
+    }
+    formData.append('auto_fit', autoFit ? 'true' : 'false');
+    const res = await fetch(`${API_BASE}/projects/${projectId}/translation/import`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to import translation: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getSegmentVoices(projectId: string): Promise<{ voices: VoiceOption[] }> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/segment-voices`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch segment voices: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateSegmentVoices(
+    projectId: string,
+    ids: string[],
+    provider: string | null,
+    voice: string | null
+  ): Promise<{ segments: TranslationSegment[] }> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/translations/voices`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segment_ids: ids, provider, voice }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Could not save segment voices: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getProjectSpeakers(projectId: string): Promise<ProjectSpeaker[]> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/speakers`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch speakers: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async runProjectDiarization(
+    projectId: string,
+    minSpeakers: number = 1,
+    maxSpeakers: number = 6
+  ): Promise<DiarizationRunResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/diarization/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_speakers: minSpeakers, max_speakers: maxSpeakers }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Diarization failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateProjectSpeaker(
+    projectId: string,
+    speakerLabel: string,
+    payload: {
+      display_name?: string;
+      assigned_voice_provider?: string;
+      assigned_voice_id?: string;
+      color?: string;
+    }
+  ): Promise<ProjectSpeaker> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/speakers/${speakerLabel}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update speaker: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async updateTranscriptSegmentSpeaker(
+    projectId: string,
+    segmentId: string,
+    speakerLabel: string | null
+  ): Promise<TranscriptSegment> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/transcript/${segmentId}/speaker`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speaker_label: speakerLabel }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to update segment speaker: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
   async getVoices(): Promise<VoiceListResponse> {
     const res = await fetch(`${API_BASE}/tts/voices`);
     if (!res.ok) {
@@ -386,7 +564,8 @@ export const api = {
   async previewVoice(
     provider: string,
     voice: string,
-    text?: string
+    text?: string,
+    emotion_style?: string
   ): Promise<Blob> {
     const res = await fetch(`${API_BASE}/tts/preview`, {
       method: 'POST',
@@ -397,6 +576,7 @@ export const api = {
         provider,
         voice,
         text,
+        emotion_style,
       }),
     });
     if (!res.ok) {
@@ -428,8 +608,85 @@ export const api = {
     return res.json();
   },
 
-  async startTTS(projectId: string): Promise<ProcessingJob> {
-    const res = await fetch(`${API_BASE}/projects/${projectId}/tts`, {
+  async getCloneCandidates(
+    projectId: string,
+    maxCandidates: number = 5
+  ): Promise<CloneCandidatesListResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/voice/clone-candidates?max_candidates=${maxCandidates}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to fetch clone candidates: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getPreviewCandidateUrl(
+    projectId: string,
+    startTime: number,
+    endTime: number
+  ): string {
+    return `${API_BASE}/projects/${projectId}/voice/preview-candidate?start_time=${startTime}&end_time=${endTime}`;
+  },
+
+  async cloneVoiceFromVideo(
+    projectId: string,
+    payload: CloneFromVideoRequest
+  ): Promise<VoiceProfile> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/voice/clone-from-video`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to clone voice from video: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async cloneSpeakerVoices(
+    projectId: string,
+    payload?: CloneSpeakerVoiceRequest
+  ): Promise<CloneSpeakerVoiceResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/speakers/clone-voices`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to clone character voices: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async autoDetectAndCloneSpeakers(
+    projectId: string,
+    payload?: AutoDiarizeAndCloneRequest
+  ): Promise<AutoDiarizeAndCloneResponse> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/speakers/auto-detect-and-clone`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to auto-detect and clone character voices: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async startTTS(projectId: string, autoCloneSpeakers: boolean = false): Promise<ProcessingJob> {
+    const url = autoCloneSpeakers
+      ? `${API_BASE}/projects/${projectId}/tts?auto_clone_speakers=true`
+      : `${API_BASE}/projects/${projectId}/tts`;
+    const res = await fetch(url, {
       method: 'POST',
     });
     if (!res.ok) {
@@ -468,8 +725,25 @@ export const api = {
     return `${API_BASE}/projects/${projectId}/tts/${segmentId}/audio`;
   },
 
-  async startExport(projectId: string): Promise<ProcessingJob> {
-    const res = await fetch(`${API_BASE}/projects/${projectId}/export`, {
+  async startExport(projectId: string, options?: ExportOptions): Promise<ProcessingJob> {
+    const params = new URLSearchParams();
+    if (options?.maxTempo !== undefined) params.append('max_tempo', options.maxTempo.toString());
+    if (options?.trimSilence !== undefined) params.append('trim_silence', options.trimSilence.toString());
+    if (options?.fillMode !== undefined) params.append('fill_mode', options.fillMode);
+    if (options?.overflowPolicy !== undefined) params.append('overflow_policy', options.overflowPolicy);
+    if (options?.strictValidation !== undefined) params.append('strict_validation', options.strictValidation.toString());
+    if (options?.preserveBgm !== undefined) params.append('preserve_bgm', options.preserveBgm.toString());
+    if (options?.duckingPreset !== undefined) params.append('ducking_preset', options.duckingPreset);
+    if (options?.bgmVolume !== undefined) params.append('bgm_volume', options.bgmVolume.toString());
+    if (options?.attenuateCenterVocals !== undefined) params.append('attenuate_center_vocals', options.attenuateCenterVocals.toString());
+    if (options?.aspectRatio !== undefined) params.append('aspect_ratio', options.aspectRatio);
+    if (options?.reframeMode !== undefined) params.append('reframe_mode', options.reframeMode);
+    if (options?.burnSubtitles !== undefined) params.append('burn_subtitles', options.burnSubtitles.toString());
+    if (options?.subtitleStyle !== undefined) params.append('subtitle_style', options.subtitleStyle);
+    if (options?.subtitleLanguage !== undefined) params.append('subtitle_language', options.subtitleLanguage);
+    if (options?.subtitleFont !== undefined) params.append('subtitle_font', options.subtitleFont);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`${API_BASE}/projects/${projectId}/export${qs}`, {
       method: 'POST',
     });
     if (!res.ok) {
@@ -1027,11 +1301,24 @@ export const api = {
     return res.json();
   },
 
+  async getEmotionStyles(): Promise<EmotionStyleOption[]> {
+    const res = await fetch(`${API_BASE}/tts/emotions`);
+    if (!res.ok) {
+      throw new Error(`Failed to list emotion styles: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.emotions || [];
+  },
+
   async previewToolkitTTS(data: {
     text: string;
     provider: string;
     voice: string;
     language?: string;
+    emotion_style?: string;
+    pitch?: string;
+    volume?: string;
+    rate?: string;
   }): Promise<Blob> {
     const res = await fetch(`${API_BASE}/toolkit/tts/preview`, {
       method: 'POST',
@@ -1050,6 +1337,7 @@ export const api = {
     provider: string;
     voice: string;
     language?: string;
+    emotion_style?: string;
     target_format?: string;
     pause_duration_seconds?: number;
   }): Promise<ToolkitTask> {
@@ -1068,7 +1356,13 @@ export const api = {
   async regenerateToolkitTTSSegment(
     taskId: string,
     segmentId: string,
-    data?: { text?: string; pause_duration_seconds?: number }
+    data?: {
+      text?: string;
+      pause_duration_seconds?: number;
+      voice?: string;
+      provider?: string;
+      emotion_style?: string;
+    }
   ): Promise<ToolkitTask> {
     const res = await fetch(
       `${API_BASE}/toolkit/tts/tasks/${taskId}/segments/${segmentId}/regenerate`,
@@ -1129,13 +1423,22 @@ export const api = {
       end_time?: number | null;
       voice?: string | null;
       provider?: string | null;
+      emotion_style?: string | null;
     }>;
     mode: 'narration' | 'timed';
     provider: string;
     voice: string;
     language?: string;
+    emotion_style?: string;
     target_format?: string;
     pause_duration_seconds?: number;
+    fit_to_timestamps?: boolean;
+    min_speed?: number;
+    max_speed?: number;
+    fit_tolerance_sec?: number;
+    allow_slow_down?: boolean;
+    overflow_policy?: string;
+    fill_mode?: string;
     source_task_id?: string;
     filename?: string;
   }): Promise<ToolkitTask> {
@@ -1160,6 +1463,7 @@ export const api = {
       end_time?: number | null;
       voice?: string | null;
       provider?: string | null;
+      emotion_style?: string | null;
     }
   ): Promise<ToolkitTask> {
     const res = await fetch(`${API_BASE}/toolkit/transcript-to-audio/tasks/${taskId}/segments/${segmentId}`, {
@@ -1183,6 +1487,14 @@ export const api = {
       end_time?: number | null;
       voice?: string | null;
       provider?: string | null;
+      emotion_style?: string | null;
+      fit_to_timestamps?: boolean;
+      min_speed?: number;
+      max_speed?: number;
+      fit_tolerance_sec?: number;
+      allow_slow_down?: boolean;
+      overflow_policy?: string;
+      fill_mode?: string;
     }
   ): Promise<ToolkitTask> {
     const res = await fetch(
@@ -1330,6 +1642,59 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || `Subtitle conversion failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  // ---------------- Transcript to Text (Phase 13E.5) ----------------
+  async convertTranscriptToText(data: TranscriptToTextRequest): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/transcript-to-text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Transcript to text conversion failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async uploadTranscriptToText(
+    file: File,
+    options?: {
+      paragraph_mode?: string;
+      speaker_handling?: string;
+      pause_threshold_seconds?: number;
+      deduplicate_phrases?: boolean;
+      strip_tags?: boolean;
+      target_format?: string;
+      title?: string;
+    }
+  ): Promise<ToolkitTask> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (options?.paragraph_mode) formData.append('paragraph_mode', options.paragraph_mode);
+    if (options?.speaker_handling) formData.append('speaker_handling', options.speaker_handling);
+    if (options?.pause_threshold_seconds !== undefined) {
+      formData.append('pause_threshold_seconds', String(options.pause_threshold_seconds));
+    }
+    if (options?.deduplicate_phrases !== undefined) {
+      formData.append('deduplicate_phrases', String(options.deduplicate_phrases));
+    }
+    if (options?.strip_tags !== undefined) {
+      formData.append('strip_tags', String(options.strip_tags));
+    }
+    if (options?.target_format) formData.append('target_format', options.target_format);
+    if (options?.title) formData.append('title', options.title);
+
+    const res = await fetch(`${API_BASE}/toolkit/transcript-to-text/file`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Transcript to text upload failed: ${res.statusText}`);
     }
     return res.json();
   },
@@ -1513,5 +1878,95 @@ export const api = {
       throw new Error(err.detail || `Failed to cancel trimming: ${res.statusText}`);
     }
     return res.json();
+  },
+
+  async getStorageUsage(): Promise<StorageUsageResponse> {
+    const res = await fetch(`${API_BASE}/system/storage`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch storage usage: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async cleanStorage(payload: StorageCleanRequest): Promise<StorageCleanResponse> {
+    const res = await fetch(`${API_BASE}/system/storage/clean`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Storage cleanup failed: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getCleaningCapabilities(): Promise<{
+    available?: boolean;
+    engine_name?: string;
+    description?: string;
+    modes?: string[];
+    strengths: string[];
+    max_upload_size_mb: number;
+    music_available?: boolean;
+    music_reason?: string;
+    noise_available?: boolean;
+  }> {
+    const res = await fetch(`${API_BASE}/toolkit/audio-cleaning/capabilities`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch audio cleaning capabilities: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async startAudioCleaning(
+    data: FormData,
+    onProgress?: (percent: number) => void
+  ): Promise<ToolkitTask> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/toolkit/audio-cleaning/start`);
+      if (xhr.upload && onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (e) {
+            reject(new Error('Invalid response format'));
+          }
+        } else {
+          try {
+            const err = JSON.parse(xhr.responseText);
+            reject(new Error(err.detail || `Audio cleaning failed: ${xhr.statusText}`));
+          } catch {
+            reject(new Error(`Audio cleaning failed: ${xhr.statusText}`));
+          }
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error during upload'));
+      xhr.send(data);
+    });
+  },
+
+  async cancelAudioCleaning(taskId: string): Promise<ToolkitTask> {
+    const res = await fetch(`${API_BASE}/toolkit/audio-cleaning/${taskId}/cancel`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Failed to cancel cleaning: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getCleaningFileUrl(taskId: string, fileType: string, download: boolean = false): string {
+    const dl = download ? '?download=true' : '';
+    return `${API_BASE}/toolkit/audio-cleaning/${taskId}/files/${fileType}${dl}`;
   },
 };

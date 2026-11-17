@@ -10,7 +10,6 @@ from app.services.translation.base import TranslationProvider
 from app.services.translation.formatter import KhmerTextFormatter
 from app.services.translation.glossary import KhmerGlossary
 from app.services.translation.exceptions import (
-    TranslationError,
     ModelLoadError,
     TextTranslationError,
 )
@@ -129,6 +128,7 @@ class NLLBTranslationProvider(TranslationProvider):
         target_lang: str = "khm_Khmr",
         contexts: Optional[List[str]] = None,
         style: str = "standard",
+        durations: Optional[List[float]] = None,
         **kwargs,
     ) -> List[str]:
         """Translate a list of English texts into natural Khmer Unicode text."""
@@ -219,6 +219,12 @@ class NLLBTranslationProvider(TranslationProvider):
                                 )
                                 aligned_khmer = KhmerGlossary.align_terminology(context_en, raw_khmer)
                                 formatted_khmer = KhmerTextFormatter.format(aligned_khmer)
+                                if durations and global_idx < len(durations) and durations[global_idx] and durations[global_idx] > 0.0:
+                                    from app.services.dubbing.auto_fit import shorten_khmer_text
+                                    dur_budget = float(durations[global_idx])
+                                    char_limit = max(18, int(dur_budget * 12.0))
+                                    if len(formatted_khmer) > char_limit:
+                                        formatted_khmer = shorten_khmer_text(formatted_khmer, target_char_count=char_limit)
                                 results.append(formatted_khmer)
                                 sub_idx += 1
                             else:

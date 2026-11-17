@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     UPLOADS_DIR: Path = Path("/app/data/uploads")
     OUTPUTS_DIR: Path = Path("/app/data/outputs")
     TEMP_DIR: Path = Path("/app/data/temp")
+    FONTS_DIR: Path = Path("/app/fonts")
 
     # Database
     DATABASE_URL: str = "sqlite:////app/data/khmerdub.db"
@@ -53,6 +54,7 @@ class Settings(BaseSettings):
     MODEL_CACHE_DIR: Path = Path("/root/.cache")
     WHISPER_MODEL: str = "base"
     WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_KHMER_MODEL: str = "PhanithLIM/whisper-small-khmer-ct2"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"
     WHISPER_LANGUAGE: str = "en"
@@ -67,10 +69,10 @@ class Settings(BaseSettings):
     TRANSLATION_BATCH_SIZE: int = 1
     TRANSLATION_NUM_BEAMS: int = 2
     TRANSLATION_MAX_INPUT_TOKENS: int = 512
-    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
 
     # Text-to-Speech (gTTS)
-    TTS_PROVIDER: str = "gtts"
+    TTS_PROVIDER: str = "edge"
     TTS_LANGUAGE: str = "km"
     TTS_SLOW: bool = False
     TTS_MAX_RETRIES: int = 3

@@ -1,26 +1,19 @@
-import math
 import subprocess
 from pathlib import Path
-from typing import List
 
 import pytest
-from sqlalchemy.orm import Session
 
-from app.database.session import SessionLocal
 from app.models.project import (
-    Project,
     Video,
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
-    ProjectStatus,
 )
 from app.services.dubbing.scheduler import TimelineScheduler
 from app.services.dubbing.synchronizer import (
     AudioSynchronizationService,
     TimingConflictError,
 )
-from app.services.dubbing.timing_optimizer import TimingOptimizerService
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 
 

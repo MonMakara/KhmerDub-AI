@@ -1,6 +1,4 @@
 import pytest
-import shutil
-from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -8,8 +6,6 @@ from app.core.config import settings
 from app.core.storage import (
     get_project_base_dir,
     get_project_original_dir,
-    get_project_output_dir,
-    get_project_generated_audio_dir,
     delete_project_storage,
     sanitize_project_id,
 )

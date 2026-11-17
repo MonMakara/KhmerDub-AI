@@ -1,4 +1,5 @@
 import os
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -8,7 +9,6 @@ from app.core import credentials
 from app.services.translation.base import TranslationAlternative, AIImprovementResult
 from app.services.translation.prompts import (
     build_single_translation_prompt,
-    build_batch_translation_prompt,
     build_ai_improve_prompt,
     build_alternatives_prompt,
     TRANSLATION_STYLES,
@@ -17,16 +17,13 @@ from app.services.translation.prompts import (
 )
 from app.services.translation.exceptions import (
     ProviderAuthenticationError,
-    RateLimitError,
-    ProviderTimeoutError,
-    TranslationError,
 )
 from app.services.translation.registry import (
     list_translation_providers,
     validate_translation_provider,
     get_translation_provider,
 )
-from app.services.translation.gemini import GeminiTranslationProvider
+from app.services.translation.gemini import GeminiTranslationProvider, FALLBACK_GEMINI_MODELS
 from app.services.translation.openai_compat import OpenAITranslationProvider
 from app.services.translation.claude import ClaudeTranslationProvider
 from app.models.project import (
@@ -35,7 +32,10 @@ from app.models.project import (
     TranslationSegment,
     GeneratedAudio,
     ProjectStatus,
+    ProcessingJob,
+    JobStatus,
 )
+from app.workers.translation import process_translation
 
 
 def test_credentials_encryption_and_decryption(tmp_path):
@@ -134,9 +134,30 @@ def test_gemini_provider_translate_mocked():
 
     provider = GeminiTranslationProvider(api_key="mock-key")
     with patch.object(provider, "_get_client", return_value=mock_client):
-        results = provider.translate(["Hello world"], style="natural")
+        # Single segment with contexts and durations
+        results = provider.translate(
+            ["Hello world"],
+            style="natural",
+            contexts=["Previous context sentence."],
+            durations=[2.5],
+        )
         assert len(results) == 1
         assert "សួស្តីពិភពលោក" in results[0]
+
+        # Batch with contexts and durations
+        mock_response.text = json.dumps([
+            {"id": 1, "khmer": "សួស្តីពិភពលោក"},
+            {"id": 2, "khmer": "សូមស្វាគមន៍មកកាន់ប្រព័ន្ធ"},
+        ])
+        batch_results = provider.translate(
+            ["Hello world", "Welcome to the system"],
+            style="natural",
+            contexts=["Context 1", "Context 2"],
+            durations=[2.0, 3.5],
+        )
+        assert len(batch_results) == 2
+        assert "សួស្តីពិភពលោក" in batch_results[0]
+        assert "សូមស្វាគមន៍" in batch_results[1]
 
 
 def test_gemini_provider_ai_improve_mocked():
@@ -529,4 +550,369 @@ def test_provider_connection_tests_all_providers():
         ok, msg = provider_custom.test_connection()
         assert ok is False
         assert "unauthorized" in msg.lower()
+
+
+def test_gemini_translation_worker_execution(db_session: Session):
+    """Test full translation worker pipeline execution using Gemini with contexts and durations."""
+    project = Project(
+        title="Gemini Worker Test Project",
+        original_language="en",
+        target_language="km",
+        translation_provider="gemini",
+        translation_style="natural",
+        status=ProjectStatus.TRANSCRIBED,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    seg1 = TranscriptSegment(
+        project_id=project.id,
+        segment_order=1,
+        start_time=0.0,
+        end_time=2.5,
+        text="Hello world.",
+    )
+    seg2 = TranscriptSegment(
+        project_id=project.id,
+        segment_order=2,
+        start_time=3.0,
+        end_time=6.0,
+        text="Welcome to artificial intelligence.",
+    )
+    db_session.add_all([seg1, seg2])
+    db_session.commit()
+
+    job = ProcessingJob(
+        project_id=project.id,
+        job_type="translate",
+        status=JobStatus.PENDING,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.text = json.dumps([
+        {"id": 1, "khmer": "សួស្តីពិភពលោក។"},
+        {"id": 2, "khmer": "សូមស្វាគមន៍មកកាន់បញ្ញាសិប្បនិម្មិត។"},
+    ])
+    mock_client.models.generate_content.return_value = mock_resp
+
+    with patch("app.core.credentials.get_api_key", return_value="test-gemini-key"), \
+         patch("app.services.translation.gemini.GeminiTranslationProvider._get_client", return_value=mock_client):
+        process_translation(project.id, job.id, db=db_session)
+
+    db_session.refresh(job)
+    assert job.status == JobStatus.COMPLETED
+    assert job.error_message is None
+
+    trans_segs = (
+        db_session.query(TranslationSegment)
+        .filter(TranslationSegment.project_id == project.id)
+        .order_by(TranslationSegment.segment_order.asc())
+        .all()
+    )
+    assert len(trans_segs) == 2
+    assert "សួស្តី" in trans_segs[0].khmer_text
+    assert "បញ្ញាសិប្បនិម្មិត" in trans_segs[1].khmer_text
+
+
+def test_gemini_sub_batching_large_segment_list():
+    """Verify that translating a large segment list partitions calls into sub-batches of max BATCH_CHUNK_SIZE."""
+    provider = GeminiTranslationProvider(api_key="mock-key")
+    provider.BATCH_CHUNK_SIZE = 8
+
+    # 18 segments -> should be divided into chunks of 8, 8, 2
+    input_texts = [f"Sentence {i}" for i in range(1, 19)]
+
+    mock_client = MagicMock()
+
+    def mock_generate(*args, **kwargs):
+        config = kwargs.get("config")
+        assert config is not None
+        # Verify thinking_budget is 0 to avoid 504 timeouts
+        assert getattr(config, "thinking_config", None) is not None
+        assert config.thinking_config.thinking_budget == 0
+
+        contents = kwargs.get("contents", "")
+        # Parse IDs from contents prompt
+        import re
+        ids = [int(m) for m in re.findall(r'"id":\s*(\d+)', contents)]
+        resp = MagicMock()
+        resp.text = json.dumps([{"id": id_val, "khmer": f"ប្រយោគ {id_val}"} for id_val in ids])
+        return resp
+
+    mock_client.models.generate_content.side_effect = mock_generate
+
+    with patch.object(provider, "_get_client", return_value=mock_client):
+        results = provider.translate(input_texts)
+
+    assert len(results) == 18
+    # 18 items with chunk size 8 means 3 chunk calls
+    assert mock_client.models.generate_content.call_count == 3
+    for i, res in enumerate(results, 1):
+        assert f"ប្រយោគ" in res
+
+
+def test_gemini_504_deadline_exceeded_retry_and_recovery():
+    """Verify that a 504 DEADLINE_EXCEEDED error triggers exponential backoff retry and recovers."""
+    from google.genai.errors import APIError
+
+    provider = GeminiTranslationProvider(api_key="mock-key", max_retries=3)
+    mock_client = MagicMock()
+
+    # First call: 504 DEADLINE_EXCEEDED; Second call: success
+    err_504 = APIError(504, {"error": {"code": 504, "message": "Deadline expired before operation could complete.", "status": "DEADLINE_EXCEEDED"}})
+    mock_resp = MagicMock()
+    mock_resp.text = 'សួស្តី'
+
+    mock_client.models.generate_content.side_effect = [err_504, mock_resp]
+
+    with patch.object(provider, "_get_client", return_value=mock_client), \
+         patch("time.sleep", return_value=None) as mock_sleep:
+        res = provider.translate(["Hello"])
+
+    assert res == ["សួស្តី"]
+    assert mock_client.models.generate_content.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+def test_gemini_batch_failure_fallback_to_per_segment():
+    """Verify that if a batch prompt fails completely, provider falls back to per-segment translation."""
+    from google.genai.errors import APIError
+
+    provider = GeminiTranslationProvider(api_key="mock-key", max_retries=1)
+    mock_client = MagicMock()
+
+    call_count = 0
+    def mock_generate(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        contents = kwargs.get("contents", "")
+        if "INPUT SEGMENTS:" in contents:
+            # Batch call fails with 504
+            raise APIError(504, {"error": {"code": 504, "message": "DEADLINE_EXCEEDED"}})
+        # Single segment fallback succeeds
+        resp = MagicMock()
+        resp.text = "សួស្តី"
+        return resp
+
+    mock_client.models.generate_content.side_effect = mock_generate
+
+    with patch.object(provider, "_get_client", return_value=mock_client), \
+         patch("time.sleep", return_value=None):
+        results = provider.translate(["Hello", "World"])
+
+    assert len(results) == 2
+    assert results == ["សួស្តី", "សួស្តី"]
+
+
+def test_gemini_429_quota_exhausted_failover_to_fallback_model():
+    """Verify that a 429 daily quota exhaustion automatically switches to a fallback model."""
+    from google.genai.errors import APIError
+
+    provider = GeminiTranslationProvider(api_key="mock-key", model="gemini-3.5-flash", max_retries=2)
+    mock_client = MagicMock()
+
+    call_history = []
+    def mock_generate(*args, **kwargs):
+        target_model = kwargs.get("model")
+        call_history.append(target_model)
+        if target_model == "gemini-3.5-flash":
+            err_data = {
+                "error": {
+                    "code": 429,
+                    "message": "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.6-flash, description: Generate content requests per day limit exceeded on Free Tier. Please retry in 2h5m.",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            }
+            raise APIError(429, err_data)
+        elif target_model == "gemini-3.1-flash-lite":
+            resp = MagicMock()
+            resp.text = "សួស្តី"
+            return resp
+        raise RuntimeError(f"Unexpected model: {target_model}")
+
+    mock_client.models.generate_content.side_effect = mock_generate
+
+    with patch.object(provider, "_get_client", return_value=mock_client), \
+         patch("time.sleep", return_value=None):
+        results = provider.translate(["Hello"])
+
+    assert results == ["សួស្តី"]
+    assert "gemini-3.5-flash" in call_history
+    assert "gemini-3.1-flash-lite" in call_history
+    assert provider.model == "gemini-3.1-flash-lite"
+
+
+def test_gemini_429_all_models_exhausted_friendly_error_message():
+    """Verify that if all Gemini models exhaust their daily quota, a friendly human-readable message is raised."""
+    from google.genai.errors import APIError
+    from app.services.translation.exceptions import RateLimitError
+
+    provider = GeminiTranslationProvider(api_key="mock-key", model="gemini-3.1-flash-lite", max_retries=1)
+    # Mark all fallback models as exhausted
+    provider._exhausted_models = set(FALLBACK_GEMINI_MODELS)
+
+    mock_client = MagicMock()
+    err_data = {
+        "error": {
+            "code": 429,
+            "message": "Generate content requests per day limit exceeded on Free Tier. Please retry in 2h5m12s.",
+            "status": "RESOURCE_EXHAUSTED",
+        }
+    }
+    mock_client.models.generate_content.side_effect = APIError(429, err_data)
+
+    with patch.object(provider, "_get_client", return_value=mock_client), \
+         patch("time.sleep", return_value=None):
+        with pytest.raises(RateLimitError) as exc_info:
+            provider.translate(["Hello"])
+
+    err_str = str(exc_info.value)
+    assert "Free Tier daily quota" in err_str
+    assert "retry in 2h5m12s" in err_str
+    assert "NLLB" in err_str
+    assert "{" not in err_str  # Raw JSON dictionary is not exposed
+
+
+def test_prompts_instruction_includes_keep_english_and_transcript_context():
+    """Verify that translation prompts explicitly instruct the AI to translate based on transcript and keep technical words in English."""
+    from app.services.translation.prompts import (
+        SYSTEM_INSTRUCTION,
+        build_single_translation_prompt,
+        build_batch_translation_prompt,
+        build_ai_improve_prompt,
+    )
+
+    # 1. System instruction checks
+    assert "TRANSLATE BASED ON TRANSCRIPT CONTEXT" in SYSTEM_INSTRUCTION
+    assert "KEEP UNTRANSLATABLE WORDS & TECHNICAL TERMS IN ENGLISH" in SYSTEM_INSTRUCTION
+    assert "Motherboard" in SYSTEM_INSTRUCTION
+    assert "Router" in SYSTEM_INSTRUCTION
+    assert "Switch" in SYSTEM_INSTRUCTION
+    assert "CPU" in SYSTEM_INSTRUCTION
+    assert "RAM" in SYSTEM_INSTRUCTION
+    assert "ក្តារខៀនម្តាយ" in SYSTEM_INSTRUCTION  # specifically forbidden
+
+    # 2. Single translation prompt checks
+    p_single = build_single_translation_prompt(
+        "The CPU connects to the motherboard through the socket.",
+        context="Introduction to Computer Hardware components",
+        duration=3.5,
+    )
+    assert "UNTRANSLATABLE / TECHNICAL WORDS" in p_single
+    assert "KEEP IT IN ENGLISH" in p_single
+    assert "Introduction to Computer Hardware components" in p_single
+
+    # 3. Batch translation prompt checks
+    p_batch = build_batch_translation_prompt(
+        ["The CPU communicates with RAM via the bus.", "Routers forward packets across the network."],
+        contexts=["Computer architecture", "Network routing basics"],
+    )
+    assert "VIDEO TRANSCRIPT INSTRUCTIONS" in p_batch
+    assert "KEEP IT IN ENGLISH" in p_batch
+    assert "Motherboard" in p_batch
+    assert "surrounding_context" in p_batch
+
+    # 4. AI improve prompt checks
+    p_improve = build_ai_improve_prompt(
+        english_text="Check the motherboard for PCIe expansion slots.",
+        current_khmer="ពិនិត្យក្តារខៀនម្តាយ",
+    )
+    assert "RULE ON TECHNICAL TERMS" in p_improve
+    assert "PCIe" in p_improve or "Motherboard" in p_improve
+
+
+def test_glossary_preserves_hardware_networking_english_terms():
+    """Verify that KhmerGlossary catches and replaces awkward literal translations with proper English terms."""
+    from app.services.translation.glossary import KhmerGlossary
+
+    # Motherboard hallucination
+    bad_mb = "CPU ត្រូវបានដំឡើងនៅលើក្តារខៀនម្តាយ។"
+    fixed_mb = KhmerGlossary.align_terminology("The CPU is installed on the motherboard.", bad_mb)
+    assert "Motherboard" in fixed_mb
+    assert "ក្តារខៀនម្តាយ" not in fixed_mb
+
+    # Switch hallucination (translated to light switch)
+    bad_switch = "ទិន្នន័យត្រូវបានបញ្ជូនទៅកុងតាក់បណ្តាញ។"
+    fixed_switch = KhmerGlossary.align_terminology("Data is forwarded to the network switch.", bad_switch)
+    assert "Switch" in fixed_switch
+    assert "កុងតាក់" not in fixed_switch
+
+    # Bus hallucination (translated to passenger bus)
+    bad_bus = "ទិន្នន័យផ្លាស់ទីកាត់តាមឡានក្រុងប្រព័ន្ធ។"
+    fixed_bus = KhmerGlossary.align_terminology("Data moves across the system bus.", bad_bus)
+    assert "Bus" in fixed_bus
+    assert "ឡានក្រុង" not in fixed_bus
+
+    # Port hallucination (translated to seaport)
+    bad_port = "ដោតខ្សែទៅក្នុងកំពង់ផែ USB។"
+    fixed_port = KhmerGlossary.align_terminology("Plug the cable into the USB port.", bad_port)
+    assert "Port" in fixed_port
+    assert "កំពង់ផែ" not in fixed_port
+
+    # Router hallucination
+    bad_router = "ឧបករណ៍បញ្ជូនផ្លូវតភ្ជាប់បណ្តាញពីរ។"
+    fixed_router = KhmerGlossary.align_terminology("The router connects two networks.", bad_router)
+    assert "Router" in fixed_router
+    assert "ឧបករណ៍បញ្ជូនផ្លូវ" not in fixed_router
+
+
+def test_custom_ai_translation_preserves_english_terms_and_uses_context():
+    """Verify that Custom AI provider (OpenAI-compatible) chunks transcripts, passes context, and keeps English terms."""
+    provider = OpenAITranslationProvider(
+        provider_id="custom",
+        api_key="custom-api-key",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps([
+                        {"id": 1, "khmer": "CPU ភ្ជាប់ទៅនឹង Motherboard តាមរយៈ Socket។"},
+                        {"id": 2, "khmer": "Router បញ្ជូន Packet ទៅកាន់ Switch តាម Port។"},
+                    ])
+                }
+            }
+        ]
+    }
+
+    texts = [
+        "The CPU connects to the motherboard through the socket.",
+        "A router sends packets to the switch through the port.",
+    ]
+    contexts = [
+        "Computer hardware tutorial part 1",
+        "Networking fundamentals part 2",
+    ]
+
+    with patch("httpx.Client.post", return_value=mock_resp) as mock_post:
+        results = provider.translate(texts, contexts=contexts, durations=[3.0, 3.5])
+        assert len(results) == 2
+        assert "Motherboard" in results[0]
+        assert "CPU" in results[0]
+        assert "Socket" in results[0]
+        assert "Router" in results[1]
+        assert "Switch" in results[1]
+        assert "Port" in results[1]
+
+        # Verify API request payload included transcript contexts
+        call_args = mock_post.call_args
+        req_payload = call_args[1]["json"]
+        assert req_payload["model"] == "deepseek-chat"
+        user_msg = req_payload["messages"][1]["content"]
+        assert "surrounding_context" in user_msg or "Computer hardware tutorial" in user_msg
+        assert "KEEP IT IN ENGLISH" in user_msg
+
+
+
+
+
+
 

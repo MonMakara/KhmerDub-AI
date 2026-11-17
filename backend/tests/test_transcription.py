@@ -5,10 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.project import Project, Video, TranscriptSegment, ProcessingJob, ProjectStatus, JobStatus
+from app.models.project import Project, Video, ProcessingJob, ProjectStatus, JobStatus
 from app.services.transcription.base import TranscriptionSegment
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
-from app.services.transcription.exceptions import ModelLoadError, AudioTranscriptionError
+from app.services.transcription.exceptions import ModelLoadError
 from app.workers.transcription import process_transcription
 
 
@@ -234,3 +234,17 @@ def test_real_whisper_model_inference_execution(tmp_path: Path):
     # Ensure real model initializes and transcribes without throwing errors
     segments = provider.transcribe(tone_wav, language="en")
     assert isinstance(segments, list)
+
+
+def test_clean_whisper_text_annotations():
+    """Verify that hallucinated music and sound effect annotations are stripped."""
+    from app.services.transcription.whisper import clean_whisper_text
+
+    assert clean_whisper_text("[Music]") == ""
+    assert clean_whisper_text("(music)") == ""
+    assert clean_whisper_text("♪♪♪") == ""
+    assert clean_whisper_text("[Applause] Thank you everyone!") == "Thank you everyone!"
+    assert clean_whisper_text("Hello world [Music] welcome back!") == "Hello world welcome back!"
+    assert clean_whisper_text("[Laughter] That was funny.") == "That was funny."
+    assert clean_whisper_text("   [music]   ") == ""
+    assert clean_whisper_text("...") == ""

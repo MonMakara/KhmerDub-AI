@@ -47,6 +47,8 @@ data/.secrets/
 *.sqlite
 *.sqlite3
 *.backup*
+*.zip
+*.tar.gz
 
 # IDE & OS
 .vscode/

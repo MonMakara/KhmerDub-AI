@@ -2,7 +2,6 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from fastapi import (
@@ -19,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.storage import (
-    get_voice_profile_dir,
     get_voice_profile_audio_path,
     delete_voice_profile_storage,
     sanitize_profile_id,
@@ -31,10 +29,8 @@ from app.schemas.voice import (
     VoiceProfileResponse,
     VoiceProfileUpdate,
     VoiceStudioResponse,
-    VoiceConsentResponse,
 )
 from app.services.tts.registry import (
-    list_supported_voices,
     AVAILABLE_VOICES,
     DEFAULT_PROVIDER,
     DEFAULT_VOICE,
@@ -65,6 +61,7 @@ def get_voice_studio(db: Session = Depends(get_db)) -> VoiceStudioResponse:
 
     profiles = (
         db.query(VoiceProfile)
+        .filter(VoiceProfile.is_library.is_(True))
         .order_by(VoiceProfile.created_at.desc())
         .all()
     )

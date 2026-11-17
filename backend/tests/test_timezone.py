@@ -1,11 +1,8 @@
 """Unit and integration tests for Cambodia Timezone (Asia/Phnom_Penh, UTC+7)."""
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.core.config import settings
-from app.core.timezone import get_cambodia_now, get_cambodia_now_naive, CAMBODIA_TZ
+from app.core.timezone import get_cambodia_now, get_cambodia_now_naive
 from app.models.project import Project, ProjectStatus
 from app.models.toolkit import ToolkitTask
 

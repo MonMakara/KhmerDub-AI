@@ -11,6 +11,7 @@ from app.core.recovery import (
 )
 from app.database.session import init_db, SessionLocal
 from app.api.router import api_router
+from app.services.subtitles.checker import verify_subtitle_system_prerequisites
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,19 @@ async def lifespan(app: FastAPI):
     startup_time = datetime.now(timezone.utc)
     # Startup: Ensure directories and database tables exist
     init_db()
+
+    # Verify subtitle burn-in prerequisites (FFmpeg + libass + HarfBuzz + Khmer fonts)
+    verify_subtitle_system_prerequisites()
+
+    # Ensure audio-cleaning environment symlink if persistent model_cache volume contains it
+    try:
+        from pathlib import Path
+        cache_env = settings.MODEL_CACHE_DIR / "audio-cleaning-env"
+        opt_env = Path("/opt/audio-cleaning-env")
+        if cache_env.exists() and not opt_env.exists():
+            opt_env.symlink_to(cache_env)
+    except Exception as e:
+        logger.warning("Could not symlink audio-cleaning-env: %s", e)
 
     # Safely recover any interrupted jobs and incomplete project deletions from previous server session
     db = SessionLocal()

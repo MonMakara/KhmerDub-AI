@@ -1,0 +1,18 @@
+
+> khmerdub-ai-frontend@0.1.0 build
+> tsc && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 1511 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   1.15 kB │ gzip:   0.64 kB
+dist/assets/index-Cyq1eKmC.css   54.65 kB │ gzip:   9.21 kB
+dist/assets/index-vkVh8XgP.js   727.35 kB │ gzip: 156.16 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.82s

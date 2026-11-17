@@ -1,9 +1,17 @@
+import array
 import logging
 import math
 import subprocess
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
+
+try:
+    import numpy as np
+    has_numpy = True
+except ImportError:
+    has_numpy = False
 
 from app.core.storage import resolve_audio_file
 from app.models.project import TranscriptSegment, TranslationSegment, GeneratedAudio
@@ -82,14 +90,14 @@ class AudioSynchronizationService:
     def generate_silence(self, duration_seconds: float, output_path: Path) -> Path:
         """Generate a silent PCM WAV file of specified duration."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        dur = max(0.01, round(duration_seconds, 3))
+        sample_count = max(1, round(duration_seconds * self.sample_rate))
 
         cmd = [
             self.ffmpeg_bin,
             "-y",
             "-f", "lavfi",
             "-i", f"anullsrc=r={self.sample_rate}:cl=stereo",
-            "-t", f"{dur:.3f}",
+            "-af", f"atrim=end_sample={sample_count}",
             "-acodec", "pcm_s16le",
             "-ar", str(self.sample_rate),
             "-ac", str(self.channels),
@@ -127,7 +135,7 @@ class AudioSynchronizationService:
             self.ffmpeg_bin,
             "-y",
             "-i", str(input_audio),
-            "-af", "silenceremove=start_periods=1:start_duration=0.03:start_threshold=-40dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=-40dB:detection=peak,areverse",
+            "-af", "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB:detection=peak,areverse",
             "-acodec", "pcm_s16le",
             "-ar", str(self.sample_rate),
             "-ac", str(self.channels),
@@ -170,35 +178,165 @@ class AudioSynchronizationService:
         output_path: Path,
         tempo_factor: float = 1.0,
         apply_micro_fade: bool = True,
+        trim_start: Optional[float] = None,
+        trim_end: Optional[float] = None,
     ) -> Path:
-        """Render a speech piece with pitch-preserving tempo adjustment and
-        boundary micro-fades (8ms) to guarantee zero clicks and intact phonemes.
+        """Render a speech piece with optional conservative boundary trimming,
+        pitch-preserving tempo adjustment, and boundary micro-fades (8ms)
+        to guarantee zero clicks and intact phonemes.
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tempo = max(0.5, min(2.0, float(tempo_factor)))
         has_tempo = abs(tempo - 1.0) > 0.01
 
+        cmd = [self.ffmpeg_bin, "-y"]
+        if trim_start is not None and trim_end is not None and (trim_end - trim_start) > 0.05:
+            cmd.extend(["-ss", f"{trim_start:.3f}", "-to", f"{trim_end:.3f}"])
+
+        cmd.extend(["-i", str(input_audio)])
+
         filters = []
         if has_tempo:
             filters.append(f"atempo={tempo:.3f}")
         if apply_micro_fade:
-            # 8ms smooth cosine/linear micro-fade at head and tail
-            filters.append("afade=t=in:ss=0:d=0.008,areverse,afade=t=in:ss=0:d=0.008,areverse")
+            # 10ms smooth micro-fade at head and tail to guarantee zero clicks and intact phonemes
+            filters.append("afade=t=in:ss=0:d=0.010,areverse,afade=t=in:ss=0:d=0.010,areverse")
 
-        cmd = [self.ffmpeg_bin, "-y", "-i", str(input_audio)]
         if filters:
             cmd.extend(["-af", ",".join(filters)])
-        cmd.extend([
-            "-acodec", "pcm_s16le",
-            "-ar", str(self.sample_rate),
-            "-ac", str(self.channels),
-            str(output_path),
-        ])
+        if output_path.suffix.lower() == ".mp3":
+            cmd.extend([
+                "-c:a", "libmp3lame",
+                "-b:a", "192k",
+                "-ar", str(self.sample_rate),
+                "-ac", str(self.channels),
+                str(output_path),
+            ])
+        else:
+            cmd.extend([
+                "-c:a", "pcm_s16le",
+                "-ar", str(self.sample_rate),
+                "-ac", str(self.channels),
+                str(output_path),
+            ])
 
         res = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if res.returncode != 0:
             raise RuntimeError(f"FFmpeg failed to render speech piece {input_audio}: {res.stderr}")
         return output_path
+
+    def assemble_timeline_pcm(
+        self,
+        pieces_with_timing: List[Tuple[Path, float]],
+        target_duration: float,
+        output_path: Path,
+        overflow_policy: str = "allow_overlap",
+        fit_to_target_duration: bool = False,
+    ) -> float:
+        """Assemble audio pieces onto a sample-accurate timeline WAV via in-memory PCM mixing.
+
+        Guarantees:
+        - Exact start offset per segment: round(start_time * sample_rate)
+        - Exact total timeline duration: round(target_duration * sample_rate)
+        - Fast in-memory mixing with zero FFmpeg temp silence gap files or concat demuxer drift.
+        - Non-blocking overflow handling: clips/sums overlapping signals smoothly.
+        """
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not pieces_with_timing and target_duration <= 0.0:
+            raise ValueError("Cannot assemble timeline without audio pieces or valid target duration.")
+
+        # Measure end time of all pieces
+        max_piece_end = 0.0
+        for p_path, st in pieces_with_timing:
+            if p_path and p_path.exists():
+                dur = self.video_processor.get_audio_duration(p_path)
+                max_piece_end = max(max_piece_end, float(st) + dur)
+
+        if fit_to_target_duration and target_duration > 0.0:
+            total_dur = float(target_duration)
+        else:
+            total_dur = max(float(target_duration), max_piece_end)
+        total_dur = max(0.05, total_dur)
+
+        total_frames = max(1, round(total_dur * self.sample_rate))
+
+        if has_numpy:
+            timeline = np.zeros((total_frames, self.channels), dtype=np.int16)
+        else:
+            timeline = array.array("h", [0] * (total_frames * self.channels))
+
+        # Sort pieces by start_time
+        sorted_pieces = sorted(pieces_with_timing, key=lambda x: float(x[1]))
+
+        for piece_path, start_sec in sorted_pieces:
+            if not piece_path or not piece_path.exists():
+                logger.warning("Timeline piece not found at %s; skipping.", piece_path)
+                continue
+
+            st = max(0.0, float(start_sec))
+            start_frame = round(st * self.sample_rate)
+            if start_frame >= total_frames:
+                continue
+
+            # Read audio frames
+            with wave.open(str(piece_path), "rb") as wf:
+                ch = wf.getnchannels()
+                sw = wf.getsampwidth()
+                fr = wf.getframerate()
+                n_fr = wf.getnframes()
+                raw_bytes = wf.readframes(n_fr)
+
+            # Standardize if not matching target sample_rate, channels, and 16-bit
+            if ch != self.channels or sw != 2 or fr != self.sample_rate:
+                std_path = piece_path.parent / f"std_pcm_{piece_path.name}"
+                self.convert_to_standard_wav(piece_path, std_path)
+                with wave.open(str(std_path), "rb") as wf:
+                    raw_bytes = wf.readframes(wf.getnframes())
+
+            if has_numpy:
+                piece_arr = np.frombuffer(raw_bytes, dtype=np.int16)
+                if self.channels == 2:
+                    if len(piece_arr) % 2 != 0:
+                        piece_arr = piece_arr[:len(piece_arr) - (len(piece_arr) % 2)]
+                    piece_arr = piece_arr.reshape(-1, 2)
+                else:
+                    piece_arr = piece_arr.reshape(-1, 1)
+
+                end_frame = min(total_frames, start_frame + len(piece_arr))
+                if end_frame > start_frame:
+                    slice_len = end_frame - start_frame
+                    # Mix signals with 16-bit clipping protection
+                    mixed = (
+                        timeline[start_frame:end_frame].astype(np.int32)
+                        + piece_arr[:slice_len].astype(np.int32)
+                    )
+                    timeline[start_frame:end_frame] = np.clip(mixed, -32768, 32767).astype(np.int16)
+            else:
+                piece_samples = array.array("h")
+                piece_samples.frombytes(raw_bytes)
+                channels = self.channels
+                num_frames = len(piece_samples) // channels
+                end_frame = min(total_frames, start_frame + num_frames)
+                if end_frame > start_frame:
+                    slice_frames = end_frame - start_frame
+                    for f in range(slice_frames):
+                        for c in range(channels):
+                            t_idx = (start_frame + f) * channels + c
+                            p_idx = f * channels + c
+                            val = timeline[t_idx] + piece_samples[p_idx]
+                            timeline[t_idx] = max(-32768, min(32767, val))
+
+        # Write output master WAV
+        with wave.open(str(output_path), "wb") as wf:
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(2)
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(timeline.tobytes())
+
+        final_duration = self.video_processor.get_audio_duration(output_path)
+        if final_duration <= 0.0:
+            final_duration = total_frames / self.sample_rate
+        return final_duration
 
     def synchronize(
         self,
@@ -210,12 +348,15 @@ class AudioSynchronizationService:
         max_tempo_factor: Optional[float] = None,
         trim_silence: bool = False,
         pipeline_version: str = "v2.1",
+        fill_mode: str = "natural",
+        overflow_policy: str = "allow_overlap",
     ) -> SynchronizationResult:
         """Align speech segments onto a unified timeline WAV matching target video duration."""
         if not segment_items:
             raise ValueError("No speech segments provided for synchronization.")
 
         active_max_tempo = float(max_tempo_factor) if max_tempo_factor is not None else self.max_tempo_factor
+        active_max_tempo = min(1.25, max(1.0, active_max_tempo))
         output_timeline_path.parent.mkdir(parents=True, exist_ok=True)
         work_dir = output_timeline_path.parent / f"sync_tmp_{project_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -224,9 +365,8 @@ class AudioSynchronizationService:
         sorted_items = sorted(segment_items, key=lambda x: (x[0].start_time, x[0].segment_order))
         total_segments = len(sorted_items)
 
-        timeline_pieces: List[Path] = []
+        pieces_with_timing: List[Tuple[Path, float]] = []
         conflicts: List[TimingConflict] = []
-        current_time = 0.0
 
         try:
             if pipeline_version in ("v2.1", "v2.2", "v2.3"):
@@ -262,6 +402,7 @@ class AudioSynchronizationService:
                         "khmer_text": trans_seg.khmer_text or "",
                         "english_text": english_text,
                         "is_manually_edited": bool(trans_seg.is_manually_edited),
+                        "is_outdated": bool(audio_rec.is_outdated or trans_seg.is_outdated),
                     })
 
                 scheduler = TimelineScheduler(
@@ -272,6 +413,7 @@ class AudioSynchronizationService:
                     raw_items,
                     target_duration=target_duration,
                     max_tempo=active_max_tempo,
+                    fill_mode=fill_mode,
                 )
 
                 for g in scheduled_groups:
@@ -313,40 +455,43 @@ class AudioSynchronizationService:
                     )
                     raise TimingConflictError(conflicts=conflicts)
 
-                # Second pass: render pieces with micro-fades and construct timeline
-                current_time = 0.0
+                # Second pass: render pieces with micro-fades and collect timeline offsets
                 for g in scheduled_groups:
                     for s_idx, piece in enumerate(g.pieces):
-                        # Anchor desired start time cleanly without overlap
-                        desired_start = max(
-                            piece.start_time,
-                            current_time if s_idx == 0 else (current_time + self.min_pause_seconds)
-                        )
-                        if desired_start > current_time:
-                            gap_dur = desired_start - current_time
-                            gap_path = work_dir / f"gap_{piece.idx}.wav"
-                            self.generate_silence(gap_dur, gap_path)
-                            timeline_pieces.append(gap_path)
-                            current_time = desired_start
+                        # Anchor desired start time cleanly according to authoritative schedule
+                        desired_start = max(piece.allocated_start, 0.0)
 
                         piece_path = work_dir / f"piece_{piece.idx}_order_{piece.segment_order}.wav"
-                        self.render_speech_piece(
-                            piece.audio_path,
-                            piece_path,
-                            tempo_factor=piece.applied_tempo,
-                            apply_micro_fade=True,
-                        )
+                        if piece.processed_audio_path:
+                            piece_path = piece.processed_audio_path
+                        elif piece.has_boundary_trim:
+                            self.render_speech_piece(
+                                piece.audio_path,
+                                piece_path,
+                                tempo_factor=piece.applied_tempo,
+                                apply_micro_fade=True,
+                                trim_start=piece.trim_start,
+                                trim_end=piece.trim_end,
+                            )
+                        else:
+                            self.render_speech_piece(
+                                piece.audio_path,
+                                piece_path,
+                                tempo_factor=piece.applied_tempo,
+                                apply_micro_fade=True,
+                            )
                         piece_dur = self.video_processor.get_audio_duration(piece_path)
-                        timeline_pieces.append(piece_path)
-                        current_time += piece_dur
-
-                # Trailing silence
-                if target_duration > current_time:
-                    tail_dur = target_duration - current_time
-                    tail_path = work_dir / "gap_tail.wav"
-                    self.generate_silence(tail_dur, tail_path)
-                    timeline_pieces.append(tail_path)
-                    current_time = target_duration
+                        logger.info(
+                            "[DubbingSync:V2] Segment #%d: slot=%.2fs, raw_dur=%.2fs, tempo=%.2fx, final_dur=%.2fs, start=%.2fs, fill_mode=%s",
+                            piece.segment_order,
+                            piece.orig_duration,
+                            piece.raw_duration,
+                            piece.applied_tempo,
+                            piece_dur,
+                            desired_start,
+                            fill_mode,
+                        )
+                        pieces_with_timing.append((piece_path, desired_start))
 
             else:
                 # 1. Legacy first pass: analyze timing windows and detect any unresolved conflicts
@@ -392,7 +537,10 @@ class AudioSynchronizationService:
                     required_tempo = 1.0
 
                     if raw_dur <= orig_dur:
-                        tempo = 1.0
+                        if fill_mode == "stretch" and orig_dur > 0.2:
+                            tempo = max(0.50, min(1.0, round(raw_dur / orig_dur, 2)))
+                        else:
+                            tempo = 1.0
                         required_tempo = 1.0
                     elif raw_dur <= avail_window:
                         pause_left = avail_window - raw_dur
@@ -451,12 +599,11 @@ class AudioSynchronizationService:
                         "audio_rec": audio_rec,
                         "audio_path": source_for_piece,
                         "start_time": start_time,
+                        "orig_dur": orig_dur,
                         "raw_dur": raw_dur,
                         "tempo": tempo,
                     })
 
-                # In strict validation mode, halt immediately if there are conflicts to avoid
-                # generating an invalid or truncated export.
                 if strict_validation and conflicts:
                     logger.warning(
                         "Strict duration validation blocked export: %d timing conflict(s) detected.",
@@ -464,12 +611,13 @@ class AudioSynchronizationService:
                     )
                     raise TimingConflictError(conflicts=conflicts)
 
-                # 2. Second pass: render pieces and construct timeline
+                # 2. Second pass: render pieces and collect offsets
                 for item in analyzed_segments:
                     idx = item["idx"]
                     t_seg = item["t_seg"]
                     audio_path = item["audio_path"]
                     start_time = item["start_time"]
+                    orig_dur = item["orig_dur"]
                     raw_dur = item["raw_dur"]
                     tempo = item["tempo"]
 
@@ -483,54 +631,60 @@ class AudioSynchronizationService:
                     if piece_dur <= 0.0:
                         piece_dur = raw_dur / tempo
 
-                    # Insert silence gap before speech if needed
-                    if start_time > current_time:
-                        gap_dur = start_time - current_time
-                        gap_path = work_dir / f"gap_{idx}.wav"
-                        self.generate_silence(gap_dur, gap_path)
-                        timeline_pieces.append(gap_path)
-                        current_time = start_time
-                    elif start_time < current_time:
-                        logger.warning(
-                            "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
-                            t_seg.segment_order,
-                            start_time,
-                            current_time,
+                    logger.info(
+                        "[DubbingSync:Legacy] Segment #%d: slot=%.2fs, raw_dur=%.2fs, tempo=%.2fx, final_dur=%.2fs, start=%.2fs, fill_mode=%s",
+                        t_seg.segment_order,
+                        orig_dur,
+                        raw_dur,
+                        tempo,
+                        piece_dur,
+                        start_time,
+                        fill_mode,
+                    )
+                    pieces_with_timing.append((piece_path, start_time))
+
+            # Assemble master timeline WAV using sample-accurate PCM buffer
+            final_duration = self.assemble_timeline_pcm(
+                pieces_with_timing=pieces_with_timing,
+                target_duration=target_duration,
+                output_path=output_timeline_path,
+                overflow_policy=overflow_policy,
+            )
+
+            if strict_validation and target_duration > 0 and (final_duration > target_duration + 0.150):
+                overflow_amount = final_duration - target_duration
+                logger.warning(
+                    "Synchronized Khmer audio timeline (%.3fs) exceeds target video duration (%.3fs) by %.3fs.",
+                    final_duration,
+                    target_duration,
+                    overflow_amount,
+                )
+                if not conflicts:
+                    conflicts.append(
+                        TimingConflict(
+                            segment_order=total_segments,
+                            transcript_segment_id="",
+                            start_time=0.0,
+                            end_time=target_duration,
+                            original_duration=target_duration,
+                            khmer_duration=final_duration,
+                            available_window=target_duration,
+                            effective_window=target_duration,
+                            safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                            required_tempo=active_max_tempo,
+                            max_tempo_factor=active_max_tempo,
+                            tempo_factor=active_max_tempo,
+                            overflow_seconds=round(overflow_amount, 2),
+                            suggested_action="Shorten Khmer translations to fit within video duration.",
+                            message=(
+                                f"Synchronized Khmer audio timeline ({final_duration:.2f}s) exceeds target video duration "
+                                f"({target_duration:.2f}s) by {overflow_amount:.2f}s even at {active_max_tempo}x speed. "
+                                f"Shorten the Khmer translations to fit within the video duration."
+                            ),
                         )
+                    )
+                raise TimingConflictError(conflicts=conflicts)
 
-                    # Append speech segment (never truncated)
-                    timeline_pieces.append(piece_path)
-                    current_time += piece_dur
-
-                # Trailing silence to cover video target duration
-                if target_duration > current_time:
-                    tail_dur = target_duration - current_time
-                    tail_path = work_dir / "gap_tail.wav"
-                    self.generate_silence(tail_dur, tail_path)
-                    timeline_pieces.append(tail_path)
-                    current_time = target_duration
-
-            # Concatenate all timeline pieces using FFmpeg concat demuxer
-            concat_manifest = work_dir / "concat_list.txt"
-            with open(concat_manifest, "w", encoding="utf-8") as f:
-                for piece in timeline_pieces:
-                    f.write(f"file '{piece.absolute()}'\n")
-
-            cmd = [
-                self.ffmpeg_bin,
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_manifest),
-                "-c", "copy",
-                str(output_timeline_path),
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if res.returncode != 0:
-                raise RuntimeError(f"FFmpeg concat failed: {res.stderr}")
-
-            # Verify and probe output duration
-            final_duration = self.video_processor.get_audio_duration(output_timeline_path)
             logger.info(
                 "Generated Khmer audio timeline %s: %.2fs (target=%.2fs, conflicts=%d)",
                 output_timeline_path.name,
@@ -568,10 +722,12 @@ class AudioSynchronizationService:
         max_tempo_factor: Optional[float] = None,
         trim_silence: bool = False,
         pipeline_version: str = "v2.1",
+        fill_mode: str = "natural",
+        overflow_policy: str = "allow_overlap",
     ) -> SynchronizationResult:
         """Align arbitrary timed audio segments onto a timeline WAV matching target timestamps.
         Applies up to max_tempo_factor tempo adjustment without silent truncation,
-        inserts precise silence gaps, detects timing overflows, and generates a unified timeline.
+        places segments at exact sample offsets, detects timing overflows, and generates a unified timeline.
         """
         if not segments:
             raise ValueError("No speech segments provided for timed synchronization.")
@@ -588,9 +744,8 @@ class AudioSynchronizationService:
             max_end = max((float(s.get("end_time", 0.0)) for s in sorted_items), default=0.0)
             target_duration = max(max_end, 1.0)
 
-        timeline_pieces: List[Path] = []
+        pieces_with_timing: List[Tuple[Path, float]] = []
         conflicts: List[TimingConflict] = []
-        current_time = 0.0
 
         try:
             if pipeline_version in ("v2.1", "v2.2", "v2.3"):
@@ -630,6 +785,7 @@ class AudioSynchronizationService:
                     raw_items,
                     target_duration=target_duration,
                     max_tempo=active_max_tempo,
+                    fill_mode=fill_mode,
                 )
 
                 for g in scheduled_groups:
@@ -666,38 +822,42 @@ class AudioSynchronizationService:
                 if strict_validation and conflicts:
                     raise TimingConflictError(conflicts=conflicts)
 
-                # Render pieces and construct timeline
-                current_time = 0.0
+                # Render pieces and collect offsets
                 for g in scheduled_groups:
                     for s_idx, piece in enumerate(g.pieces):
-                        desired_start = max(
-                            piece.start_time,
-                            current_time if s_idx == 0 else (current_time + self.min_pause_seconds)
-                        )
-                        if desired_start > current_time:
-                            gap_dur = desired_start - current_time
-                            gap_path = work_dir / f"gap_{piece.idx}.wav"
-                            self.generate_silence(gap_dur, gap_path)
-                            timeline_pieces.append(gap_path)
-                            current_time = desired_start
+                        desired_start = max(piece.allocated_start, 0.0)
 
                         piece_path = work_dir / f"piece_{piece.idx}_order_{piece.segment_order}.wav"
-                        self.render_speech_piece(
-                            piece.audio_path,
-                            piece_path,
-                            tempo_factor=piece.applied_tempo,
-                            apply_micro_fade=True,
-                        )
+                        if piece.processed_audio_path:
+                            piece_path = piece.processed_audio_path
+                        elif piece.has_boundary_trim:
+                            self.render_speech_piece(
+                                piece.audio_path,
+                                piece_path,
+                                tempo_factor=piece.applied_tempo,
+                                apply_micro_fade=True,
+                                trim_start=piece.trim_start,
+                                trim_end=piece.trim_end,
+                            )
+                        else:
+                            self.render_speech_piece(
+                                piece.audio_path,
+                                piece_path,
+                                tempo_factor=piece.applied_tempo,
+                                apply_micro_fade=True,
+                            )
                         piece_dur = self.video_processor.get_audio_duration(piece_path)
-                        timeline_pieces.append(piece_path)
-                        current_time += piece_dur
-
-                if target_duration > current_time:
-                    tail_dur = target_duration - current_time
-                    tail_path = work_dir / "gap_tail.wav"
-                    self.generate_silence(tail_dur, tail_path)
-                    timeline_pieces.append(tail_path)
-                    current_time = target_duration
+                        logger.info(
+                            "[DubbingTimedSync:V2] Segment #%d: slot=%.2fs, raw_dur=%.2fs, tempo=%.2fx, final_dur=%.2fs, start=%.2fs, fill_mode=%s",
+                            piece.segment_order,
+                            piece.orig_duration,
+                            piece.raw_duration,
+                            piece.applied_tempo,
+                            piece_dur,
+                            desired_start,
+                            fill_mode,
+                        )
+                        pieces_with_timing.append((piece_path, desired_start))
 
             else:
                 # First pass: analyze windows, tempo, and detect overflows
@@ -739,7 +899,10 @@ class AudioSynchronizationService:
                     required_tempo = 1.0
 
                     if raw_dur <= orig_dur:
-                        tempo = 1.0
+                        if fill_mode == "stretch" and orig_dur > 0.2:
+                            tempo = max(0.50, min(1.0, round(raw_dur / orig_dur, 2)))
+                        else:
+                            tempo = 1.0
                         required_tempo = 1.0
                     elif raw_dur <= avail_window:
                         pause_left = avail_window - raw_dur
@@ -793,6 +956,7 @@ class AudioSynchronizationService:
                         "seg_order": seg_order,
                         "audio_path": source_for_piece,
                         "start_time": start_time,
+                        "orig_dur": orig_dur,
                         "raw_dur": raw_dur,
                         "tempo": tempo,
                     })
@@ -800,12 +964,13 @@ class AudioSynchronizationService:
                 if strict_validation and conflicts:
                     raise TimingConflictError(conflicts=conflicts)
 
-                # Second pass: render pieces and construct timeline
+                # Second pass: render pieces and collect offsets
                 for item in analyzed_segments:
                     idx = item["idx"]
                     seg_order = item["seg_order"]
                     audio_path = item["audio_path"]
                     start_time = item["start_time"]
+                    orig_dur = item["orig_dur"]
                     raw_dur = item["raw_dur"]
                     tempo = item["tempo"]
 
@@ -819,52 +984,56 @@ class AudioSynchronizationService:
                     if piece_dur <= 0.0:
                         piece_dur = raw_dur / tempo
 
-                    # Silence gap before speech if needed
-                    if start_time > current_time:
-                        gap_dur = start_time - current_time
-                        gap_path = work_dir / f"gap_{idx}.wav"
-                        self.generate_silence(gap_dur, gap_path)
-                        timeline_pieces.append(gap_path)
-                        current_time = start_time
-                    elif start_time < current_time:
-                        logger.warning(
-                            "Segment #%d start (%.2fs) precedes current timeline (%.2fs); appending without truncation.",
-                            seg_order,
-                            start_time,
-                            current_time,
+                    logger.info(
+                        "[DubbingTimedSync:Legacy] Segment #%d: slot=%.2fs, raw_dur=%.2fs, tempo=%.2fx, final_dur=%.2fs, start=%.2fs, fill_mode=%s",
+                        seg_order,
+                        orig_dur,
+                        raw_dur,
+                        tempo,
+                        piece_dur,
+                        start_time,
+                        fill_mode,
+                    )
+                    pieces_with_timing.append((piece_path, start_time))
+
+            # Assemble master timeline WAV using sample-accurate PCM buffer
+            final_duration = self.assemble_timeline_pcm(
+                pieces_with_timing=pieces_with_timing,
+                target_duration=target_duration,
+                output_path=output_timeline_path,
+                overflow_policy=overflow_policy,
+            )
+
+            if strict_validation and target_duration > 0 and (final_duration > target_duration + 0.150):
+                overflow_amount = final_duration - target_duration
+                logger.warning(
+                    "Synchronized Khmer audio timeline (%.3fs) exceeds target duration (%.3fs) by %.3fs.",
+                    final_duration,
+                    target_duration,
+                    overflow_amount,
+                )
+                if not conflicts:
+                    conflicts.append(
+                        TimingConflict(
+                            segment_order=total_segments,
+                            transcript_segment_id="",
+                            start_time=0.0,
+                            end_time=target_duration,
+                            original_duration=target_duration,
+                            khmer_duration=final_duration,
+                            available_window=target_duration,
+                            effective_window=target_duration,
+                            safety_margin_seconds=round(self.safety_margin_seconds, 3),
+                            required_tempo=active_max_tempo,
+                            max_tempo_factor=active_max_tempo,
+                            tempo_factor=active_max_tempo,
+                            overflow_seconds=round(overflow_amount, 2),
+                            suggested_action="Shorten segments to fit within duration.",
+                            message=f"Audio timeline exceeds duration by {overflow_amount:.2f}s.",
                         )
+                    )
+                raise TimingConflictError(conflicts=conflicts)
 
-                    timeline_pieces.append(piece_path)
-                    current_time += piece_dur
-
-                # Trailing silence if target_duration > current_time
-                if target_duration > current_time:
-                    tail_dur = target_duration - current_time
-                    tail_path = work_dir / "gap_tail.wav"
-                    self.generate_silence(tail_dur, tail_path)
-                    timeline_pieces.append(tail_path)
-                    current_time = target_duration
-
-            # Concat demuxer
-            concat_manifest = work_dir / "concat_list.txt"
-            with open(concat_manifest, "w", encoding="utf-8") as f:
-                for piece in timeline_pieces:
-                    f.write(f"file '{piece.absolute()}'\n")
-
-            cmd = [
-                self.ffmpeg_bin,
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_manifest),
-                "-c", "copy",
-                str(output_timeline_path),
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if res.returncode != 0:
-                raise RuntimeError(f"FFmpeg concat failed: {res.stderr}")
-
-            final_duration = self.video_processor.get_audio_duration(output_timeline_path)
             return SynchronizationResult(
                 timeline_path=output_timeline_path,
                 total_duration_seconds=round(final_duration, 2),

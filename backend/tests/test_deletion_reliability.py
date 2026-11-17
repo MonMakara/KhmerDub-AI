@@ -1,17 +1,13 @@
-import os
 import shutil
 import tempfile
 from pathlib import Path
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.storage import (
-    sanitize_project_id,
     delete_project_storage,
     get_project_base_dir,
-    get_project_original_dir,
 )
 from app.core.recovery import recover_interrupted_deletions
 from app.models.project import (

@@ -1,0 +1,21 @@
+{
+  "duration_seconds": 10.2,
+  "frames_preserved": true,
+  "si_sdr_before_db": 4.513458728790283,
+  "si_sdr_after_db": 14.241872787475586,
+  "background_only_reduction_db": 14.02424430847168,
+  "speech_correlation": 0.9881795290801001,
+  "quiet_phrase_gain": 0.9319057464599609,
+  "clipped_samples": 0,
+  "lexical_and_perceptual_quality": "not human-verified",
+  "engine": {
+    "engine": "Demucs 4.0.1 / htdemucs 955717e8",
+    "device": "cpu",
+    "cpu_fallback": false,
+    "model_sample_rate": 44100,
+    "retained_background_fraction": 0.2,
+    "peak_before_gain": 0.5486560463905334,
+    "output_gain": 1.0,
+    "covered_frames": 489600
+  }
+}

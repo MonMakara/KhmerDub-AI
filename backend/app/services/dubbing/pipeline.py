@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.core.storage import get_timeline_audio_path, get_exported_video_path
 from app.models.project import (
     Project,
-    Video,
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
@@ -18,10 +17,10 @@ from app.services.dubbing.synchronizer import (
     AudioSynchronizationService,
     SynchronizationResult,
     TimingConflict,
-    TimingConflictError,
 )
 from app.services.dubbing.exporter import VideoExportService, ExportResult
-from app.services.video.exceptions import VideoProcessingError
+
+from app.services.tts.selection import audio_matches_selection, effective_voice
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +50,19 @@ class DubbingPipeline:
         on_progress: Optional[Callable[[int, str], None]] = None,
         strict_validation: bool = True,
         max_tempo_factor: Optional[float] = None,
-        trim_silence: bool = False,
+        trim_silence: Optional[bool] = None,
+        fill_mode: str = "natural",
+        overflow_policy: str = "allow_overlap",
+        preserve_bgm: bool = False,
+        ducking_preset: str = "balanced",
+        bgm_volume: float = 0.35,
+        attenuate_center_vocals: bool = True,
+        aspect_ratio: str = "original",
+        reframe_mode: str = "blur_pillar",
+        burn_subtitles: bool = False,
+        subtitle_style: str = "tiktok_yellow",
+        subtitle_language: str = "km",
+        subtitle_font: Optional[str] = None,
     ) -> DubbingPipelineResult:
         """Execute end-to-end synchronization and export for a project."""
         def report(pct: int, msg: str):
@@ -96,6 +107,7 @@ class DubbingPipeline:
 
         # Match with transcript segments and generated audios
         segment_items: List[Tuple[TranscriptSegment, TranslationSegment, GeneratedAudio]] = []
+        voice_snapshot = {}
         for trans_seg in translation_segments:
             t_seg = trans_seg.transcript_segment
             if not t_seg:
@@ -137,13 +149,17 @@ class DubbingPipeline:
                     f"Please generate Khmer audio first."
                 )
 
-            if audio_rec.is_outdated:
+            if not audio_matches_selection(project, trans_seg, audio_rec):
                 raise ValueError(
                     f"Speech audio for segment #{trans_seg.segment_order} is outdated "
                     f"because translation text was modified. Please regenerate speech audio."
                 )
 
             segment_items.append((t_seg, trans_seg, audio_rec))
+            voice_snapshot[trans_seg.id] = (
+                trans_seg.voice_revision, trans_seg.khmer_text,
+                effective_voice(project, trans_seg), audio_rec.audio_path,
+            )
 
         report(30, "Aligning speech segments and calculating timing adjustments...")
         timeline_path = get_timeline_audio_path(project_id)
@@ -158,18 +174,140 @@ class DubbingPipeline:
             max_tempo_factor=max_tempo_factor,
             trim_silence=active_trim_silence,
             pipeline_version=pipeline_ver,
+            fill_mode=fill_mode,
+            overflow_policy=overflow_policy,
         )
 
         report(75, "Remuxing video with synchronized Khmer audio timeline...")
         output_video_path = get_exported_video_path(project_id)
-        export_result = self.exporter.export(
-            video_path=video_path,
-            audio_timeline_path=sync_result.timeline_path,
-            output_video_path=output_video_path,
-            expected_duration=video_dur,
-        )
+        source_audio_path = video_path
+
+        temp_ass_path: Optional[Path] = None
+        try:
+            if burn_subtitles:
+                report(72, "Generating viral burn-in subtitles with Khmer typography...")
+                from app.services.subtitles.service import SubtitleService
+                from app.services.subtitles.generator import SubtitleCue, generate_ass
+                from app.services.dubbing.exporter import ASPECT_RATIO_PRESETS
+
+                sub_lang = (subtitle_language or "km").strip().lower()
+                cues: List[SubtitleCue] = []
+
+                if sub_lang in ("bilingual", "both"):
+                    km_res = SubtitleService.get_subtitles(project_id, "km", db)
+                    en_res = SubtitleService.get_subtitles(project_id, "en", db)
+                    en_map = {
+                        s.get("source_segment_order") or s.get("segment_order"): s.get("text", "")
+                        for s in en_res.get("segments", [])
+                    }
+                    for s in km_res.get("segments", []):
+                        order = s.get("source_segment_order") or s.get("segment_order")
+                        en_txt = (en_map.get(order) or "").strip()
+                        km_txt = (s.get("text") or "").strip()
+                        if km_txt:
+                            from app.services.translation.formatter import KhmerTextFormatter
+                            km_txt = KhmerTextFormatter.format(km_txt)
+                        if km_txt and en_txt:
+                            # Khmer on top, smaller English italic caption below
+                            combo_text = f"{km_txt}\\N{{\\fs34\\i1}}{en_txt}"
+                        else:
+                            combo_text = km_txt or en_txt
+                        if combo_text:
+                            cues.append(
+                                SubtitleCue(
+                                    sequence=s.get("segment_order", len(cues) + 1),
+                                    start_time=float(s.get("start_time", 0.0)),
+                                    end_time=float(s.get("end_time", 0.0)),
+                                    text=combo_text,
+                                )
+                            )
+                else:
+                    target_code = "en" if sub_lang in ("en", "english") else "km"
+                    sub_res = SubtitleService.get_subtitles(project_id, target_code, db)
+                    for s in sub_res.get("segments", []):
+                        txt = (s.get("text") or "").strip()
+                        if txt:
+                            if target_code == "km":
+                                from app.services.translation.formatter import KhmerTextFormatter
+                                txt = KhmerTextFormatter.format(txt)
+                            cues.append(
+                                SubtitleCue(
+                                    sequence=s.get("segment_order", len(cues) + 1),
+                                    start_time=float(s.get("start_time", 0.0)),
+                                    end_time=float(s.get("end_time", 0.0)),
+                                    text=txt,
+                                )
+                            )
+
+                if cues:
+                    # Determine target resolution for ASS script header
+                    if aspect_ratio in ASPECT_RATIO_PRESETS:
+                        res_x, res_y = ASPECT_RATIO_PRESETS[aspect_ratio]
+                    else:
+                        try:
+                            meta = self.exporter.video_processor.get_metadata(video_path)
+                            res_x = meta.get("width") or 1920
+                            res_y = meta.get("height") or 1080
+                        except Exception:
+                            res_x, res_y = (1920, 1080)
+
+                    ass_content = generate_ass(
+                        cues=cues,
+                        style_name=subtitle_style or "tiktok_yellow",
+                        font_name=subtitle_font,
+                        play_res_x=res_x,
+                        play_res_y=res_y,
+                    )
+                    if ass_content.strip():
+                        temp_ass_path = output_video_path.with_suffix(".burnin.tmp.ass")
+                        temp_ass_path.write_text(ass_content, encoding="utf-8")
+                        logger.info("Generated %d subtitle cues for burn-in to %s", len(cues), temp_ass_path)
+
+            export_result = self.exporter.export(
+                video_path=video_path,
+                audio_timeline_path=sync_result.timeline_path,
+                output_video_path=output_video_path,
+                expected_duration=video_dur,
+                preserve_bgm=preserve_bgm,
+                ducking_preset=ducking_preset,
+                bgm_volume=bgm_volume,
+                attenuate_center_vocals=attenuate_center_vocals,
+                source_audio_path=source_audio_path,
+                aspect_ratio=aspect_ratio,
+                reframe_mode=reframe_mode,
+                burn_subtitles=burn_subtitles and temp_ass_path is not None,
+                subtitle_path=temp_ass_path,
+            )
+        finally:
+            if temp_ass_path and temp_ass_path.exists():
+                try:
+                    temp_ass_path.unlink()
+                except OSError:
+                    pass
 
         report(95, "Verifying exported video integrity...")
+        # Check again after slow FFmpeg work. A voice mutation must never make
+        # a soundtrack rendered from a previous selection appear current.
+        db.expire_all()
+        for unit_id, snapshot in voice_snapshot.items():
+            revision, text, selected_voice, audio_path = snapshot
+            claimed = db.query(TranslationSegment).filter(
+                TranslationSegment.id == unit_id,
+                TranslationSegment.voice_revision == revision,
+                TranslationSegment.khmer_text == text,
+                TranslationSegment.is_outdated.is_(False),
+            ).update({TranslationSegment.voice_revision: revision}, synchronize_session=False)
+            current = db.query(TranslationSegment).filter_by(id=unit_id).first()
+            if (claimed != 1 or current is None
+                    or effective_voice(project, current) != selected_voice
+                    or not current.generated_audio
+                    or current.generated_audio.audio_path != audio_path
+                    or not audio_matches_selection(project, current, current.generated_audio)):
+                db.rollback()
+                db.refresh(video)
+                video.is_export_outdated = True
+                db.commit()
+                raise ValueError("Voice or speech changed during export. Regenerate affected speech and export again.")
         # Update video record with export metadata
         video.exported_video_path = str(export_result.video_path)
         video.audio_timeline_path = str(sync_result.timeline_path)

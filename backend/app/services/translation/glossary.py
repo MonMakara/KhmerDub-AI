@@ -1,5 +1,4 @@
 import re
-from typing import List, Tuple
 
 # Domain-specific terminology mapping and hallucination corrections
 # Each rule is a tuple: (english_regex, khmer_raw_hallucination_regex, corrected_khmer_replacement)
@@ -80,6 +79,83 @@ GLOSSARY_RULES = [
         r"\bwelcome\s+to\b",
         r"អញ្ជើញ\s*មក\s*កាន់",
         "សូមស្វាគមន៍មកកាន់",
+    ),
+    # Rubik's Cube & Puzzle Mechanical Terminology
+    (
+        r"\b(?:cross|crosses)\b",
+        r"ការឆ្លងកាត់|ឈើឆ្កាង|ឈើចាក់|ឆ្លងកាត់",
+        "សញ្ញាបូក",
+    ),
+    (
+        r"\bthree[\s-]move(?:r)?(?:\s+insert)?\b",
+        r"អ្នកផ្លាស់ទីទាំងបី|រំកិលបីដង|ការផ្លាស់ទីបីដង",
+        "ការបញ្ចូល ៣ ចលនា",
+    ),
+    (
+        r"\binspection(?:\s+time)?\b",
+        r"ក្នុងអំឡុងពេលត្រួតពិនិត្យ|ការត្រួតពិនិត្យ",
+        "ពេលពិនិត្យ",
+    ),
+    (
+        r"\b(?:first\s+)?pairs?\b",
+        r"គូដំបូង",
+        "គូទីមួយ",
+    ),
+    (
+        r"\b(?:green|blue|red|orange|white|yellow)\s+solids?\b",
+        r"វត្ថុរឹងពណ៌(\S+)",
+        r"ពណ៌\1ដោះស្រាយរួច",
+    ),
+    (
+        r"\b([RLUDFB]'?)\s+(?:move|turn)\b",
+        r"(?:ការផ្លាស់ទី|ផ្លាស់ទី)\s*([RLUDFB]'?)",
+        r"ចលនា \1",
+    ),
+    # Computer Hardware & Networking (Preserve standard English loanwords if mistranslated)
+    (
+        r"\bmotherboards?\b",
+        r"ក្តារខៀនម្តាយ|មាតាក្តារ|ក្តារមេ|ក្តារខៀនមេ",
+        "Motherboard",
+    ),
+    (
+        r"\b(?:network\s+)?switch(?:es)?\b",
+        r"កុងតាក់(?!ភ្លើង)|ឧបករណ៍កុងតាក់",
+        "Switch",
+    ),
+    (
+        r"\b(?:data\s+|system\s+|expansion\s+|internal\s+)?bus(?:es)?\b",
+        r"ឡានក្រុង|រថយន្តក្រុង",
+        "Bus",
+    ),
+    (
+        r"\b(?:hardware\s+|network\s+|usb\s+|ethernet\s+)?port(?:s)?\b",
+        r"កំពង់ផែ",
+        "Port",
+    ),
+    (
+        r"\b(?:cpu\s+)?socket(?:s)?\b",
+        r"ព្រីភ្លើង|រន្ធដោតភ្លើង",
+        "Socket",
+    ),
+    (
+        r"\brouters?\b",
+        r"អ្នកបញ្ជូនផ្លូវ|ឧបករណ៍បញ្ជូនផ្លូវ",
+        "Router",
+    ),
+    (
+        r"\bpackets?\b",
+        r"កញ្ចប់ឥវ៉ាន់|កញ្ចប់ទំនិញ|កញ្ចប់ប្រៃសណីយ៍",
+        "Packet",
+    ),
+    (
+        r"\bcache\b",
+        r"ឃ្លាំងសម្ងាត់|ប្រាក់កាស",
+        "Cache",
+    ),
+    (
+        r"\b(?:cpu\s+)?registers?\b",
+        r"ការចុះឈ្មោះ",
+        "Register",
     ),
 ]
 

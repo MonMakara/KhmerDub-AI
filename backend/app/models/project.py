@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+import json
 from app.core.timezone import get_cambodia_now_naive
 from sqlalchemy import (
     Column,
@@ -52,8 +52,8 @@ class Project(Base):
     target_language = Column(String(10), default="km", nullable=False)
     translation_provider = Column(String(50), default="nllb", nullable=False)
     translation_style = Column(String(50), default="natural", nullable=False)
-    tts_provider = Column(String(50), default="gtts", nullable=False)
-    tts_voice = Column(String(100), default="default", nullable=False)
+    tts_provider = Column(String(50), default="edge", nullable=False)
+    tts_voice = Column(String(100), default="km-KH-PisethNeural", nullable=False)
     pipeline_version = Column(String(20), default="v2.3", nullable=False)
     segmentation_mode = Column(String(50), default="sentence", nullable=True)
     raw_transcript_json = Column(Text, nullable=True)
@@ -101,6 +101,12 @@ class Project(Base):
         cascade="all, delete-orphan",
         order_by="SubtitleSegment.segment_order",
     )
+    speakers = relationship(
+        "ProjectSpeaker",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="ProjectSpeaker.speaker_label",
+    )
 
 
 class Video(Base):
@@ -141,9 +147,25 @@ class TranscriptSegment(Base):
     is_approximate = Column(Boolean, default=False, nullable=False)
     is_manually_edited = Column(Boolean, default=False, nullable=False)
     dubbing_unit_id = Column(String(36), nullable=True)
+    speaker_label = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
 
     project = relationship("Project", back_populates="transcript_segments")
+
+    @property
+    def source_word_ids(self) -> list[str]:
+        """Legacy rows may lack IDs; new runs retain occurrence IDs in words_json."""
+        words = json.loads(self.words_json) if self.words_json else []
+        return [word["word_id"] for word in words if word.get("word_id")]
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.end_time - self.start_time
+
+    @property
+    def source_audio_reference(self) -> str | None:
+        video = self.project.video if self.project else None
+        return video.extracted_audio_path if video else None
 
 
 class TranslationSegment(Base):
@@ -157,6 +179,12 @@ class TranslationSegment(Base):
     end_time = Column(Float, nullable=True)
     source_segment_ids = Column(Text, nullable=True)
     source_text = Column(Text, nullable=True)
+    voice_override_provider = Column(String(50), nullable=True)
+    voice_override_id = Column(String(100), nullable=True)
+    voice_source_keys = Column(Text, nullable=True)
+    speaker_label = Column(String(50), nullable=True)
+    voice_revision = Column(Integer, default=0, server_default="0", nullable=False)
+    tts_error = Column(Text, nullable=True)
     khmer_text = Column(Text, nullable=False)
     style = Column(String(50), default="natural", nullable=True)
     explanation = Column(Text, nullable=True)
@@ -170,6 +198,26 @@ class TranslationSegment(Base):
     generated_audio = relationship("GeneratedAudio", back_populates="translation_segment", uselist=False)
 
 
+class ProjectSpeaker(Base):
+    __tablename__ = "project_speakers"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = Column(String(36), ForeignKey("projects.id"), nullable=False)
+    speaker_label = Column(String(50), nullable=False)  # e.g. "SPEAKER_01"
+    display_name = Column(String(100), nullable=False)  # e.g. "Speaker 1"
+    detected_gender = Column(String(20), default="unknown", nullable=False)  # male, female, unknown
+    average_pitch_hz = Column(Float, nullable=True)
+    color = Column(String(30), default="indigo", nullable=False)
+    assigned_voice_provider = Column(String(50), nullable=True)
+    assigned_voice_id = Column(String(100), nullable=True)
+    segment_count = Column(Integer, default=0, nullable=False)
+    total_duration = Column(Float, default=0.0, nullable=False)
+    created_at = Column(DateTime, default=get_cambodia_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=get_cambodia_now_naive, onupdate=get_cambodia_now_naive, nullable=False)
+
+    project = relationship("Project", back_populates="speakers")
+
+
 class GeneratedAudio(Base):
     __tablename__ = "generated_audios"
 
@@ -178,6 +226,7 @@ class GeneratedAudio(Base):
     translation_segment_id = Column(String(36), ForeignKey("translation_segments.id"), nullable=True)
     audio_path = Column(String(1024), nullable=False)
     duration_seconds = Column(Float, nullable=True)
+    voice_revision = Column(Integer, nullable=True)
     provider = Column(String(50), default="gtts", nullable=False)
     voice = Column(String(50), default="default", nullable=False)
     is_outdated = Column(Boolean, default=False, nullable=False)

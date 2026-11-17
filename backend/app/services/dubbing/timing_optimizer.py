@@ -3,11 +3,11 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 
 from sqlalchemy.orm import Session
 
-from app.core.storage import resolve_audio_file, get_audio_segment_path
+from app.core.storage import resolve_audio_file
 from app.models.project import (
     Project,
     Video,
@@ -47,6 +47,11 @@ class SegmentTimingAnalysis:
     khmer_text: str
     english_text: str
     is_manually_edited: bool
+    scheduled_start: float = 0.0
+    scheduled_end: float = 0.0
+    processed_duration: float = 0.0
+    local_overflow_seconds: float = 0.0
+    alignment_delay_seconds: float = 0.0
 
 
 @dataclass
@@ -99,7 +104,7 @@ class TimingOptimizerService:
     ):
         self.video_processor = video_processor or FFmpegVideoProcessor()
         self.sync_service = sync_service or AudioSynchronizationService(video_processor=self.video_processor)
-        self.max_tempo = max_tempo
+        self.max_tempo = float(max_tempo) if max_tempo is not None else 1.25
         self.min_pause_seconds = min_pause_seconds
         self.safety_margin_seconds = safety_margin_seconds
 
@@ -112,7 +117,7 @@ class TimingOptimizerService:
         """Perform deterministic conflict-aware analysis of all speech segments,
         inter-sentence pauses, required tempo adjustments, and timing budgets.
         """
-        tempo_cap = max_tempo or self.max_tempo
+        tempo_cap = float(max_tempo) if max_tempo is not None else self.max_tempo
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             raise ValueError(f"Project not found: {project_id}")
@@ -153,12 +158,21 @@ class TimingOptimizerService:
                 t_id = trans_seg.transcript_segment_id or (t_seg.id if t_seg else f"trans_{trans_seg.id}")
                 english_text = trans_seg.source_text or (t_seg.text if t_seg else "")
 
+                is_outdated = bool((audio_rec and audio_rec.is_outdated) or trans_seg.is_outdated)
+                is_missing = bool(audio_rec is None or not audio_rec.audio_path)
+
+                audio_file = None
+                if audio_rec and audio_rec.audio_path:
+                    resolved_p = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
+                    if resolved_p.exists():
+                        audio_file = resolved_p
+
                 trans_seg_map[t_id] = trans_seg
                 raw_items.append({
                     "idx": idx,
                     "segment_order": seg_order,
                     "segment_id": t_id,
-                    "audio_path": Path(audio_rec.audio_path) if (audio_rec and audio_rec.audio_path) else None,
+                    "audio_path": audio_file,
                     "start_time": start_time,
                     "end_time": end_time,
                     "orig_duration": slot_dur,
@@ -166,6 +180,8 @@ class TimingOptimizerService:
                     "khmer_text": trans_seg.khmer_text or "",
                     "english_text": english_text,
                     "is_manually_edited": bool(trans_seg.is_manually_edited),
+                    "is_outdated": is_outdated,
+                    "is_missing": is_missing,
                 })
 
             scheduler = TimelineScheduler(
@@ -207,9 +223,14 @@ class TimingOptimizerService:
                         effective_window=p.effective_window,
                         audio_path=str(p.audio_path) if p.audio_path else None,
                         raw_duration=p.raw_duration,
-                        trimmed_duration=p.raw_duration,
+                        trimmed_duration=p.trimmed_duration if p.trimmed_duration > 0.0 else p.raw_duration,
                         required_tempo=p.required_tempo,
                         tempo_factor=p.applied_tempo,
+                        local_overflow_seconds=p.local_overflow_seconds,
+                        alignment_delay_seconds=p.alignment_delay_seconds,
+                        scheduled_start=p.scheduled_start,
+                        scheduled_end=p.scheduled_end,
+                        processed_duration=p.processed_duration,
                         status=p.status,
                         overflow_seconds=p.overflow_seconds,
                         khmer_text=p.khmer_text,
@@ -308,6 +329,30 @@ class TimingOptimizerService:
 
         return analysis_items
 
+    def optimize_speech_tempo(
+        self,
+        project_id: str,
+        db: Session,
+        max_tempo: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Prepare measured variants without replacing raw audio or its duration."""
+        tempo_cap = float(max_tempo) if max_tempo is not None else self.max_tempo
+        analysis = self.analyze_timeline(project_id, db, max_tempo=tempo_cap)
+        # The shared scheduler renders measured variants from immutable masters.
+        # Publishing a variant over GeneratedAudio made subsequent analysis treat
+        # already accelerated audio as raw and apply acceleration a second time.
+        return {
+            "project_id": project_id,
+            "total_segments": len(analysis),
+            "fitted_naturally": sum(a.status == "natural" for a in analysis),
+            "speed_adjusted": sum(a.status == "speed_adjusted" for a in analysis),
+            "unresolved_conflicts": sum(a.status == "needs_optimization" for a in analysis),
+            "segments_updated": 0,
+            "details": [{"segment_order": a.segment_order, "applied_speed": a.tempo_factor,
+                         "status": a.status, "old_duration": a.raw_duration,
+                         "final_duration": a.processed_duration} for a in analysis],
+        }
+
     def optimize_project(
         self,
         project_id: str,
@@ -316,40 +361,17 @@ class TimingOptimizerService:
         max_attempts_per_segment: int = 2,
         target_char_rate: float = 11.0,
     ) -> TimelineOptimizationResult:
-        """Execute automated multi-tier timing optimization across the project:
-        1. Edge silence trimming on all synthesized audio segments.
-        2. Safe gap scheduling & minimal speed adjustment planning.
-        3. Bounded automatic sentence shortening & selective single-segment re-synthesis
-           for any remaining overflowing segments.
-        4. Strict validation preventing silent truncation or cumulative drift.
-        """
-        tempo_cap = max_tempo or self.max_tempo
+        """Plan measured timing variants without rewriting text or raw audio."""
+        tempo_cap = float(max_tempo) if max_tempo is not None else self.max_tempo
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             raise ValueError(f"Project not found: {project_id}")
 
         pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
 
-        # Tier 1: Trim edge silence on all existing audio segments in-place (legacy only; v2.1/v2.2 preserves complete speech)
-        trimmed_count = 0
-        if pipeline_ver not in ("v2.1", "v2.2", "v2.3") and project.translation_segments:
-            for trans_seg in project.translation_segments:
-                audio_rec = trans_seg.generated_audio
-                if audio_rec and audio_rec.audio_path:
-                    dest = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
-                    if dest.exists() and dest.stat().st_size > 0:
-                        try:
-                            self.sync_service.trim_audio_silence(dest, dest)
-                            new_d = self.video_processor.get_audio_duration(dest)
-                            if new_d > 0.0 and abs(new_d - (audio_rec.duration_seconds or 0.0)) > 0.05:
-                                audio_rec.duration_seconds = new_d
-                                trimmed_count += 1
-                        except Exception as e:
-                            logger.warning("Silence trim failed for segment #%d: %s", trans_seg.segment_order, e)
-            db.commit()
-
         # Tier 2: Analyze timeline budgets with silence gap allocation
         analysis = self.analyze_timeline(project_id, db, max_tempo=tempo_cap)
+        segments_updated_count = 0
         if not analysis:
             return TimelineOptimizationResult(
                 project_id=project_id,
@@ -362,116 +384,13 @@ class TimingOptimizerService:
                 segments_updated=0,
             )
 
-        tts_provider_name = project.tts_provider or "gtts"
-        tts_voice = project.tts_voice or "default"
-        tts_provider = get_tts_provider(tts_provider_name)
-
-        # Deterministic project seed for acoustic consistency across speech re-synthesis
-        import hashlib
-        project_seed = int(hashlib.md5(project_id.encode("utf-8")).hexdigest()[:8], 16)
-
+        # Text shortening cannot establish semantic equivalence. Preserve the
+        # approved text and expose genuine shortages for explicit review.
         sentence_optimized_count = 0
-        segments_updated_count = 0
 
-        # Tier 3: Selective sentence optimization for overflow segments
-        # In v2.1/v2.2, speech completeness and translation preservation strictly take precedence over
-        # automated text deletion. We do not perform lossy character or word slicing.
-        if pipeline_ver in ("v2.1", "v2.2", "v2.3"):
-            overflow_items = []
-        else:
-            overflow_items = [item for item in analysis if item.status == "needs_optimization"]
-
-        for item in overflow_items:
-            # Safeguard: never overwrite manually approved translations without user intent
-            if item.is_manually_edited:
-                logger.info(
-                    "Skipping automated rewrite for manually edited segment #%d",
-                    item.segment_order,
-                )
-                continue
-
-            trans_seg = (
-                db.query(TranslationSegment)
-                .filter(TranslationSegment.id == item.translation_segment_id)
-                .first()
-            )
-            audio_rec = (
-                db.query(GeneratedAudio)
-                .filter(GeneratedAudio.translation_segment_id == item.translation_segment_id)
-                .first()
-            )
-            if not trans_seg or not audio_rec:
-                continue
-
-            current_text = trans_seg.khmer_text
-            effective_win = item.effective_window
-            target_chars = max(18, int(effective_win * target_char_rate))
-
-            # Bounded attempts (max 2 attempts)
-            resolved = False
-            for attempt in range(1, max_attempts_per_segment + 1):
-                # Budget character count slightly tighter on second attempt
-                attempt_budget = target_chars if attempt == 1 else max(16, int(target_chars * 0.88))
-                shortened = shorten_khmer_text(current_text, target_char_count=attempt_budget)
-
-                if shortened == current_text and attempt > 1:
-                    # Further trim common filler adverbials
-                    shortened = re.sub(r"(យ៉ាងខ្លាំង|យ៉ាងលឿន|យ៉ាងច្បាស់|មែនទែន)", "", shortened).strip()
-                    if not shortened.endswith("។"):
-                        shortened += "។"
-
-                if shortened == current_text:
-                    # Shortening produced no difference
-                    continue
-
-                dest_audio = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
-                dest_audio.parent.mkdir(parents=True, exist_ok=True)
-
-                try:
-                    tts_res = tts_provider.synthesize(
-                        text=shortened,
-                        output_path=dest_audio,
-                        language="km",
-                        voice=tts_voice,
-                        seed=project_seed,
-                    )
-                    self.sync_service.trim_audio_silence(dest_audio, dest_audio)
-                    new_dur = self.video_processor.get_audio_duration(dest_audio)
-                    if new_dur <= 0.0 and tts_res and tts_res.duration_seconds:
-                        new_dur = tts_res.duration_seconds
-
-                    # Update records
-                    trans_seg.khmer_text = shortened
-                    trans_seg.is_manually_edited = False
-                    trans_seg.is_outdated = False
-                    audio_rec.duration_seconds = new_dur
-                    audio_rec.is_outdated = False
-                    current_text = shortened
-                    segments_updated_count += 1
-
-                    # Check if fits within tempo limit
-                    req_tempo = round(new_dur / effective_win, 3)
-                    if req_tempo <= tempo_cap:
-                        resolved = True
-                        sentence_optimized_count += 1
-                        break
-
-                except Exception as e:
-                    logger.error(
-                        "Re-synthesis failed during auto-optimization of segment #%d (attempt %d): %s",
-                        item.segment_order,
-                        attempt,
-                        e,
-                    )
-                    break
-
-            if resolved:
-                logger.info(
-                    "Successfully auto-optimized segment #%d to %.2fs (required tempo %.2fx)",
-                    item.segment_order,
-                    audio_rec.duration_seconds,
-                    req_tempo,
-                )
+        # Tier 3: Apply intelligent pitch-preserving speech acceleration
+        tempo_result = self.optimize_speech_tempo(project_id, db, max_tempo=tempo_cap)
+        segments_updated_count += tempo_result.get("segments_updated", 0)
 
         if segments_updated_count > 0:
             if project.video:

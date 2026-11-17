@@ -75,6 +75,9 @@ export interface ProjectSummary {
 }
 
 export interface TranscriptSegment {
+  source_word_ids?: string[];
+  source_audio_reference?: string | null;
+  duration_seconds?: number | null;
   id: string;
   segment_order: number;
   start_time: number;
@@ -83,6 +86,7 @@ export interface TranscriptSegment {
   is_approximate?: boolean;
   is_manually_edited?: boolean;
   dubbing_unit_id?: string | null;
+  speaker_label?: string | null;
   created_at?: string;
 }
 
@@ -130,6 +134,13 @@ export interface SegmentationApplyResponse {
 }
 
 export interface TranslationSegment {
+  voice_override_provider?: string | null;
+  voice_override_id?: string | null;
+  effective_tts_provider?: string | null;
+  effective_tts_voice?: string | null;
+  voice_revision?: number;
+  tts_error?: string | null;
+  speaker_label?: string | null;
   id: string;
   project_id: string;
   transcript_segment_id?: string | null;
@@ -155,6 +166,7 @@ export interface TranslationListResponse {
 }
 
 export interface GeneratedAudio {
+  voice_revision?: number | null;
   id: string;
   project_id: string;
   translation_segment_id?: string | null;
@@ -195,7 +207,31 @@ export interface TimingConflict {
   message: string;
 }
 
+export interface AudioStatusSummary {
+  total_dubbing_units: number;
+  current: number;
+  outdated: number;
+  missing: number;
+  generating?: number;
+  failed?: number;
+}
+
+export interface ScheduledSpeechUnit {
+  local_overflow_seconds: number;
+  alignment_delay_seconds: number;
+  translation_segment_id: string;
+  segment_order: number;
+  scheduled_start: number;
+  scheduled_end: number;
+  processed_duration: number;
+  tempo_factor: number;
+  status: string;
+  overflow_seconds: number;
+}
+
 export interface TimingSummary {
+  schedule?: ScheduledSpeechUnit[];
+  alignment_review_units?: number;
   total_segments: number;
   fitted_naturally?: number;
   fitted_without_changes?: number;
@@ -204,7 +240,9 @@ export interface TimingSummary {
   automatically_optimized: number;
   synchronized_successfully?: number;
   unresolved_conflicts: number;
-  status: 'ready' | 'review_required' | string;
+  status: 'ready' | 'review_required' | 'speech_generation_required' | string;
+  audio_status?: AudioStatusSummary | null;
+  speech_required_message?: string;
 }
 
 export interface ExportStatusResponse {
@@ -219,6 +257,7 @@ export interface ExportStatusResponse {
   exported_file_size_bytes?: number | null;
   timing_conflicts: TimingConflict[];
   timing_summary?: TimingSummary | null;
+  audio_status?: AudioStatusSummary | null;
   pipeline_version?: string;
   video_url?: string | null;
   download_url?: string | null;
@@ -234,6 +273,8 @@ export interface ProjectDetail extends ProjectSummary {
 }
 
 export interface VoiceOption {
+  language?: string;
+  availability_reason?: string | null;
   provider: string;
   voice: string;
   label: string;
@@ -250,6 +291,31 @@ export interface VoiceListResponse {
   default_provider: string;
   default_voice: string;
 }
+
+export interface ProjectSpeaker {
+  id: string;
+  project_id: string;
+  speaker_label: string;
+  display_name: string;
+  detected_gender: 'male' | 'female' | 'unknown' | string;
+  average_pitch_hz?: number | null;
+  color: string;
+  assigned_voice_provider?: string | null;
+  assigned_voice_id?: string | null;
+  segment_count: number;
+  total_duration: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiarizationRunResponse {
+  project_id: string;
+  speakers_detected: number;
+  speakers: ProjectSpeaker[];
+  assigned_segments_count: number;
+  message: string;
+}
+
 
 export interface VoicePreviewRequest {
   provider: string;
@@ -417,6 +483,8 @@ export interface VoiceProfile {
   reference_transcript?: string | null;
   audio_format: string;
   is_active: boolean;
+  is_library?: boolean;
+  project_id?: string | null;
   consent: VoiceConsent;
   created_at: string;
   updated_at: string;
@@ -448,6 +516,69 @@ export interface UpdateVoiceProfilePayload {
   description?: string;
   gender?: string;
   reference_transcript?: string;
+}
+
+export interface CloneCandidate {
+  candidate_id: string;
+  segment_order: number;
+  segment_ids: string[];
+  start_time: number;
+  end_time: number;
+  duration: number;
+  text: string;
+  score: number;
+  preview_url: string;
+}
+
+export interface CloneCandidatesListResponse {
+  project_id: string;
+  candidates: CloneCandidate[];
+  recommended_candidate_id?: string | null;
+}
+
+export interface CloneFromVideoRequest {
+  segment_id?: string;
+  start_time?: number;
+  end_time?: number;
+  voice_name?: string;
+  set_as_project_voice?: boolean;
+  store_in_voice_studio?: boolean;
+}
+
+export interface CloneSpeakerVoiceRequest {
+  speaker_label?: string | null;
+  store_in_voice_studio?: boolean;
+}
+
+export interface ClonedSpeakerItem {
+  speaker_label: string;
+  display_name: string;
+  voice_profile_id: string;
+  voice_profile_name: string;
+  assigned_voice_provider: string;
+  is_library: boolean;
+}
+
+export interface CloneSpeakerVoiceResponse {
+  project_id: string;
+  cloned_speakers: ClonedSpeakerItem[];
+  created_profiles_count: number;
+  message: string;
+}
+
+export interface AutoDiarizeAndCloneRequest {
+  min_speakers?: number;
+  max_speakers?: number;
+  store_in_voice_studio?: boolean;
+}
+
+export interface AutoDiarizeAndCloneResponse {
+  project_id: string;
+  speakers_detected: number;
+  cloned_voices_count: number;
+  speakers: ProjectSpeaker[];
+  cloned_speakers: ClonedSpeakerItem[];
+  message: string;
 }
 
 export type ToolkitTargetFormat = 'mp3' | 'wav' | 'm4a' | 'srt' | 'vtt' | 'txt' | 'json' | 'csv' | string;
@@ -487,6 +618,21 @@ export interface ToolkitTranscriptSegment {
   updated_at: string;
 }
 
+export interface EmotionStyleOption {
+  id: string;
+  label_km: string;
+  label_en: string;
+  category: string;
+  icon: string;
+  description: string;
+  prosody: {
+    rate?: string;
+    pitch?: string;
+    volume?: string;
+  };
+  translation_guidance?: string;
+}
+
 export interface ToolkitTTSSegment {
   id: string;
   task_id: string;
@@ -496,11 +642,20 @@ export interface ToolkitTTSSegment {
   end_time?: number | null;
   voice?: string | null;
   provider?: string | null;
+  emotion_style?: string | null;
   audio_file_path?: string | null;
   duration_seconds?: number | null;
   file_size_bytes?: number | null;
-  status: 'pending' | 'completed' | 'failed' | string;
+  status: 'pending' | 'completed' | 'failed' | 'fit' | 'padded' | 'sped_up' | 'slowed' | 'overflow' | string;
   error_message?: string | null;
+  slot_sec?: number | null;
+  raw_duration_sec?: number | null;
+  final_duration_sec?: number | null;
+  speed_factor_applied?: number | null;
+  method?: 'native_rate' | 'atempo' | 'none' | string | null;
+  padded_sec?: number | null;
+  fill_mode?: 'natural' | 'stretch' | string | null;
+  warning?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -527,6 +682,7 @@ export interface ParsedTranscriptCue {
   end_time?: number | null;
   voice?: string | null;
   provider?: string | null;
+  emotion_style?: string | null;
 }
 
 export interface ParsedTranscriptResponse {
@@ -587,6 +743,19 @@ export interface SubtitleConvertResponse {
   content: string;
 }
 
+export interface TranscriptToTextRequest {
+  content?: string;
+  source_task_id?: string;
+  filename?: string;
+  paragraph_mode?: 'smart_paragraphs' | 'continuous' | 'line_by_line' | 'timestamped';
+  speaker_handling?: 'strip' | 'keep';
+  pause_threshold_seconds?: number;
+  deduplicate_phrases?: boolean;
+  strip_tags?: boolean;
+  target_format?: 'txt' | 'md' | 'json';
+  title?: string;
+}
+
 export interface ToolkitTask {
   id: string;
   tool_type: string;
@@ -597,7 +766,7 @@ export interface ToolkitTask {
   source_filename: string;
   source_file_path?: string | null;
   target_format: ToolkitTargetFormat | string;
-  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'cancelling';
   progress_percentage: number;
   output_filename?: string | null;
   output_duration_seconds?: number | null;
@@ -713,6 +882,57 @@ export interface TrimmerThumbnailsPayload {
 export interface TrimmerImportDubbingPayload {
   title?: string;
 }
+
+// ---------------- Storage Management ----------------
+export interface StorageDiskInfo {
+  total_bytes: number;
+  total_human: string;
+  used_bytes: number;
+  used_human: string;
+  free_bytes: number;
+  free_human: string;
+  used_percent: number;
+  free_percent: number;
+}
+
+export interface StorageCategoryInfo {
+  category: string;
+  label: string;
+  size_bytes: number;
+  size_human: string;
+  item_count?: number | null;
+  path: string;
+  is_protected: boolean;
+  cleanable: boolean;
+  cleanable_bytes?: number | null;
+  cleanable_human?: string | null;
+  description?: string | null;
+  details?: Record<string, any> | null;
+}
+
+export interface StorageUsageResponse {
+  disk: StorageDiskInfo;
+  categories: Record<string, StorageCategoryInfo>;
+  total_data_bytes: number;
+  total_data_human: string;
+  total_cleanable_bytes: number;
+  total_cleanable_human: string;
+}
+
+export interface StorageCleanRequest {
+  targets: string[];
+  older_than_days?: number;
+}
+
+export interface StorageCleanResponse {
+  success: boolean;
+  freed_bytes: number;
+  freed_human: string;
+  targets_processed: string[];
+  details: Record<string, any>;
+  storage: StorageUsageResponse;
+}
+
 
 
 

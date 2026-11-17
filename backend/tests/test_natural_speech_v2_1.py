@@ -1,4 +1,3 @@
-import os
 import subprocess
 import wave
 import struct
@@ -22,10 +21,7 @@ from app.services.dubbing.synchronizer import (
 )
 from app.services.dubbing.timing_optimizer import (
     TimingOptimizerService,
-    SegmentTimingAnalysis,
-    TimelineOptimizationResult,
 )
-from app.services.dubbing.pipeline import DubbingPipeline
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.dubbing.auto_fit import shorten_khmer_text
 

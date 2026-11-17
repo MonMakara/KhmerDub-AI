@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 from app.core.timezone import get_cambodia_now_naive
 from sqlalchemy import (
     Column,
@@ -49,6 +48,8 @@ class VoiceProfile(Base):
     reference_transcript = Column(Text, nullable=True)
     audio_format = Column(String(20), default="wav", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    is_library = Column(Boolean, default=True, server_default="1", nullable=False)
+    project_id = Column(String(36), nullable=True)
 
     consent_id = Column(
         String(36),

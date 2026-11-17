@@ -1,8 +1,6 @@
 import logging
-import math
 import re
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +14,121 @@ logger = logging.getLogger(__name__)
 
 # Linguistic rules for concise spoken Khmer video dubbing
 CONCISE_REPLACEMENTS = [
+    # Universal Spoken Khmer Dubbing Clauses & Pacing Streamlining
+    (r"ហើយអ្នកនឹងត្រូវធ្វើការបង្វិលមួយក្រោយអ្នកបញ្ចប់សញ្ញាបូក", "ហើយត្រូវបង្វិលមួយក្រោយចប់សញ្ញាបូក"),
+    (r"ធ្វើការបង្វិលមួយ", "បង្វិលមួយ"),
+    (r"ក្រោយអ្នកបញ្ចប់សញ្ញាបូក", "ក្រោយចប់សញ្ញាបូក"),
+    (r"បញ្ចប់សញ្ញាបូក", "ចប់សញ្ញាបូក"),
+    (r"ឥឡូវវាហាក់ដូចជាច្បាស់បន្តិចហើយ", "ឥឡូវច្បាស់ហើយ"),
+    (r"ហាក់ដូចជាច្បាស់បន្តិចហើយ", "ច្បាស់ហើយ"),
+    (r"តែបើអ្នកមិនរៀបចំផែនការសញ្ញាបូកទាំងមូលអ្នកអំឡុងពេលពិនិត្យទេនោះ", "តែបើមិនរៀបចំសញ្ញាបូកពេលពិនិត្យទេ"),
+    (r"រៀបចំផែនការសញ្ញាបូកទាំងមូល", "រៀបចំសញ្ញាបូក"),
+    (r"អំឡុងពេលពិនិត្យទេនោះ", "ពេលពិនិត្យទេ"),
+    (r"ដូចនេះនេះគឺពណ៌ទឹកក្រូច", "នេះជាពណ៌ទឹកក្រូច"),
+    (r"នេះគឺពណ៌ទឹកក្រូច", "នេះជាពណ៌ទឹកក្រូច"),
+    (r"ហើយនៅខាងស្តាំនៃពណ៌(\S+)", r"ហើយខាងស្តាំ\1"),
+    (r"បើអ្នកមើលទៅកណ្តាលវាគួរតែមានពណ៌ខៀវ", "មើលទៅកណ្តាលជាពណ៌ខៀវ"),
+    (r"ឥឡូវតើយើងគួរបញ្ចូលវាយ៉ាងណា\?*។*", "តើយើងគួរបញ្ចូលយ៉ាងណា?"),
+    (r"ជាដំបូងត្រូវប្រាកដថាអ្នក(?:ដោះស្រាយ|ដោះ)", "ដំបូងត្រូវដោះ"),
+    (r"ជាដំបូងត្រូវប្រាកដថា(?:អ្នក)?", "ដំបូងត្រូវ"),
+    (r"ជាដំបូង", "ដំបូង"),
+    (r"ត្រូវប្រាកដថាអ្នក(?:ដោះស្រាយ|ដោះ)", "ត្រូវដោះ"),
+    (r"ត្រូវប្រាកដថាអ្នក", "ត្រូវ"),
+    (r"ត្រូវប្រាកដថា", "ត្រូវ"),
+    (r"រាល់ដង", ""),
+    (r"ប្រសិនបើអ្នកមានបញ្ហាក្នុងការដោះស្រាយ(?:ផ្នែកខ្វែង|សញ្ញាបូក)ឱ្យមានប្រសិទ្ធភាពនោះខ្ញុំនៅទីនេះដើម្បីជួយអ្នក", "បើពិបាកដោះសញ្ញាបូកឱ្យលឿន ខ្ញុំនឹងជួយអ្នក"),
+    (r"បើអ្នកមានបញ្ហាក្នុងការដោះស្រាយ(?:ផ្នែកខ្វែង|សញ្ញាបូក)ឱ្យមានប្រសិទ្ធភាពនោះខ្ញុំនៅទីនេះដើម្បីជួយអ្នក", "បើពិបាកដោះសញ្ញាបូកឱ្យលឿន ខ្ញុំនឹងជួយអ្នក"),
+    (r"មួយក្នុងចំណោមនោះគឺជាអ្វីដែលខ្ញុំទើបនឹងនិយាយទៅហើយគឺការ(?:ផ្លាស់ទី|បង្វិល)(?:ឈើឆ្កាង|សញ្ញាបូក)ដើម្បីឱ្យអ្នកអាចរុញ", "មួយដូចខ្ញុំទើបប្រាប់ បង្វិលសញ្ញាបូក រុញ"),
+    (r"មួយក្នុងចំណោមនោះគឺជាអ្វីដែលខ្ញុំទើបនឹងនិយាយទៅហើយគឺការ", "មួយដូចខ្ញុំទើបប្រាប់ គឺ"),
+    (r"មួយក្នុងចំណោមនោះគឺ", "មួយគឺ"),
+    (r"ហើយបន្ទាប់មកខ្ញុំនឹងបង្ហាញអ្នកពីឧទាហរណ៍នៃ(?:ការឆ្លងកាត់|សញ្ញាបូក)ដែលខ្ញុំប្រើគន្លឹះដែលខ្ញុំនិយាយនៅក្នុងវីដេអូនេះ", "រួចខ្ញុំបង្ហាញឧទាហរណ៍សញ្ញាបូក ដោយប្រើគន្លឹះក្នុងវីដេអូនេះ"),
+    (r"ហើយបន្ទាប់មកខ្ញុំនឹងបង្ហាញអ្នកពី", "រួចខ្ញុំបង្ហាញ"),
+    (r"ហើយបន្ទាប់មក", "រួច"),
+    (r"ដូច្នេះគន្លឹះទីមួយគឺការរៀបចំផែនការ(?:ឆ្លងកាត់|សញ្ញាបូក)", "គន្លឹះទីមួយ គឺរៀបចំសញ្ញាបូក"),
+    (r"ការរៀបចំផែនការ(?:ឆ្លងកាត់|សញ្ញាបូក)", "រៀបចំសញ្ញាបូក"),
+    (r"ដូច្នេះជាឧទាហរណ៍ប្រសិនបើ", "ឧទាហរណ៍ បើ"),
+    (r"ដូច្នេះជាឧទាហរណ៍", "ឧទាហរណ៍"),
+    (r"ជាឧទាហរណ៍", "ឧទាហរណ៍"),
+    (r"ហើយអ្នកមិនចាំបាច់ធ្វើវាទាំងអស់ក្នុងរយៈពេល", "ហើយមិនបាច់ធ្វើទាំងអស់ក្នុង"),
+    (r"អ្នកមិនចាំបាច់ធ្វើវាទាំងអស់", "មិនបាច់ធ្វើទាំងអស់"),
+    (r"អ្នកមិនចាំបាច់", "មិនបាច់"),
+    (r"មិនចាំបាច់", "មិនបាច់"),
+    (r"ធ្វើវាទាំងអស់", "ធ្វើទាំងអស់"),
+    (r"ក្នុងរយៈពេល\s*(\d+|[០-៩]+)\s*វិនាទី", r"ក្នុង \1 វិនាទី"),
+    (r"ក្នុងរយៈពេល", "ក្នុង"),
+    (r"ដូច្នេះពណ៌ខៀវអាចទៅទីនេះហើយនៅខាងស្តាំពណ៌ខៀវគួរតែជាពណ៌ក្រហម", "ពណ៌ខៀវនៅទីនេះ ហើយខាងស្តាំខៀវជាពណ៌ក្រហម"),
+    (r"អាចទៅទីនេះហើយនៅខាងស្តាំ", "នៅទីនេះ ហើយខាងស្តាំ"),
+    (r"គួរតែជា", "ជា"),
+    (r"ឥឡូវនេះតោះធ្វើដំណោះស្រាយ(?:ឆ្លងកាត់|សញ្ញាបូក)ទាំងមូលនោះ", "ឥឡូវតោះដោះសញ្ញាបូកទាំងអស់"),
+    (r"ឥឡូវនេះតោះ", "ឥឡូវតោះ"),
+    (r"ឥឡូវនេះ", "ឥឡូវ"),
+    (r"ដំណោះស្រាយ(?:ឆ្លងកាត់|សញ្ញាបូក)ទាំងមូលនោះ", "ដោះសញ្ញាបូកទាំងអស់"),
+    (r"ទាំងមូលនោះ", "ទាំងអស់"),
+    (r"ដូច្នេះការបញ្ចូលដោយរំកិលបីដងគឺនៅពេលដែលអ្នកមាន(?:គែមឆ្លងកាត់|គែមសញ្ញាបូក)ដូចនេះនៅក្នុងស្រទាប់ខាងលើ", "ការបញ្ចូល ៣ ចលនា គឺពេលមានគែមសញ្ញាបូកលើស្រទាប់លើ"),
+    (r"ការបញ្ចូលដោយរំកិលបីដងគឺនៅពេលដែល", "ការបញ្ចូល ៣ ចលនា គឺពេល"),
+    (r"នៅក្នុងស្រទាប់ខាងលើ", "លើស្រទាប់លើ"),
+    (r"ស្រទាប់ខាងលើ", "ស្រទាប់លើ"),
+    (r"ស្រទាប់ខាងក្រោម", "ស្រទាប់ក្រោម"),
+    (r"ដូច្នេះរំកិលមកខាងនេះប្រសិនបើ(?:គែមឈើចាក់|គែមសញ្ញាបូក)ស្ថិតនៅខាងស្តាំជំនួសវិញខ្ញុំនឹងធ្វើបែបនេះដូចគ្នាដែរដោយប្រើដៃស្តាំរបស់អ្នក", "បើគែមសញ្ញាបូកនៅស្តាំ ខ្ញុំនឹងធ្វើដូចគ្នាដោយដៃស្តាំ"),
+    (r"រំកិលមកខាងនេះ(?:ប្រសិនបើ|បើ)", "បើ"),
+    (r"ស្ថិតនៅខាង(ស្តាំ|ឆ្វេង)", r"នៅខាង\1"),
+    (r"ស្ថិតនៅ", "នៅ"),
+    (r"ជំនួសវិញខ្ញុំនឹងធ្វើបែបនេះដូចគ្នាដែរ", "ខ្ញុំនឹងធ្វើដូចគ្នា"),
+    (r"ដោយប្រើដៃ(ស្តាំ|ឆ្វេង)របស់អ្នក", r"ដោយដៃ\1"),
+    (r"ដោយប្រើដៃ(ស្តាំ|ឆ្វេង)", r"ដោយដៃ\1"),
+    (r"ដៃ(ស្តាំ|ឆ្វេង)របស់អ្នក", r"ដៃ\1"),
+    (r"ដូច្នេះនេះជាអ្វីដែលអ្នកគួរប្រុងប្រយ័ត្នក្នុងអំឡុងពេលត្រួតពិនិត្យ", "នេះជាអ្វីត្រូវមើលពេលពិនិត្យ"),
+    (r"អ្នកគួរប្រុងប្រយ័ត្នក្នុងអំឡុងពេលត្រួតពិនិត្យ", "ត្រូវមើលពេលពិនិត្យ"),
+    (r"ក្នុងអំឡុងពេលត្រួតពិនិត្យ", "ពេលពិនិត្យ"),
+    (r"ការត្រួតពិនិត្យ", "ពិនិត្យ"),
+    (r"ប្រសិនបើអ្នកអាចធ្វើ(?:គែមឆ្លងកាត់|គែមសញ្ញាបូក)បានចំនួនបីយ៉ាងងាយស្រួលហើយគែមចុងក្រោយចេញមកដូចនេះគ្មានបញ្ហាអ្វីទេអ្នកអាចធ្វើវាបានយ៉ាងលឿន", "បើធ្វើគែមសញ្ញាបូកបាន ៣ យ៉ាងងាយ ហើយគែមចុងក្រោយបែបនេះ មិនអីទេ អាចធ្វើបានលឿន"),
+    (r"បានចំនួនបីយ៉ាងងាយស្រួល", "បាន ៣ យ៉ាងងាយ"),
+    (r"បានចំនួន(\d+|[០-៩]+)យ៉ាងងាយស្រួល", r"បាន \1 យ៉ាងងាយ"),
+    (r"ចេញមកដូចនេះ", "បែបនេះ"),
+    (r"គ្មានបញ្ហាអ្វីទេ", "មិនអីទេ"),
+    (r"អ្នកអាចធ្វើវាបានយ៉ាងលឿន", "អាចធ្វើបានលឿន"),
+    (r"អ្នកអាចធ្វើវាបាន", "អាចធ្វើបាន"),
+    (r"ដូច្នេះនៅទីនេះយើងមាន(?:វត្ថុរឹងពណ៌បៃតង|បៃតងដោះស្រាយរួច)យើងចង់ដោះស្រាយពណ៌ខៀវនៅទីនេះតែម្តង", "ទីនេះមានបៃតងដោះរួច ចង់ដោះស្រាយខៀវត្រង់នេះ"),
+    (r"ដូច្នេះនៅទីនេះយើងមាន", "ទីនេះមាន"),
+    (r"នៅទីនេះយើងមាន", "ទីនេះមាន"),
+    (r"យើងចង់ដោះស្រាយ", "ចង់ដោះស្រាយ"),
+    (r"នៅទីនេះតែម្តង", "ត្រង់នេះ"),
+    (r"ជាមួយនឹងអ្នកផ្លាស់ទីទាំងបីដែលខ្ញុំទើបនឹងនិយាយបន្តិចមុននេះ", "ជាមួយ ៣ ចលនា ដែលខ្ញុំទើបប្រាប់"),
+    (r"ដែលខ្ញុំទើបនឹងនិយាយបន្តិចមុននេះ", "ដែលខ្ញុំទើបប្រាប់"),
+    (r"ទើបនឹងនិយាយបន្តិចមុននេះ", "ទើបប្រាប់"),
+    (r"ទើបនឹងនិយាយទៅហើយ", "ទើបប្រាប់"),
+    (r"ទើបនឹងនិយាយ", "ទើបប្រាប់"),
+    (r"ឥឡូវនេះតើយើងគួរបញ្ចូលវាដោយរបៀបណា", "តើយើងគួរបញ្ចូលវាយ៉ាងណា"),
+    (r"តើយើងគួរបញ្ចូលវាដោយរបៀបណា", "តើយើងគួរបញ្ចូលវាយ៉ាងណា"),
+    (r"ដោយរបៀបណា", "យ៉ាងណា"),
+    (r"ដូច្នេះមានវិធីពីរយ៉ាងក្នុងការធ្វើវា", "មានពីរវិធីក្នុងការធ្វើ"),
+    (r"វិធីពីរយ៉ាងក្នុងការធ្វើវា", "ពីរវិធីក្នុងការធ្វើ"),
+    (r"វិធីពីរយ៉ាង", "ពីរវិធី"),
+    (r"ដូច្នេះនៅទីនេះម្តងទៀតមានបីដែលដោះស្រាយរួចហើយហើយយើងចង់ដោះស្រាយពណ៌ក្រហមហើយវាត្រូវផ្លាស់ទៅទីនេះ", "ទីនេះមានបីដោះរួច ចង់ដោះស្រាយពណ៌ក្រហមនៅទីនេះ"),
+    (r"ដូច្នេះនៅទីនេះម្តងទៀតមាន", "ទីនេះមាន"),
+    (r"នៅទីនេះម្តងទៀត", "ទីនេះ"),
+    (r"មានបីដែលដោះស្រាយរួចហើយ", "មានបីដោះរួច"),
+    (r"ហើយវាត្រូវផ្លាស់ទៅទីនេះ", "នៅទីនេះ"),
+    (r"ត្រូវផ្លាស់ទៅទីនេះ", "នៅទីនេះ"),
+    (r"ដូច្នេះអ្វីដែលអ្នកមិនគួរធ្វើនោះគឺ", "អ្វីដែលមិនគួរធ្វើ គឺ"),
+    (r"អ្វីដែលអ្នកមិនគួរធ្វើនោះគឺ", "អ្វីដែលមិនគួរធ្វើ គឺ"),
+    (r"អ្វីដែលមិនគួរធ្វើនោះគឺ", "អ្វីដែលមិនគួរធ្វើ គឺ"),
+    (r"នោះគឺ", "គឺ"),
+    (r"ចូលទៅកន្លែងទទេ", "ចូលកន្លែងទទេ"),
+    (r"ត្រឡប់មកវិញ", "មកវិញ"),
+    (r"មានបញ្ហាក្នុងការដោះស្រាយ", "ពិបាកដោះ"),
+    (r"មានបញ្ហាក្នុងការ", "ពិបាក"),
+    (r"ឱ្យមានប្រសិទ្ធភាព", "ឱ្យលឿន"),
+    (r"ខ្ញុំនៅទីនេះដើម្បីជួយអ្នក", "ខ្ញុំនឹងជួយអ្នក"),
+    (r"ដែលអ្នកគួររៀនអ្វីៗ", "ដែលគួររៀន"),
+    (r"ដែលអ្នកគួររៀន", "ដែលគួររៀន"),
+    (r"រៀបរាប់ពី", "ប្រាប់ពី"),
+    (r"គែមឆ្លងកាត់", "គែមសញ្ញាបូក"),
+    (r"គែមឈើចាក់", "គែមសញ្ញាបូក"),
+    (r"ឈើឆ្កាង", "សញ្ញាបូក"),
+    (r"ការឆ្លងកាត់", "សញ្ញាបូក"),
+    (r"វត្ថុរឹងពណ៌បៃតង", "បៃតងដោះរួច"),
+    (r"វត្ថុរឹងពណ៌(\S+)", r"\1ដោះរួច"),
     # Specific verbose idioms and clauses
     (r"ដែលជាកម្មសិទ្ធិនៅទីនេះ", "នៅទីនេះ"),
     (r"គឺជាមួយដែលនៅទីនេះ", "នៅទីនេះ"),
@@ -97,20 +210,105 @@ CONCISE_REPLACEMENTS = [
     (r"ធ្វើការដោះស្រាយ", "ដោះស្រាយ"),
     (r"ធ្វើការជ្រើសរើស", "ជ្រើសរើស"),
     (r"ធ្វើការផ្គូផ្គង", "ផ្គូផ្គង"),
+    (r"ធ្វើការបង្កើត", "បង្កើត"),
+    (r"ធ្វើការផ្លាស់ប្តូរ", "ផ្លាស់ប្តូរ"),
+    (r"ធ្វើការតភ្ជាប់", "តភ្ជាប់"),
+    (r"ធ្វើការភ្ជាប់", "ភ្ជាប់"),
+    (r"ធ្វើការទាញយក", "ទាញយក"),
+    (r"ធ្វើការដំណើរការ", "ដំណើរការ"),
+    (r"ធ្វើការប្រើប្រាស់", "ប្រើ"),
+    (r"ធ្វើការសាកល្បង", "សាកល្បង"),
+    (r"ធ្វើការត្រួតពិនិត្យ", "ពិនិត្យ"),
+    (r"ធ្វើការគណនា", "គណនា"),
+    (r"ធ្វើការបង្ហាញ", "បង្ហាញ"),
+    (r"ធ្វើការដំឡើង", "ដំឡើង"),
+    (r"ធ្វើការរក្សាទុក", "រក្សាទុក"),
+    (r"ធ្វើការបញ្ជូន", "បញ្ជូន"),
+    (r"ធ្វើការគ្រប់គ្រង", "គ្រប់គ្រង"),
+    (r"ធ្វើការកែសម្រួល", "កែសម្រួល"),
     (r"មួយចំនួន", "ខ្លះ"),
     (r"ជាការពិត", ""),
     (r"ជារឿង", "ជា"),
     (r"រឿងដែល", "អ្វីដែល"),
     (r"មែនទែន", ""),
     (r"ច្រើនណាស់", "ច្រើន"),
+    # Spoken Khmer dubbing conciseness & classifier streamlining
+    (r"ចំនួន\s*(\d+|[០-៩]+)", r"\1"),
+    (r"ហើយស្ថិតនៅចន្លោះ", "នៅចន្លោះ"),
+    (r"គាត់មិនបានដឹងសោះថា", "គាត់មិនដឹងថា"),
+    (r"គូបនោះនឹងត្រូវបានដោះស្រាយជាប្រដាប់ក្មេងលេងហើយក្លាយជា", "គូបនោះនឹងក្លាយជា"),
+    (r"មនុស្សរាប់រយលាននាក់បានព្យាយាម", "មនុស្សរាប់រយលាននាក់ព្យាយាម"),
+    (r"ដោះស្រាយវាមួយនៅឆ្នាំ", "ដោះស្រាយវានៅឆ្នាំ"),
+    (r"ជាប្រដាប់ក្មេងលេងដែលលក់ដាច់បំផុតមួយដែលធ្លាប់មាន", "ជាប្រដាប់ក្មេងលេងលក់ដាច់បំផុតមួយ"),
+    (r"ដូច្នេះហើយនៅក្នុងវីដេអូសម្រាប់អ្នកចាប់ផ្តើមរបស់ខ្ញុំគឺប្រើវិធីដូចគ្នាដែលយើងដោះស្រាយ", "ដូចនេះក្នុងវីដេអូបឋមខ្ញុំ គឺដោះស្រាយ"),
+    (r"ប៉ុន្តែដើម្បីទៅដល់វិធីសាស្ត្ររអិលតាមបំពង់ដែលពេញនិយមបំផុតយើងត្រូវបោះជំហានមួយបន្ថែមទៀត", "តែដើម្បីដល់វិធីសាស្ត្រពេញនិយមបំផុត យើងត្រូវបោះជំហានមួយទៀត"),
+    (r"ហើយប្រហែលជាឈ្មោះរបស់វិធីសាស្ត្រនេះអាចជួយឲ្យយើងដើរទៅរកទិសដៅត្រឹមត្រូវមួយជំហាន", "ហើយឈ្មោះវិធីសាស្ត្រនេះអាចជួយឱ្យយើងដើរទៅទិសដៅត្រឹមត្រូវ"),
+    (r"សម្រាប់(ពន្យល់|បង្ហាញ|ធ្វើ)", r"\1"),
+    (r"ធរណីមាត្របីវិមាត្រ", "ធរណីមាត្រ 3D"),
+    # Spoken narrative dubbing & literary translationese streamline rules
+    (r"ទ្រង់", "គាត់"),
+    (r"ហើយការដែលគាត់បានជ្រើសរើសគាត់មិនបានធ្វើឲ្យគាត់មានកិត្តិយសនោះទេគឺបានធ្វើឲ្យគាត់មានកិត្តិយសនោះ", "ហើយជ្រើសរើសខ្លួនឯង មិនមែនអាត្មានិយមទេ តែធ្វើឱ្យគាត់ពិតប្រាកដ"),
+    (r"ជាញឹកញាប់គាត់ប្រាប់គាត់ដោយសប្បុរសធម៌ថាគាត់ត្រូវតែយកចិត្តទុកដាក់លើអនាគតរបស់គាត់", "តែងប្រាប់គាត់ថ្នមៗ ឱ្យគិតពីអនាគតខ្លួនឯង"),
+    (r"ថាតើគាត់សុខសប្បាយយ៉ាងណាមិនមែនជាអ្វីដែលគាត់អាចធ្វើបាននោះទេ", "ពីសុខទុក្ខគាត់ មិនមែនសួររកជំនួយទេ"),
+    (r"អ្នកមិនត្រូវបានកើតមកដើម្បីជាដំណោះស្រាយរបស់អ្នកគ្រប់គ្នានោះទេ", "អ្នកមិនបានកើតមកដើម្បីដោះស្រាយឱ្យគ្រប់គ្នាទេ"),
+    (r"ថាការដែលមានលទ្ធភាពសម្រាប់មនុស្សគ្រប់គ្នាបានធ្វើឲ្យគាត់ខាតបង់ខ្លួនឯង", "ថាការជួយគ្រប់គ្នា ធ្វើឱ្យគាត់បាត់បង់ខ្លួនឯង"),
+    (r"មិនមែននៅពេលដែលមានអ្វីមួយខ្វះនៅក្នុងរបស់អ្នកនោះទេ", "មិនមែនពេលដែលអ្នកខ្វះខាតនោះទេ"),
+    (r"មិនមែននៅពេលដែល", "មិនមែនពេល"),
+    (r"មិនមែនពេលដែល", "មិនមែនពេល"),
+    (r"នៅក្នុងរបស់អ្នកនោះទេ", "របស់អ្នកទេ"),
+    (r"នៅក្នុងរបស់អ្នក", "របស់អ្នក"),
+    (r"នៅពេលដែលមាន", "ពេលមាន"),
+    (r"នៅពេលដែល", "ពេល"),
+    (r"ហើយនៅពេលយប់", "យប់ឡើង"),
+    (r"នៅពេលយប់", "យប់ឡើង"),
+    (r"ហើយនៅល្ងាចនោះ", "ល្ងាចនោះ"),
+    (r"នៅល្ងាចនោះ", "ល្ងាចនោះ"),
+    (r"ប្រសិនបើនរណាម្នាក់", "បើនរណា"),
+    (r"បើនរណាម្នាក់", "បើនរណា"),
+    (r"នរណាម្នាក់", "នរណា"),
+    (r"ការងារផ្ទាល់ខ្លួនរបស់គាត់", "ការងារខ្លួនឯង"),
+    (r"ក្នុងការដឹកជញ្ជូនដំណាំ", "សែងដំណាំ"),
+    (r"ក្នុងការដឹកជញ្ជូន", "ជញ្ជូន"),
+    (r"ក្នុងការ", "ក្នុង"),
+    (r"បានស្លាប់ទៅហើយជាច្រើនឆ្នាំមុន", "ស្លាប់ច្រើនឆ្នាំហើយ"),
+    (r"បានស្លាប់ទៅហើយ", "ស្លាប់ហើយ"),
+    (r"ជាច្រើនឆ្នាំមុន", "ច្រើនឆ្នាំហើយ"),
+    (r"រយៈពេលជាច្រើន(សប្តាហ៍|ខែ|ឆ្នាំ)", r"ច្រើន\1"),
+    (r"កន្លងផុតទៅហើយ", "កន្លងផុត"),
+    (r"ភ្លៀងក៏បានធ្លាក់ចុះមកយ៉ាងខ្លាំង", "ភ្លៀងធ្លាក់ខ្លាំង"),
+    (r"ធ្លាក់ចុះមកយ៉ាងខ្លាំង", "ធ្លាក់ខ្លាំង"),
+    (r"ដោយមិនបានរំពឹងទុក", "ដោយមិនដឹងមុន"),
+    (r"ដែលធ្វើមិនទាន់រួច", "មិនទាន់រួច"),
+    (r"ខណៈពេលដែល", "តែ"),
+    (r"ភាពឯកាបានអង្គុយនៅក្បែរគាត់", "ភាពឯកានៅក្បែរគាត់"),
+    (r"បានអង្គុយនៅក្បែរ", "នៅក្បែរ"),
+    (r"លូតលាស់ឡើងដែរ", "រីកចម្រើនដែរ"),
+    (r"មានមនុស្សតែពីរបីនាក់ប៉ុណ្ណោះដែលនៅតែនិយាយជាមួយគាត់", "មានមនុស្សតិចតួចនៅនិយាយជាមួយគាត់"),
+    (r"នោះទេ", "ទេ"),
+    (r"នោះឯង", "ឯង"),
 ]
 
 KHMER_CLAUSE_MARKERS = r"(\s+|[។,?!]|ហើយ|ប៉ុន្តែ|តែ|ពីព្រោះ|ព្រោះ|ដូច្នេះ|ដូចនេះ|ប្រសិនបើ|បើ|ដើម្បី|បន្ទាប់មក|រួច|ដែល|គឺ|ពេល|និង|ឬ|នោះ|ក្រោយ)"
+
+# Optional filler adverbials that can be safely pruned when character budget is constrained
+OPTIONAL_FILLER_ADVERBIALS = [
+    r"យ៉ាងខ្លាំង",
+    r"យ៉ាងលឿន",
+    r"យ៉ាងច្បាស់",
+    r"មែនទែន",
+    r"ពិតជា",
+    r"ជាការពិត",
+    r"ផងដែរ",
+    r"ជានិច្ច",
+    r"សោះ",
+]
 
 
 def shorten_khmer_text(text: str, target_char_count: Optional[int] = None) -> str:
     """Shorten Khmer text for video dubbing by eliminating verbose padding, redundant classifiers,
     and conversational filler while strictly preserving core terminology and meaning.
+    If target_char_count is provided, progressively applies concise syntactic alternatives
+    to fit the allotted speaking budget.
     """
     s = text.strip()
     if not s:
@@ -122,6 +320,22 @@ def shorten_khmer_text(text: str, target_char_count: Optional[int] = None) -> st
     # Normalize spacing and punctuation
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"([។,])\1+", r"\1", s).strip()
+
+    # If target_char_count is specified and text still exceeds budget, prune optional fillers
+    if target_char_count is not None and len(s) > target_char_count:
+        for filler_pat in OPTIONAL_FILLER_ADVERBIALS:
+            if len(s) <= target_char_count:
+                break
+            s = re.sub(filler_pat, "", s)
+            s = re.sub(r"\s+", " ", s).strip()
+
+        # Streamline double connectors if still exceeding
+        if len(s) > target_char_count:
+            s = re.sub(r"ហើយ\s*ក៏", "ក៏", s)
+            s = re.sub(r"ប៉ុន្តែ\s*បន្តិច", "តែបន្តិច", s)
+            s = re.sub(r"ប៉ុន្តែ", "តែ", s)
+            s = re.sub(r"ពីព្រោះ", "ព្រោះ", s)
+            s = re.sub(r"\s+", " ", s).strip()
 
     if not s.endswith("។") and not s.endswith(","):
         s += "។"
@@ -150,6 +364,36 @@ class AutoFitService:
         project = db.query(Project).filter(Project.id == project_id).first()
         if not project:
             raise ValueError(f"Project not found: {project_id}")
+
+        pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+        if pipeline_ver in ("v2.1", "v2.2", "v2.3"):
+            from app.services.dubbing.timing_optimizer import TimingOptimizerService
+            optimizer = TimingOptimizerService(
+                video_processor=self.video_processor,
+                sync_service=self.sync_service,
+                max_tempo=max_tempo,
+            )
+            analyses = optimizer.analyze_timeline(project_id, db, max_tempo=max_tempo)
+            conflicts = []
+            for a in analyses:
+                if a.status == "needs_optimization" and a.overflow_seconds > 0.05:
+                    conflicts.append({
+                        "segment_order": a.segment_order,
+                        "translation_segment_id": a.translation_segment_id,
+                        "transcript_segment_id": a.transcript_segment_id,
+                        "start_time": a.start_time,
+                        "end_time": a.end_time,
+                        "slot_duration": a.slot_duration,
+                        "avail_window": a.available_window,
+                        "effective_window": a.effective_window,
+                        "current_khmer": a.khmer_text,
+                        "english_text": a.english_text,
+                        "audio_path": a.audio_path,
+                        "raw_duration": a.raw_duration,
+                        "required_tempo": a.required_tempo,
+                        "overflow_seconds": a.overflow_seconds,
+                    })
+            return conflicts
 
         video = project.video or db.query(Video).filter(Video.project_id == project_id).first()
         target_dur = float(video.duration_seconds or 0.0) if video else 0.0
@@ -227,138 +471,24 @@ class AutoFitService:
         target_char_rate: float = 11.0,  # Characters per second of spoken Khmer
         trim_silence: bool = True,
     ) -> Dict[str, Any]:
-        """Automatically resolve all speech timing conflicts in a project.
-        Trims head/tail audio silence, shortens Khmer text to fit available slot,
-        re-synthesizes audio, and validates timing.
-        """
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            raise ValueError(f"Project not found: {project_id}")
+        """Use measured scheduling and retain genuine shortages for text review."""
+        from app.services.dubbing.timing_optimizer import TimingOptimizerService
 
-        pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
-        # Pre-pass: If trim_silence is requested and not v2.1, trim excessive head/tail silence on existing audio
-        if trim_silence and pipeline_ver != "v2.1" and project.translation_segments:
-            for trans_seg in project.translation_segments:
-                audio_rec = trans_seg.generated_audio
-                if audio_rec and audio_rec.audio_path:
-                    audio_dest = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
-                    if audio_dest.exists():
-                        try:
-                            self.sync_service.trim_audio_silence(audio_dest, audio_dest)
-                            actual_dur = self.video_processor.get_audio_duration(audio_dest)
-                            if actual_dur > 0:
-                                audio_rec.duration_seconds = actual_dur
-                        except Exception as e:
-                            logger.warning("Failed pre-pass silence trim for segment #%d: %s", trans_seg.segment_order, e)
-            db.commit()
-
-        conflicts = self.analyze_project_conflicts(project_id, db, max_tempo=max_tempo)
-        initial_conflicts_count = len(conflicts)
-
-        if not conflicts:
-            logger.info("Project %s has 0 timing conflicts. Nothing to auto-fit.", project_id)
-            return {
-                "project_id": project_id,
-                "initial_conflicts": 0,
-                "resolved_conflicts": 0,
-                "remaining_conflicts": 0,
-                "segments_updated": 0,
-                "status": "already_optimal",
-            }
-
-        logger.info(
-            "Auto-fitting project %s: %d timing conflict(s) detected.",
-            project_id,
-            initial_conflicts_count,
+        initial = self.analyze_project_conflicts(project_id, db, max_tempo=max_tempo)
+        optimizer = TimingOptimizerService(
+            video_processor=self.video_processor, sync_service=self.sync_service,
+            max_tempo=max_tempo,
         )
-
-        tts_provider_name = project.tts_provider or "gtts"
-        tts_voice = project.tts_voice or "default"
-        tts = get_tts_provider(tts_provider_name)
-
-        updated_count = 0
-        details = []
-
-        for c in conflicts:
-            trans_seg = (
-                db.query(TranslationSegment)
-                .filter(TranslationSegment.id == c["translation_segment_id"])
-                .first()
-            )
-            if not trans_seg:
-                continue
-
-            target_chars = max(18, int(c["effective_window"] * target_char_rate))
-            shortened = shorten_khmer_text(trans_seg.khmer_text, target_char_count=target_chars)
-
-            audio_rec = trans_seg.generated_audio
-            if not audio_rec:
-                continue
-
-            audio_dest = resolve_audio_file(project_id, trans_seg.id, audio_rec.audio_path)
-            audio_dest.parent.mkdir(parents=True, exist_ok=True)
-
-            # Update text
-            old_text = trans_seg.khmer_text
-            trans_seg.khmer_text = shortened
-            trans_seg.is_manually_edited = False
-            trans_seg.is_outdated = False
-
-            # Synthesize new audio
-            try:
-                res = tts.synthesize(
-                    text=shortened,
-                    output_path=audio_dest,
-                    voice=tts_voice,
-                )
-                if trim_silence and pipeline_ver != "v2.1" and audio_dest.exists():
-                    try:
-                        self.sync_service.trim_audio_silence(audio_dest, audio_dest)
-                    except Exception as e:
-                        logger.warning("Failed silence trim for segment #%d: %s", c["segment_order"], e)
-
-                new_dur = self.video_processor.get_audio_duration(audio_dest)
-                if new_dur <= 0.0 and res and res.duration_seconds:
-                    new_dur = res.duration_seconds
-
-                audio_rec.duration_seconds = new_dur
-                audio_rec.is_outdated = False
-                updated_count += 1
-                details.append({
-                    "segment_order": c["segment_order"],
-                    "old_duration": c["raw_duration"],
-                    "new_duration": new_dur,
-                    "old_text": old_text,
-                    "new_text": shortened,
-                })
-            except Exception as e:
-                logger.error(
-                    "Failed to re-synthesize segment #%d during auto-fit: %s",
-                    c["segment_order"],
-                    e,
-                )
-
-        if project.video:
-            project.video.is_export_outdated = True
-
-        db.commit()
-
-        # Re-analyze conflicts after synthesis
+        from app.services.dubbing.duration_repair import DurationRepairService
+        repair = DurationRepairService(optimizer=optimizer).repair_project(project_id, db)
+        optimizer.optimize_project(project_id, db, max_tempo=max_tempo)
         remaining = self.analyze_project_conflicts(project_id, db, max_tempo=max_tempo)
-        resolved_count = initial_conflicts_count - len(remaining)
-
-        logger.info(
-            "Auto-fit completed for project %s: resolved %d conflicts, %d remaining.",
-            project_id,
-            resolved_count,
-            len(remaining),
-        )
-
         return {
             "project_id": project_id,
-            "initial_conflicts": initial_conflicts_count,
-            "resolved_conflicts": resolved_count,
+            "initial_conflicts": len(initial),
+            "resolved_conflicts": max(0, len(initial) - len(remaining)),
             "remaining_conflicts": len(remaining),
-            "segments_updated": updated_count,
-            "details": details,
+            "segments_updated": repair["updated"],
+            "status": "review_required" if remaining else ("optimized" if repair["updated"] else "already_optimal"),
+            "details": remaining,
         }

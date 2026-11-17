@@ -13,17 +13,27 @@ import {
   X,
   Scissors,
   GitMerge,
+  Sparkles,
+  Users,
+  Upload,
+  Download,
+  ChevronDown,
+  FileUp,
+  FileCheck,
+  CheckCircle2,
 } from 'lucide-react';
-import { TranscriptSegment, SegmentationPreviewResponse } from '../../types';
+import { TranscriptSegment, SegmentationPreviewResponse, ProjectSpeaker } from '../../types';
 import { api } from '../../services/api';
 
 interface TranscriptTabProps {
   projectId: string;
   segmentationMode?: string;
   segments: TranscriptSegment[];
+  speakers?: ProjectSpeaker[];
   isTranscribing: boolean;
   onStartTranscription: () => Promise<void>;
   onUpdateSegment: (segmentId: string, text: string) => Promise<void>;
+  onUpdateSegmentSpeaker?: (segmentId: string, speakerLabel: string | null) => Promise<void>;
   onSeekVideo: (timestamp: number) => void;
   onResegmentSuccess?: () => Promise<void>;
   activeSegmentId?: string | null;
@@ -36,9 +46,11 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
   projectId,
   segmentationMode = 'sentence',
   segments,
+  speakers = [],
   isTranscribing,
   onStartTranscription,
   onUpdateSegment,
+  onUpdateSegmentSpeaker,
   onSeekVideo,
   onResegmentSuccess,
   activeSegmentId,
@@ -65,11 +77,29 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
   const [isSplitting, setIsSplitting] = useState<boolean>(false);
   const [isMerging, setIsMerging] = useState<string | null>(null);
 
+  // Import & Export State
+  const [showExportMenu, setShowExportMenu] = useState<boolean>(false);
+  const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  const [importTab, setImportTab] = useState<'file' | 'text'>('file');
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importRawText, setImportRawText] = useState<string>('');
+  const [isImporting, setIsImporting] = useState<boolean>(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
+
   useEffect(() => {
     if (segmentationMode) {
       setCurrentMode(segmentationMode);
     }
   }, [segmentationMode]);
+
+  const speakerNameMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of speakers) {
+      map[s.speaker_label] = s.display_name;
+    }
+    return map;
+  }, [speakers]);
 
   const filteredSegments = useMemo(() => {
     if (!searchQuery.trim()) return segments;
@@ -123,9 +153,10 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
   };
 
   const formatTimestamp = (secs: number) => {
-    const mins = Math.floor(secs / 60);
-    const s = Math.floor(secs % 60);
-    const ms = Math.floor((secs % 1) * 1000);
+    const totalMs = Math.round(secs * 1000);
+    const mins = Math.floor(totalMs / 60000);
+    const s = Math.floor(totalMs / 1000) % 60;
+    const ms = totalMs % 1000;
     return `${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
   };
 
@@ -210,8 +241,142 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
     }
   };
 
+  // Quick Clone Voice from Segment Handler
+  const [cloningSegId, setCloningSegId] = useState<string | null>(null);
+  const [cloneSegNotification, setCloneSegNotification] = useState<string | null>(null);
+  const [isAutoCloningSpeakers, setIsAutoCloningSpeakers] = useState(false);
+  const [autoCloneSuccessMsg, setAutoCloneSuccessMsg] = useState<string | null>(null);
+
+  const handleAutoCloneSpeakers = async () => {
+    setIsAutoCloningSpeakers(true);
+    setAutoCloneSuccessMsg(null);
+    try {
+      const res = await api.autoDetectAndCloneSpeakers(projectId, {
+        min_speakers: 1,
+        max_speakers: 6,
+        store_in_voice_studio: false,
+      });
+      setAutoCloneSuccessMsg(`Detected ${res.speakers_detected} character(s) and cloned reference voices to speak Khmer!`);
+      setTimeout(() => setAutoCloneSuccessMsg(null), 6000);
+      if (onResegmentSuccess) {
+        await onResegmentSuccess();
+      }
+    } catch (err: any) {
+      alert(`Auto-detect & clone failed: ${err.message}`);
+    } finally {
+      setIsAutoCloningSpeakers(false);
+    }
+  };
+
+  const handleCloneVoiceFromSegment = async (seg: TranscriptSegment) => {
+    const dur = seg.end_time - seg.start_time;
+    const voiceName = window.prompt(
+      `Clone voice from Segment #${seg.segment_order} (${dur.toFixed(1)}s)?\n\nEnter a name for this cloned voice:`,
+      `Segment #${seg.segment_order} Speaker`
+    );
+    if (!voiceName || !voiceName.trim()) return;
+
+    try {
+      setCloningSegId(seg.id);
+      const profile = await api.cloneVoiceFromVideo(projectId, {
+        segment_id: seg.id,
+        voice_name: voiceName.trim(),
+        set_as_project_voice: true,
+      });
+      setCloneSegNotification(`Voice "${profile.name}" cloned successfully and assigned as project default voice!`);
+      setTimeout(() => setCloneSegNotification(null), 5000);
+      if (onResegmentSuccess) {
+        await onResegmentSuccess();
+      }
+    } catch (err: any) {
+      alert(`Voice cloning failed: ${err.message}`);
+    } finally {
+      setCloningSegId(null);
+    }
+  };
+
+  const handleExportTranscript = (format: string, mode: string = 'cues') => {
+    setShowExportMenu(false);
+    const url = api.getProjectTranscriptExportUrl(projectId, format, mode);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleImportTranscript = async () => {
+    setIsImporting(true);
+    setImportError(null);
+    try {
+      let res;
+      if (importTab === 'file') {
+        if (!importFile) {
+          setImportError('Please select a subtitle or transcript file (.srt, .vtt, .txt, .json).');
+          setIsImporting(false);
+          return;
+        }
+        res = await api.importProjectTranscript(projectId, importFile);
+      } else {
+        if (!importRawText.trim()) {
+          setImportError('Please enter transcript text.');
+          setIsImporting(false);
+          return;
+        }
+        res = await api.importProjectTranscript(projectId, undefined, importRawText.trim());
+      }
+      setImportSuccessMsg(res.message || `Imported ${res.segment_count} segments successfully!`);
+      setTimeout(() => {
+        setShowImportModal(false);
+        setImportFile(null);
+        setImportRawText('');
+        setImportSuccessMsg(null);
+      }, 1200);
+      if (onResegmentSuccess) {
+        await onResegmentSuccess();
+      }
+    } catch (err: any) {
+      setImportError(err.message || 'Failed to import transcript.');
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {cloneSegNotification && (
+        <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-700 text-xs flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+            <span className="font-medium">{cloneSegNotification}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCloneSegNotification(null)}
+            className="text-purple-400 hover:text-purple-600 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {autoCloneSuccessMsg && (
+        <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-700 text-xs flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
+            <span className="font-medium">{autoCloneSuccessMsg}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAutoCloneSuccessMsg(null)}
+            className="text-purple-400 hover:text-purple-600 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Action, Search and Segmentation Control Toolbar */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -239,6 +404,117 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
                 className="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 w-44 sm:w-56"
               />
             </div>
+
+            {/* Export Dropdown */}
+            {segments.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowExportMenu(!showExportMenu)}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition flex items-center gap-1.5 shrink-0"
+                  title="Export transcript as SRT, VTT, TXT, or JSON"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Export</span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+                {showExportMenu && (
+                  <div
+                    className="absolute right-0 mt-1 w-56 bg-white rounded-xl shadow-lg border border-slate-200 py-1.5 z-50 text-xs"
+                    onMouseLeave={() => setShowExportMenu(false)}
+                  >
+                    <div className="px-3 py-1 text-[10px] font-bold text-indigo-600 uppercase tracking-wider bg-indigo-50/50">
+                      For AI Translation (Grouped)
+                    </div>
+                    <button
+                      onClick={() => handleExportTranscript('srt', 'dubbing_units')}
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-between"
+                      title="Optimized for ChatGPT/Claude: merges short broken fragments into full conversational sentences"
+                    >
+                      <span className="font-medium text-slate-800">AI Dubbing Units</span>
+                      <span className="font-mono text-[10px] text-indigo-500 font-bold">.SRT</span>
+                    </button>
+                    <button
+                      onClick={() => handleExportTranscript('json', 'dubbing_units')}
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-between"
+                    >
+                      <span className="font-medium text-slate-800">AI Units with Timing</span>
+                      <span className="font-mono text-[10px] text-indigo-500 font-bold">.JSON</span>
+                    </button>
+
+                    <div className="mt-1 px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-t border-slate-100">
+                      Original Subtitle Cues
+                    </div>
+                    <button
+                      onClick={() => handleExportTranscript('srt', 'cues')}
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-between"
+                    >
+                      <span>Subtitle Cues</span>
+                      <span className="font-mono text-[10px] text-slate-400 font-bold">.SRT</span>
+                    </button>
+                    <button
+                      onClick={() => handleExportTranscript('vtt', 'cues')}
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-between"
+                    >
+                      <span>WebVTT</span>
+                      <span className="font-mono text-[10px] text-slate-400 font-bold">.VTT</span>
+                    </button>
+                    <button
+                      onClick={() => handleExportTranscript('txt', 'cues')}
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-between"
+                    >
+                      <span>Plain Text</span>
+                      <span className="font-mono text-[10px] text-slate-400 font-bold">.TXT</span>
+                    </button>
+                    <button
+                      onClick={() => handleExportTranscript('json', 'cues')}
+                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-between"
+                    >
+                      <span>Cues JSON</span>
+                      <span className="font-mono text-[10px] text-slate-400 font-bold">.JSON</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Import Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowImportModal(true);
+                setImportError(null);
+                setImportSuccessMsg(null);
+              }}
+              className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition flex items-center gap-1.5 shrink-0"
+              title="Import transcript from SRT, VTT, TXT, or JSON file"
+            >
+              <Upload className="w-3.5 h-3.5 text-slate-600" />
+              <span>Import</span>
+            </button>
+
+            {/* Auto-Clone Multi-Speaker Voices Button */}
+            {segments.length > 0 && (
+              <button
+                type="button"
+                onClick={handleAutoCloneSpeakers}
+                disabled={isAutoCloningSpeakers || isTranscribing}
+                className="px-3.5 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-semibold transition flex items-center gap-1.5 shrink-0 shadow-2xs"
+                title="Auto-detect all speakers in this video and clone their voices to speak Khmer"
+              >
+                {isAutoCloningSpeakers ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-600" />
+                    <span>Cloning Speakers...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                    <span>Auto-Clone Speakers</span>
+                  </>
+                )}
+              </button>
+            )}
 
             <button
               onClick={onStartTranscription}
@@ -355,6 +631,27 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
           <p className="text-xs text-slate-500 max-w-sm mx-auto">
             Click the "Start Transcription" button above to transcribe speech from the uploaded video.
           </p>
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-3">
+            <button
+              onClick={onStartTranscription}
+              disabled={!isMediaReady || isTranscribing}
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition flex items-center gap-1.5"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Start Transcription</span>
+            </button>
+            <button
+              onClick={() => {
+                setShowImportModal(true);
+                setImportError(null);
+                setImportSuccessMsg(null);
+              }}
+              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition flex items-center gap-1.5"
+            >
+              <Upload className="w-3.5 h-3.5 text-slate-600" />
+              <span>Or Import Subtitle File (.SRT / .VTT / .TXT / .JSON)</span>
+            </button>
+          </div>
         </div>
       ) : (
         /* Segment List */
@@ -393,6 +690,36 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
                       <span className="text-xs font-mono font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
                         #{seg.segment_order}
                       </span>
+
+                      {speakers.length > 0 ? (
+                        <div className="flex items-center gap-1">
+                          <Users className="w-3.5 h-3.5 text-indigo-500" />
+                          <select
+                            aria-label={`Speaker for segment ${seg.segment_order}`}
+                            value={seg.speaker_label || ''}
+                            onChange={async (e) => {
+                              const val = e.target.value ? e.target.value : null;
+                              if (onUpdateSegmentSpeaker) {
+                                await onUpdateSegmentSpeaker(seg.id, val);
+                              }
+                            }}
+                            className="text-[11px] font-semibold bg-indigo-50/80 text-indigo-800 border border-indigo-200 rounded px-1.5 py-0.5 outline-hidden cursor-pointer hover:bg-indigo-100"
+                          >
+                            <option value="">Unassigned</option>
+                            {speakers.map((s) => (
+                              <option key={s.speaker_label} value={s.speaker_label}>
+                                {s.display_name} ({s.detected_gender})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : seg.speaker_label ? (
+                        <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 flex items-center gap-1">
+                          <Users className="w-3 h-3" />
+                          <span>{speakerNameMap[seg.speaker_label] || seg.speaker_label}</span>
+                        </span>
+                      ) : null}
+
                       <button
                         onClick={() => onSeekVideo(seg.start_time)}
                         className="text-xs font-mono text-slate-600 hover:text-indigo-600 flex items-center gap-1 font-semibold group"
@@ -407,7 +734,7 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
 
                       {seg.is_approximate && (
                         <span className="text-[10px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                          Estimated timing
+                          Alignment review
                         </span>
                       )}
                       {seg.is_manually_edited && (
@@ -442,6 +769,19 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
                             title="Split Segment"
                           >
                             <Scissors className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            onClick={() => handleCloneVoiceFromSegment(seg)}
+                            disabled={cloningSegId === seg.id}
+                            className="p-1 rounded text-slate-400 hover:text-purple-600 hover:bg-purple-50 transition"
+                            title="Clone voice from this segment"
+                          >
+                            {cloningSegId === seg.id ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-600" />
+                            ) : (
+                              <Sparkles className="w-3.5 h-3.5 text-purple-500" />
+                            )}
                           </button>
 
                           {!isLast && (
@@ -721,6 +1061,165 @@ export const TranscriptTab: React.FC<TranscriptTabProps> = ({
                   <>
                     <Scissors className="w-3.5 h-3.5" />
                     <span>Split Segment</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Transcript Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-xl w-full border border-slate-200 shadow-2xl p-6 space-y-5 animate-in fade-in duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Import Source Transcript</h3>
+                  <p className="text-xs text-slate-500">
+                    Upload or paste subtitle cues (.srt, .vtt, .txt, .json) to populate transcript segments.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  if (!isImporting) setShowImportModal(false);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Error or Success banner */}
+            {importError && (
+              <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{importError}</span>
+              </div>
+            )}
+            {importSuccessMsg && (
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs flex items-center gap-2">
+                <FileCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span>{importSuccessMsg}</span>
+              </div>
+            )}
+
+            {/* Tabs: Upload File vs Paste Text */}
+            <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+              <button
+                type="button"
+                onClick={() => setImportTab('file')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${
+                  importTab === 'file'
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <FileUp className="w-3.5 h-3.5" />
+                <span>Upload File</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportTab('text')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${
+                  importTab === 'text'
+                    ? 'bg-indigo-50 text-indigo-700'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Paste Subtitle Text</span>
+              </button>
+            </div>
+
+            {/* Tab 1: File Upload */}
+            {importTab === 'file' && (
+              <div className="space-y-3">
+                <label className="border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50 hover:bg-indigo-50/30 transition text-center">
+                  <Upload className="w-8 h-8 text-indigo-500 mb-2" />
+                  <span className="text-xs font-semibold text-slate-700">
+                    {importFile ? importFile.name : 'Click to select subtitle or transcript file'}
+                  </span>
+                  <span className="text-[11px] text-slate-400 mt-1">
+                    Supports .SRT, .VTT, .TXT, .JSON (Max 25MB)
+                  </span>
+                  {importFile && (
+                    <span className="text-[11px] text-emerald-600 font-medium mt-1">
+                      {(importFile.size / 1024).toFixed(1)} KB selected
+                    </span>
+                  )}
+                  <input
+                    type="file"
+                    accept=".srt,.vtt,.txt,.json,text/plain,application/json"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        setImportFile(e.target.files[0]);
+                        setImportError(null);
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* Tab 2: Paste Raw Text */}
+            {importTab === 'text' && (
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-600">
+                  Paste SRT, WebVTT, JSON, or line-separated text:
+                </label>
+                <textarea
+                  value={importRawText}
+                  onChange={(e) => {
+                    setImportRawText(e.target.value);
+                    setImportError(null);
+                  }}
+                  rows={8}
+                  placeholder={`1\n00:00:01,000 --> 00:00:04,500\nHello, welcome to this video tutorial.\n\n2\n00:00:05,000 --> 00:00:08,200\nToday we will walk through the dubbing workflow.`}
+                  className="w-full text-xs font-mono p-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                />
+              </div>
+            )}
+
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-500 space-y-1">
+              <span className="font-semibold text-slate-700 block">Note:</span>
+              <p>
+                Importing will replace any existing transcript cues and align with video timing. You can edit segments anytime afterwards.
+              </p>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                disabled={isImporting}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleImportTranscript}
+                disabled={isImporting || (importTab === 'file' ? !importFile : !importRawText.trim())}
+                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm flex items-center gap-2 transition"
+              >
+                {isImporting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Importing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Import Transcript</span>
                   </>
                 )}
               </button>

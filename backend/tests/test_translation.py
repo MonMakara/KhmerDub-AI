@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -15,7 +14,6 @@ from app.models.project import (
 from app.services.translation.nllb import (
     NLLBTranslationProvider,
     normalize_language_code,
-    get_current_process_ram_mb,
 )
 from app.workers.translation import process_translation
 

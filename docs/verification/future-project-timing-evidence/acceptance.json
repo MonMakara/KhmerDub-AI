@@ -1,0 +1,67 @@
+{
+  "project_id": "ec7b1981-5f3d-4b06-840c-c88468e2be68",
+  "originals_unchanged": true,
+  "repair": {
+    "attempted": 2,
+    "updated": 2
+  },
+  "before": [
+    {
+      "segment_order": 1,
+      "raw_duration": 3.24,
+      "effective_window": 3.71,
+      "tempo_factor": 1.0,
+      "status": "natural",
+      "overflow_seconds": 0.0,
+      "khmer_text": "ប៉ុន្តែតើគាត់អាចដោះស្រាយអាថ៌កំបាំងនៃគូបរូប៊ីកបានឬ?"
+    },
+    {
+      "segment_order": 2,
+      "raw_duration": 5.47,
+      "effective_window": 3.11,
+      "tempo_factor": 1.25,
+      "status": "needs_optimization",
+      "overflow_seconds": 0.74,
+      "khmer_text": "បីសប្តាហ៍មុនលោកស្រីចាដស្មីតបានចូលនិវត្តន៍ទៅបន្ទប់របស់លោកស្រីជាមួយនឹងវត្ថុតាង"
+    },
+    {
+      "segment_order": 3,
+      "raw_duration": 6.12,
+      "effective_window": 3.96,
+      "tempo_factor": 1.25,
+      "status": "needs_optimization",
+      "overflow_seconds": 1.6,
+      "khmer_text": "ក. គូបរូប៊ីក។ នាងមិនត្រូវបានគេឃើញតាំងពីពេលនោះមកទេ។"
+    }
+  ],
+  "after": [
+    {
+      "segment_order": 1,
+      "raw_duration": 3.24,
+      "effective_window": 3.71,
+      "tempo_factor": 1.0,
+      "status": "natural",
+      "overflow_seconds": 0.0,
+      "khmer_text": "ប៉ុន្តែតើគាត់អាចដោះស្រាយអាថ៌កំបាំងនៃគូបរូប៊ីកបានឬ?"
+    },
+    {
+      "segment_order": 2,
+      "raw_duration": 3.38,
+      "effective_window": 3.11,
+      "tempo_factor": 1.0,
+      "status": "natural",
+      "overflow_seconds": 0.0,
+      "khmer_text": "បីសប្តាហ៍មុនចាដស្មីតចូលបន្ទប់ជាមួយវត្ថុតាង"
+    },
+    {
+      "segment_order": 3,
+      "raw_duration": 3.72,
+      "effective_window": 3.96,
+      "tempo_factor": 1.0,
+      "status": "natural",
+      "overflow_seconds": 0.0,
+      "khmer_text": "ក. គូបរូប៊ីក។ គេមិនឃើញនាងទៀតទេ។"
+    }
+  ],
+  "scope": "Three isolated timing units; not a complete-video export or human semantic assessment."
+}

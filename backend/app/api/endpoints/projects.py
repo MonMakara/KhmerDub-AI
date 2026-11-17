@@ -1,12 +1,9 @@
-import os
 import re
 import json
 import math
-import shutil
 import logging
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime
 from app.core.timezone import get_cambodia_now_naive
 
 from fastapi import (
@@ -15,22 +12,30 @@ from fastapi import (
     HTTPException,
     UploadFile,
     File,
+    Form,
     BackgroundTasks,
     Query,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.storage import (
     resolve_audio_file,
-    get_timeline_audio_path,
-    get_exported_video_path,
-    get_project_output_dir,
     delete_project_storage,
 )
 from app.database.session import get_db
+from app.services.subtitles.generator import (
+    SubtitleCue,
+    generate_srt,
+    generate_vtt,
+    generate_txt,
+)
+from app.services.subtitles.parser import (
+    parse_transcript_content,
+    TranscriptParseError,
+)
 from app.models.project import (
     Project,
     Video,
@@ -38,6 +43,7 @@ from app.models.project import (
     TranslationSegment,
     GeneratedAudio,
     SubtitleSegment,
+    ProjectSpeaker,
     ProcessingJob,
     ProjectStatus,
     JobStatus,
@@ -65,6 +71,9 @@ from app.schemas.project import (
     GeneratedAudioListResponse,
     TimingConflictResponse,
     ExportStatusResponse,
+    AudioStatusSummary,
+    SegmentVoiceUpdate,
+    BulkSegmentVoiceUpdate,
     ProjectVoiceUpdate,
     ProjectTranslationSettingsUpdate,
     AIImproveRequest,
@@ -72,7 +81,26 @@ from app.schemas.project import (
     AlternativeOption,
     AlternativesResponse,
     ApplyTranslationRequest,
+    ProjectSpeakerResponse,
+    ProjectSpeakerUpdate,
+    SegmentSpeakerUpdate,
+    BulkSegmentSpeakerUpdate,
+    DiarizationRunRequest,
+    DiarizationRunResponse,
 )
+from app.schemas.voice import (
+    VoiceProfileResponse,
+    CloneCandidateResponse,
+    CloneCandidatesListResponse,
+    CloneFromVideoRequest,
+    CloneSpeakerVoiceRequest,
+    CloneSpeakerVoiceResponse,
+    ClonedSpeakerItem,
+    AutoDiarizeAndCloneRequest,
+    AutoDiarizeAndCloneResponse,
+)
+from app.services.voice.extractor import VideoVoiceExtractor
+from app.services.voice.diarizer import AudioDiarizer
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
     CorruptedVideoError,
@@ -85,14 +113,11 @@ from app.services.translation.registry import (
     validate_translation_provider,
     get_active_ai_provider_name,
 )
+from app.services.translation.formatter import KhmerTextFormatter
 from app.services.translation.exceptions import (
-    TranslationError,
     ProviderAuthenticationError,
     RateLimitError,
-    ProviderTimeoutError,
-    ProviderUnavailableError,
 )
-from app.services.tts.google import GoogleTTSProvider
 from app.services.tts.registry import (
     get_tts_provider,
     is_valid_voice_combination,
@@ -101,7 +126,9 @@ from app.services.tts.registry import (
 )
 from app.workers.audio_extraction import process_audio_extraction
 from app.workers.transcription import process_transcription
-from app.services.transcription.base import TranscriptionSegment, WordTiming
+from app.services.transcription.base import (
+    TranscriptionSegment, WordTiming, project_segment_id,
+)
 from app.services.transcription.segmentation import (
     segment_transcript,
     split_segment_at_word,
@@ -111,6 +138,13 @@ from app.workers.translation import process_translation
 from app.workers.tts import process_tts, synthesize_segment_audio
 from app.workers.dubbing import process_dubbing
 from app.services.dubbing import AutoFitService
+
+from app.services.tts.exceptions import TTSError
+from app.services.tts.selection import (
+    effective_voice, voice_catalog, validate_voice, set_unit_voice,
+    preserve_partition, audio_matches_selection, partition_voice, assignment_map, source_keys,
+    voice_aware_groups,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +207,301 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     return project
 
 
+def _voice_mutation_allowed(db: Session, project_id: str) -> None:
+    active = db.query(ProcessingJob).filter(
+        ProcessingJob.project_id == project_id,
+        ProcessingJob.job_type.in_(["dub", "translate", "transcribe"]),
+        ProcessingJob.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+    ).first()
+    if active:
+        raise HTTPException(status_code=409, detail="Wait for export or source processing to finish before changing voices.")
+
+
+@router.get("/{project_id}/segment-voices")
+def get_segment_voices(project_id: str, db: Session = Depends(get_db)):
+    if not db.query(Project).filter_by(id=project_id).first():
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"voices": voice_catalog(db)}
+
+
+def _save_segment_voices(project_id: str, ids: List[str], payload: SegmentVoiceUpdate, db: Session):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Project is deleting")
+    _voice_mutation_allowed(db, project_id)
+    provider = payload.provider.strip().lower() if payload.provider else None
+    voice = payload.voice.strip() if payload.voice else None
+    target_style = (payload.emotion_style or payload.style or "").strip() or None
+
+    if bool(provider) != bool(voice):
+        raise HTTPException(status_code=400, detail="Provide both provider and voice, or reset both to null.")
+    if provider:
+        try:
+            validate_voice(db, provider, voice)
+        except TTSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    segments = db.query(TranslationSegment).filter(
+        TranslationSegment.project_id == project_id, TranslationSegment.id.in_(set(ids)),
+    ).all()
+    if len(segments) != len(set(ids)):
+        raise HTTPException(status_code=404, detail="One or more dubbing units were not found in this project.")
+    for segment in segments:
+        if provider is not None and voice is not None:
+            set_unit_voice(db, project, segment, provider, voice)
+        elif payload.provider is None and payload.voice is None and not target_style:
+            set_unit_voice(db, project, segment, None, None)
+        if target_style:
+            segment.style = target_style
+            segment.updated_at = get_cambodia_now_naive()
+    db.commit()
+    return [_enrich_translation_segment(s) for s in segments]
+
+
+@router.patch("/{project_id}/translations/voices")
+def update_segment_voices(project_id: str, payload: BulkSegmentVoiceUpdate, db: Session = Depends(get_db)):
+    return {"segments": _save_segment_voices(project_id, payload.segment_ids, payload, db)}
+
+
+@router.patch("/{project_id}/translations/{segment_id}/voice", response_model=TranslationSegmentResponse)
+def update_segment_voice(project_id: str, segment_id: str, payload: SegmentVoiceUpdate,
+                         db: Session = Depends(get_db)):
+    return _save_segment_voices(project_id, [segment_id], payload, db)[0]
+
+
+def _recalculate_speaker_stats(db: Session, project_id: str) -> None:
+    """Recalculate segment counts and durations for all speakers in a project."""
+    speakers = db.query(ProjectSpeaker).filter(ProjectSpeaker.project_id == project_id).all()
+    transcript_segs = db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).all()
+    grouped: Dict[str, List[TranscriptSegment]] = {}
+    for s in transcript_segs:
+        if s.speaker_label:
+            grouped.setdefault(s.speaker_label, []).append(s)
+
+    for spk in speakers:
+        assigned = grouped.get(spk.speaker_label, [])
+        spk.segment_count = len(assigned)
+        spk.total_duration = round(sum(max(0.0, s.end_time - s.start_time) for s in assigned), 2)
+        spk.updated_at = get_cambodia_now_naive()
+    db.commit()
+
+
+@router.post("/{project_id}/diarization/run", response_model=DiarizationRunResponse)
+def run_project_diarization(
+    project_id: str,
+    payload: Optional[DiarizationRunRequest] = None,
+    db: Session = Depends(get_db),
+) -> DiarizationRunResponse:
+    """Run acoustic multi-speaker diarization and character profiling on project segments."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Project is deleting")
+
+    min_speakers = payload.min_speakers if payload and payload.min_speakers else 1
+    max_speakers = payload.max_speakers if payload and payload.max_speakers else 6
+    if min_speakers > max_speakers:
+        raise HTTPException(status_code=400, detail="min_speakers cannot be greater than max_speakers")
+
+    diarizer = AudioDiarizer()
+    try:
+        result = diarizer.diarize_project(
+            db=db,
+            project_id=project_id,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Diarization failed for project %s", project_id)
+        raise HTTPException(status_code=500, detail=f"Diarization failed: {e}")
+
+    speakers = (
+        db.query(ProjectSpeaker)
+        .filter(ProjectSpeaker.project_id == project_id)
+        .order_by(ProjectSpeaker.speaker_label.asc())
+        .all()
+    )
+
+    return DiarizationRunResponse(
+        project_id=project_id,
+        speakers_detected=len(speakers),
+        speakers=[ProjectSpeakerResponse.model_validate(s) for s in speakers],
+        assigned_segments_count=len(result.segment_assignments),
+        message=f"Successfully detected {len(speakers)} speaker(s) across {len(result.segment_assignments)} segments.",
+    )
+
+
+@router.get("/{project_id}/speakers", response_model=List[ProjectSpeakerResponse])
+def get_project_speakers(
+    project_id: str,
+    db: Session = Depends(get_db),
+) -> List[ProjectSpeakerResponse]:
+    """Retrieve all detected character/speaker profiles for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    speakers = (
+        db.query(ProjectSpeaker)
+        .filter(ProjectSpeaker.project_id == project_id)
+        .order_by(ProjectSpeaker.speaker_label.asc())
+        .all()
+    )
+    return [ProjectSpeakerResponse.model_validate(s) for s in speakers]
+
+
+@router.put("/{project_id}/speakers/{speaker_label}", response_model=ProjectSpeakerResponse)
+def update_project_speaker(
+    project_id: str,
+    speaker_label: str,
+    payload: ProjectSpeakerUpdate,
+    db: Session = Depends(get_db),
+) -> ProjectSpeakerResponse:
+    """Update speaker display name, color, or cast a bulk voice for this character."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Project is deleting")
+
+    speaker = (
+        db.query(ProjectSpeaker)
+        .filter(ProjectSpeaker.project_id == project_id, ProjectSpeaker.speaker_label == speaker_label)
+        .first()
+    )
+    if not speaker:
+        raise HTTPException(status_code=404, detail=f"Speaker '{speaker_label}' not found")
+
+    _voice_mutation_allowed(db, project_id)
+
+    if payload.display_name is not None and payload.display_name.strip():
+        speaker.display_name = payload.display_name.strip()
+    if payload.color is not None and payload.color.strip():
+        speaker.color = payload.color.strip()
+
+    # If voice assignment is specified, validate and cascade
+    provider = payload.assigned_voice_provider.strip().lower() if payload.assigned_voice_provider else None
+    voice = payload.assigned_voice_id.strip() if payload.assigned_voice_id else None
+
+    if bool(provider) != bool(voice):
+        raise HTTPException(status_code=400, detail="Provide both assigned_voice_provider and assigned_voice_id, or neither.")
+
+    if provider and voice:
+        try:
+            validate_voice(db, provider, voice)
+        except TTSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        speaker.assigned_voice_provider = provider
+        speaker.assigned_voice_id = voice
+        db.commit()
+
+        # Cascade to all translation segments belonging to this speaker
+        diarizer = AudioDiarizer()
+        diarizer.apply_speaker_voice(
+            db=db,
+            project_id=project_id,
+            speaker_label=speaker_label,
+            provider=provider,
+            voice_id=voice,
+        )
+
+    speaker.updated_at = get_cambodia_now_naive()
+    db.commit()
+    db.refresh(speaker)
+    return ProjectSpeakerResponse.model_validate(speaker)
+
+
+@router.put("/{project_id}/transcript/{segment_id}/speaker", response_model=TranscriptSegmentResponse)
+def update_transcript_segment_speaker(
+    project_id: str,
+    segment_id: str,
+    payload: SegmentSpeakerUpdate,
+    db: Session = Depends(get_db),
+) -> TranscriptSegmentResponse:
+    """Manually assign or reassign a speaker to a transcript segment and its translation unit."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Project is deleting")
+
+    segment = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id, TranscriptSegment.id == segment_id)
+        .first()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Transcript segment not found")
+
+    new_label = payload.speaker_label.strip() if payload.speaker_label else None
+
+    # Validate speaker exists if non-null
+    if new_label:
+        spk = db.query(ProjectSpeaker).filter(
+            ProjectSpeaker.project_id == project_id, ProjectSpeaker.speaker_label == new_label
+        ).first()
+        if not spk:
+            # Auto-create speaker if not found
+            color_idx = db.query(ProjectSpeaker).filter(ProjectSpeaker.project_id == project_id).count()
+            palette = ["indigo", "emerald", "amber", "rose", "cyan", "purple", "teal", "orange"]
+            spk = ProjectSpeaker(
+                project_id=project_id,
+                speaker_label=new_label,
+                display_name=new_label.replace("_", " ").title(),
+                detected_gender="unknown",
+                color=palette[color_idx % len(palette)],
+                assigned_voice_provider="edge",
+                assigned_voice_id="km-KH-PisethNeural",
+                segment_count=0,
+                total_duration=0.0,
+                created_at=get_cambodia_now_naive(),
+                updated_at=get_cambodia_now_naive(),
+            )
+            db.add(spk)
+            db.commit()
+
+    segment.speaker_label = new_label
+
+    # Propagate to corresponding translation segments
+    trans_segs = db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).all()
+    for trans in trans_segs:
+        is_match = False
+        if trans.transcript_segment_id == segment_id:
+            is_match = True
+        elif trans.source_segment_ids:
+            try:
+                src_ids = json.loads(trans.source_segment_ids)
+                if isinstance(src_ids, list) and segment_id in src_ids:
+                    is_match = True
+            except Exception:
+                pass
+
+        if is_match:
+            trans.speaker_label = new_label
+            # If the assigned speaker has a voice, cascade to translation segment
+            if new_label:
+                speaker_model = db.query(ProjectSpeaker).filter(
+                    ProjectSpeaker.project_id == project_id, ProjectSpeaker.speaker_label == new_label
+                ).first()
+                if speaker_model and speaker_model.assigned_voice_provider and speaker_model.assigned_voice_id:
+                    set_unit_voice(
+                        db, project, trans,
+                        speaker_model.assigned_voice_provider,
+                        speaker_model.assigned_voice_id,
+                    )
+
+    db.commit()
+    _recalculate_speaker_stats(db, project_id)
+    db.refresh(segment)
+    return TranscriptSegmentResponse.model_validate(segment)
+
+
+
 @router.patch("/{project_id}/voice", response_model=ProjectResponse)
 def update_project_voice(
     project_id: str,
@@ -199,12 +528,26 @@ def update_project_voice(
             detail=f"Invalid voice combination: provider='{provider}', voice='{voice}'",
         )
 
+    _voice_mutation_allowed(db, project_id)
+    try:
+        validate_voice(db, provider, voice)
+    except TTSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if project.tts_provider != provider or project.tts_voice != voice:
         project.tts_provider = provider
         project.tts_voice = voice
-        # Mark all existing generated audios as outdated
-        db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id).update(
-            {GeneratedAudio.is_outdated: True}
+        # Explicit overrides are independent of a new project default.
+        inherited = db.query(TranslationSegment).filter(
+            TranslationSegment.project_id == project_id,
+            TranslationSegment.voice_override_id.is_(None),
+        )
+        inherited_ids = [s.id for s in inherited.all()]
+        inherited.update({TranslationSegment.voice_revision: TranslationSegment.voice_revision + 1,
+                          TranslationSegment.tts_error: None}, synchronize_session="fetch")
+        db.query(GeneratedAudio).filter(GeneratedAudio.project_id == project_id,
+            (GeneratedAudio.translation_segment_id.in_(inherited_ids)) | (GeneratedAudio.translation_segment_id.is_(None))).update(
+            {GeneratedAudio.is_outdated: True}, synchronize_session="fetch"
         )
         if project.video and project.video.exported_video_path:
             project.video.is_export_outdated = True
@@ -267,6 +610,245 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> ProjectRespon
             detail="Project is already in the process of being deleted",
         )
     return project
+
+
+@router.get("/{project_id}/voice/clone-candidates", response_model=CloneCandidatesListResponse)
+def get_clone_candidates(
+    project_id: str,
+    max_candidates: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+) -> CloneCandidatesListResponse:
+    """Analyze video transcript and return optimal speech candidate clips for voice cloning."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    extractor = VideoVoiceExtractor()
+    candidates = extractor.find_candidates(project, max_candidates=max_candidates)
+
+    cand_responses = [
+        CloneCandidateResponse(
+            candidate_id=c.candidate_id,
+            segment_order=c.segment_order,
+            segment_ids=c.segment_ids,
+            start_time=c.start_time,
+            end_time=c.end_time,
+            duration=c.duration,
+            text=c.text,
+            score=c.score,
+            preview_url=c.preview_url,
+        )
+        for c in candidates
+    ]
+    recommended_id = cand_responses[0].candidate_id if cand_responses else None
+
+    return CloneCandidatesListResponse(
+        project_id=project_id,
+        candidates=cand_responses,
+        recommended_candidate_id=recommended_id,
+    )
+
+
+@router.get("/{project_id}/voice/preview-candidate")
+def preview_clone_candidate(
+    project_id: str,
+    start_time: float = Query(..., ge=0.0),
+    end_time: float = Query(..., ge=0.0),
+    db: Session = Depends(get_db),
+):
+    """Stream a short audio preview slice directly from the project video."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if end_time <= start_time:
+        raise HTTPException(status_code=400, detail="end_time must be greater than start_time.")
+
+    extractor = VideoVoiceExtractor()
+    try:
+        source_media = extractor.resolve_source_audio_path(project)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    temp_preview = settings.TEMP_DIR / f"candidate_{project_id}_{int(start_time*100)}_{int(end_time*100)}.wav"
+    try:
+        extractor.extract_speech_slice(
+            source_media_path=source_media,
+            start_time=start_time,
+            end_time=end_time,
+            output_path=temp_preview,
+            min_duration=0.5,
+            target_sample_rate=24000,
+        )
+    except Exception as e:
+        logger.warning("Preview extraction failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to extract candidate preview: {e}")
+
+    return FileResponse(temp_preview, media_type="audio/wav")
+
+
+@router.post("/{project_id}/voice/clone-from-video", response_model=VoiceProfileResponse, status_code=status.HTTP_201_CREATED)
+def clone_voice_from_video(
+    project_id: str,
+    payload: CloneFromVideoRequest,
+    db: Session = Depends(get_db),
+) -> VoiceProfileResponse:
+    """Extract speech reference audio from the video, create an authorized cloned VoiceProfile,
+    and optionally set it as the active project voice.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    _voice_mutation_allowed(db, project_id)
+
+    extractor = VideoVoiceExtractor()
+    try:
+        profile = extractor.clone_voice_from_video(
+            project_id=project_id,
+            db=db,
+            segment_id=payload.segment_id,
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+            voice_name=payload.voice_name,
+            set_as_project_voice=payload.set_as_project_voice,
+            store_in_voice_studio=payload.store_in_voice_studio,
+        )
+    except Exception as e:
+        logger.exception("Failed to clone voice from video for project %s: %s", project_id, e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return VoiceProfileResponse.model_validate(profile)
+
+
+@router.post("/{project_id}/speakers/clone-voices", response_model=CloneSpeakerVoiceResponse, status_code=status.HTTP_201_CREATED)
+def clone_speakers_from_video(
+    project_id: str,
+    payload: Optional[CloneSpeakerVoiceRequest] = None,
+    db: Session = Depends(get_db),
+) -> CloneSpeakerVoiceResponse:
+    """Extract reference audio from project video for detected speakers, clone character voices,
+    and cast them automatically with the choice to keep them project-only (no need to store in Voice Studio).
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    _voice_mutation_allowed(db, project_id)
+
+    speaker_label = payload.speaker_label if payload else None
+    store_in_studio = payload.store_in_voice_studio if payload else False
+
+    extractor = VideoVoiceExtractor()
+    try:
+        results = extractor.clone_speaker_voices(
+            project_id=project_id,
+            db=db,
+            speaker_label=speaker_label,
+            store_in_voice_studio=store_in_studio,
+        )
+    except Exception as e:
+        logger.exception("Failed to clone speaker voices for project %s: %s", project_id, e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    items = [ClonedSpeakerItem(**r) for r in results]
+    dest_str = "and stored in Voice Studio" if store_in_studio else "(project-only; not stored in Voice Studio)"
+    return CloneSpeakerVoiceResponse(
+        project_id=project_id,
+        cloned_speakers=items,
+        created_profiles_count=len(items),
+        message=f"Successfully cloned {len(items)} character voice(s) {dest_str}.",
+    )
+
+
+@router.post("/{project_id}/speakers/auto-detect-and-clone", response_model=AutoDiarizeAndCloneResponse)
+def auto_detect_and_clone_speakers(
+    project_id: str,
+    payload: Optional[AutoDiarizeAndCloneRequest] = None,
+    db: Session = Depends(get_db),
+) -> AutoDiarizeAndCloneResponse:
+    """Automatically detect all speaking characters in the video via speaker diarization,
+    extract high-fidelity reference audio for each speaker, and clone their voices
+    using VoxCPM to speak in Khmer with their original vocal timbre.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.status == ProjectStatus.DELETING:
+        raise HTTPException(status_code=409, detail="Project is deleting")
+
+    _voice_mutation_allowed(db, project_id)
+
+    # Verify transcript exists
+    transcript_count = db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).count()
+    if transcript_count == 0:
+        raise HTTPException(status_code=400, detail="No transcript segments found. Transcribe video first.")
+
+    min_speakers = payload.min_speakers if payload and payload.min_speakers else 1
+    max_speakers = payload.max_speakers if payload and payload.max_speakers else 6
+    store_in_studio = payload.store_in_voice_studio if payload else False
+
+    if min_speakers > max_speakers:
+        raise HTTPException(status_code=400, detail="min_speakers cannot be greater than max_speakers")
+
+    # Step 1: Run Speaker Diarization
+    diarizer = AudioDiarizer()
+    try:
+        diarizer.diarize_project(
+            db=db,
+            project_id=project_id,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+    except Exception as e:
+        logger.exception("Diarization failed in auto_detect_and_clone for project %s: %s", project_id, e)
+        raise HTTPException(status_code=500, detail=f"Speaker detection failed: {e}")
+
+    # Step 2: Clone Voices for All Detected Speakers
+    extractor = VideoVoiceExtractor()
+    try:
+        clone_results = extractor.clone_speaker_voices(
+            project_id=project_id,
+            db=db,
+            store_in_voice_studio=store_in_studio,
+        )
+    except Exception as e:
+        logger.exception("Voice extraction/cloning failed in auto_detect_and_clone for project %s: %s", project_id, e)
+        raise HTTPException(status_code=500, detail=f"Voice cloning from video failed: {e}")
+
+    # If only 1 speaker was detected and cloned, set as project default voice
+    if len(clone_results) == 1:
+        first_cloned = clone_results[0]
+        project.tts_provider = "voxcpm"
+        project.tts_voice = first_cloned["voice_profile_id"]
+        db.commit()
+
+    # Step 3: Refresh and collect speakers
+    speakers = (
+        db.query(ProjectSpeaker)
+        .filter(ProjectSpeaker.project_id == project_id)
+        .order_by(ProjectSpeaker.speaker_label.asc())
+        .all()
+    )
+
+    cloned_items = [ClonedSpeakerItem(**r) for r in clone_results]
+    spk_items = [ProjectSpeakerResponse.model_validate(s) for s in speakers]
+
+    dest_str = "and saved in Voice Studio" if store_in_studio else "(project-only)"
+    msg = (
+        f"Successfully detected {len(speakers)} character(s) and cloned {len(cloned_items)} voice(s) {dest_str}. "
+        "Each character is now configured to speak their translated Khmer lines using their cloned voice."
+    )
+
+    return AutoDiarizeAndCloneResponse(
+        project_id=project_id,
+        speakers_detected=len(speakers),
+        cloned_voices_count=len(cloned_items),
+        speakers=spk_items,
+        cloned_speakers=cloned_items,
+        message=msg,
+    )
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
@@ -699,6 +1281,267 @@ def get_transcript(
     )
 
 
+@router.get("/{project_id}/transcript/export")
+def export_project_transcript(
+    project_id: str,
+    format: str = Query("srt", description="Export format: 'srt', 'vtt', 'txt', 'json'"),
+    mode: str = Query("cues", description="Export mode: 'cues' (raw subtitle cues) or 'dubbing_units' (grouped speech units for AI translation)"),
+    db: Session = Depends(get_db),
+):
+    """Export project transcript as SRT, WebVTT, plain text, or structured JSON."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    segments = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+    if not segments:
+        raise HTTPException(status_code=400, detail="No transcript segments found to export.")
+
+    pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+    is_grouped_dubbing = (pipeline_ver in ("v2.3", "v3", "v3.0"))
+
+    export_units = None
+    if mode == "dubbing_units" and is_grouped_dubbing:
+        saved_voice_units = db.query(TranslationSegment).filter_by(project_id=project_id).all()
+        export_units = voice_aware_groups(segments, saved_voice_units)
+
+    base_title = sanitize_filename(project.title or "project").replace(".mp4", "")
+    fmt = (format or "srt").strip().lower()
+
+    if export_units is not None:
+        if fmt == "json":
+            items = [
+                {
+                    "segment_order": u.unit_order,
+                    "start_time": u.start_time,
+                    "end_time": u.end_time,
+                    "duration_seconds": round(u.duration, 2),
+                    "text": u.combined_english_text,
+                    "source_segment_ids": u.source_segment_ids,
+                    "source_segment_orders": u.source_segment_orders,
+                }
+                for u in export_units
+            ]
+            content = json.dumps(items, ensure_ascii=False, indent=2)
+            filename = f"{base_title}_dubbing_units.json"
+            mime_type = "application/json; charset=utf-8"
+        else:
+            cues = [
+                SubtitleCue(
+                    sequence=u.unit_order,
+                    start_time=u.start_time,
+                    end_time=u.end_time,
+                    text=u.combined_english_text,
+                )
+                for u in export_units
+            ]
+            if fmt == "srt":
+                content = generate_srt(cues, prevent_overlaps=True, filter_empty=True)
+                filename = f"{base_title}_dubbing_units.srt"
+                mime_type = "text/plain; charset=utf-8"
+            elif fmt == "vtt":
+                content = generate_vtt(cues, prevent_overlaps=True, filter_empty=True)
+                filename = f"{base_title}_dubbing_units.vtt"
+                mime_type = "text/vtt; charset=utf-8"
+            elif fmt == "txt":
+                content = generate_txt(cues, filter_empty=True)
+                filename = f"{base_title}_dubbing_units.txt"
+                mime_type = "text/plain; charset=utf-8"
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported format '{fmt}'. Choose 'srt', 'vtt', 'txt', or 'json'.",
+                )
+    else:
+        if fmt == "json":
+            items = [
+                {
+                    "segment_order": s.segment_order,
+                    "start_time": s.start_time,
+                    "end_time": s.end_time,
+                    "text": s.text,
+                    "speaker_label": s.speaker_label,
+                }
+                for s in segments
+            ]
+            content = json.dumps(items, ensure_ascii=False, indent=2)
+            filename = f"{base_title}_transcript.json"
+            mime_type = "application/json; charset=utf-8"
+        else:
+            cues = [
+                SubtitleCue(
+                    sequence=s.segment_order,
+                    start_time=s.start_time,
+                    end_time=s.end_time,
+                    text=s.text,
+                )
+                for s in segments
+            ]
+            if fmt == "srt":
+                content = generate_srt(cues, prevent_overlaps=True, filter_empty=True)
+                filename = f"{base_title}_transcript.srt"
+                mime_type = "text/plain; charset=utf-8"
+            elif fmt == "vtt":
+                content = generate_vtt(cues, prevent_overlaps=True, filter_empty=True)
+                filename = f"{base_title}_transcript.vtt"
+                mime_type = "text/vtt; charset=utf-8"
+            elif fmt == "txt":
+                content = generate_txt(cues, filter_empty=True)
+                filename = f"{base_title}_transcript.txt"
+                mime_type = "text/plain; charset=utf-8"
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported format '{fmt}'. Choose 'srt', 'vtt', 'txt', or 'json'.",
+                )
+
+    return Response(
+        content=content.encode("utf-8"),
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": mime_type,
+        },
+    )
+
+
+@router.post("/{project_id}/transcript/import")
+async def import_project_transcript(
+    project_id: str,
+    file: Optional[UploadFile] = File(None),
+    raw_content: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Import transcript cues from SRT, WebVTT, plain text, or JSON file."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    content = ""
+    filename = ""
+    if file is not None and getattr(file, "filename", None) and hasattr(file, "read"):
+        filename = file.filename or ""
+        raw_bytes = await file.read()
+        content = raw_bytes.decode("utf-8", errors="replace")
+    elif isinstance(raw_content, str) and raw_content.strip():
+        content = raw_content
+        filename = "pasted_transcript.txt"
+    else:
+        raise HTTPException(status_code=400, detail="Please upload a file or provide raw_content.")
+
+    content = content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Transcript content is empty.")
+
+    parsed_cues = []
+    warnings = []
+    is_json = content.startswith(("[", "{")) or filename.lower().endswith(".json")
+
+    if is_json:
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and "segments" in data:
+                data = data["segments"]
+            if isinstance(data, list):
+                for idx, item in enumerate(data, start=1):
+                    if isinstance(item, dict):
+                        txt = (item.get("text") or item.get("transcript") or item.get("sentence") or item.get("english") or "").strip()
+                        if txt:
+                            st = float(item.get("start_time") or item.get("start") or (idx - 1) * 3.0)
+                            et = float(item.get("end_time") or item.get("end") or (st + 2.5))
+                            spk = item.get("speaker_label") or item.get("speaker")
+                            parsed_cues.append({
+                                "order": idx,
+                                "text": txt,
+                                "start": max(0.0, st),
+                                "end": max(st + 0.1, et),
+                                "speaker": spk,
+                            })
+        except Exception as e:
+            logger.warning("JSON transcript parse failed: %s. Attempting subtitle parser.", e)
+
+    if not parsed_cues:
+        try:
+            res = parse_transcript_content(content, filename=filename)
+            warnings = res.warnings
+            total_segs = len(res.segments)
+            video_dur = project.video.duration_seconds if (project.video and project.video.duration_seconds) else None
+
+            for idx, seg in enumerate(res.segments, start=1):
+                if not res.has_timestamps or seg.start_time is None:
+                    if video_dur and video_dur > 0 and total_segs > 0:
+                        slot = video_dur / total_segs
+                        st = round((idx - 1) * slot, 3)
+                        et = round(min(video_dur, idx * slot), 3)
+                    else:
+                        st = round((idx - 1) * 3.0, 3)
+                        et = round(idx * 3.0, 3)
+                else:
+                    st = max(0.0, float(seg.start_time))
+                    et = max(st + 0.1, float(seg.end_time))
+                parsed_cues.append({
+                    "order": idx,
+                    "text": seg.text,
+                    "start": st,
+                    "end": et,
+                    "speaker": None,
+                })
+        except TranscriptParseError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse transcript: {e}")
+
+    if not parsed_cues:
+        raise HTTPException(status_code=400, detail="No readable speech cues found in uploaded transcript.")
+
+    # Remove existing transcript segments
+    db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete(synchronize_session=False)
+
+    new_segments = []
+    for cue in parsed_cues:
+        t_seg = TranscriptSegment(
+            project_id=project_id,
+            segment_order=cue["order"],
+            start_time=cue["start"],
+            end_time=cue["end"],
+            text=cue["text"],
+            speaker_label=cue["speaker"],
+            is_manually_edited=True,
+        )
+        new_segments.append(t_seg)
+        db.add(t_seg)
+
+    # Invalidate translations & exports
+    for tr in db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).all():
+        tr.is_outdated = True
+
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
+
+    project.segmentation_mode = "custom"
+    if project.status in (
+        ProjectStatus.CREATED,
+        ProjectStatus.UPLOADED,
+        ProjectStatus.AUDIO_EXTRACTED,
+        ProjectStatus.FAILED,
+    ):
+        project.status = ProjectStatus.TRANSCRIBED
+
+    db.commit()
+
+    return {
+        "message": f"Successfully imported {len(new_segments)} transcript segments.",
+        "segment_count": len(new_segments),
+        "status": project.status,
+        "warnings": warnings,
+    }
+
+
 @router.patch(
     "/{project_id}/transcript/{segment_id}",
     response_model=TranscriptSegmentResponse,
@@ -741,6 +1584,7 @@ def update_transcript_segment(
     # If transcript text changed, mark corresponding translation as outdated
     if old_text != clean_text:
         segment.is_manually_edited = True
+        segment.is_approximate = True
         linked_trans = None
         if segment.dubbing_unit_id:
             linked_trans = db.query(TranslationSegment).filter(TranslationSegment.id == segment.dubbing_unit_id).first()
@@ -749,7 +1593,8 @@ def update_transcript_segment(
                 db.query(TranslationSegment)
                 .filter(
                     TranslationSegment.project_id == project_id,
-                    TranslationSegment.transcript_segment_id == segment_id,
+                    (TranslationSegment.transcript_segment_id == segment_id)
+                    | (TranslationSegment.source_segment_ids.like(f"%{segment_id}%")),
                 )
                 .first()
             )
@@ -940,6 +1785,10 @@ def apply_transcript_segmentation(
         )
 
     new_segs = segment_transcript(raw_segs, mode=mode)
+    try:
+        preserve_partition(new_segs, project.translation_segments)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Invalidate downstream outputs
     inv_trans = 0
@@ -957,12 +1806,33 @@ def apply_transcript_segmentation(
     if project.video and project.video.exported_video_path:
         project.video.is_export_outdated = True
 
+    # Preserve approved English/Khmer provenance before changing transcript rows.
+    old_segments = {segment.id: segment for segment in curr_segs}
+    existing_trans = db.query(TranslationSegment).filter(
+        TranslationSegment.project_id == project_id
+    ).order_by(TranslationSegment.segment_order.asc()).all()
+    previous_source = {}
+    for translation in existing_trans:
+        previous = old_segments.get(translation.transcript_segment_id)
+        previous_source[translation.id] = (
+            translation.source_text or (previous.text if previous else ""),
+            translation.start_time if translation.start_time is not None else (previous.start_time if previous else None),
+            translation.end_time if translation.end_time is not None else (previous.end_time if previous else None),
+        )
+        translation.transcript_segment_id = None
+    db.flush()
+
+    db.query(SubtitleSegment).filter(SubtitleSegment.project_id == project_id).update(
+        {SubtitleSegment.is_source_outdated: True}
+    )
+
     # Replace TranscriptSegment rows
     db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).delete()
     saved_segs: List[TranscriptSegment] = []
     for s in new_segs:
         words_data = json.dumps([w.to_dict() for w in s.words], ensure_ascii=False) if s.words else None
         db_seg = TranscriptSegment(
+            id=project_segment_id(project_id, s.id),
             project_id=project_id,
             segment_order=s.segment_order,
             start_time=s.start_time,
@@ -974,6 +1844,32 @@ def apply_transcript_segmentation(
         )
         db.add(db_seg)
         saved_segs.append(db_seg)
+
+    db.flush()
+
+    # Re-group the newly segmented transcript into canonical dubbing units
+    from app.services.dubbing.grouper import DubbingGrouper
+    grouper = DubbingGrouper()
+    new_dubbing_units = voice_aware_groups(saved_segs, existing_trans)
+
+    # Match retained translations by unchanged source content AND interval.
+    # Segment order alone can assign approved Khmer to a different English phrase.
+    t_seg_map = {segment.id: segment for segment in saved_segs}
+    for existing in existing_trans:
+        english, start, end = previous_source[existing.id]
+        existing.source_text = english
+        matching = next((unit for unit in new_dubbing_units
+                         if unit.combined_english_text == english
+                         and start is not None and end is not None
+                         and abs(unit.start_time - start) < 0.001
+                         and abs(unit.end_time - end) < 0.001), None)
+        if matching:
+            existing.source_segment_ids = json.dumps(matching.source_segment_ids)
+            existing.transcript_segment_id = matching.source_segment_ids[0]
+            for identifier in matching.source_segment_ids:
+                t_seg_map[identifier].dubbing_unit_id = existing.id
+        # Unmatched records retain their historical source IDs and Khmer text.
+        # Their explicit outdated state blocks TTS/export reuse until reviewed.
 
     project.segmentation_mode = mode
     db.commit()
@@ -1068,6 +1964,24 @@ def split_transcript_segment(
         is_manually_edited=True,
     )
     db.add(new_db_seg)
+    db.flush()
+    for unit in project.translation_segments:
+        ids = json.loads(unit.source_segment_ids or "[]")
+        if unit.transcript_segment_id != segment_id and segment_id not in ids:
+            continue
+        keys = json.loads(unit.voice_source_keys or "[]")
+        if f"segment:{segment_id}" in keys:
+            keys.append(f"segment:{new_db_seg.id}")
+            unit.voice_source_keys = json.dumps(keys)
+        if ids:
+            position = ids.index(segment_id) if segment_id in ids else -1
+            if position >= 0:
+                ids.insert(position + 1, new_db_seg.id)
+                unit.source_segment_ids = json.dumps(ids)
+        unit.is_outdated = True
+        unit.voice_revision = (unit.voice_revision or 0) + 1
+        if unit.generated_audio:
+            unit.generated_audio.is_outdated = True
 
     # Invalidate linked translation
     linked_trans = (
@@ -1138,6 +2052,12 @@ def merge_transcript_segment_next(
     t1 = TranscriptionSegment(target_seg.segment_order, target_seg.start_time, target_seg.end_time, target_seg.text, words=words1)
     t2 = TranscriptionSegment(next_seg.segment_order, next_seg.start_time, next_seg.end_time, next_seg.text, words=words2)
 
+    try:
+        choices = assignment_map(project.translation_segments)
+        partition_voice(source_keys([target_seg, next_seg]), choices)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     merged = merge_adjacent_segments(t1, t2)
 
     target_seg.start_time = merged.start_time
@@ -1145,6 +2065,21 @@ def merge_transcript_segment_next(
     target_seg.text = merged.text
     target_seg.words_json = json.dumps([w.to_dict() for w in merged.words], ensure_ascii=False) if merged.words else None
     target_seg.is_manually_edited = True
+
+    # Retain source assignment provenance for legacy segments without word IDs.
+    for unit in project.translation_segments:
+        ids = json.loads(unit.source_segment_ids or "[]")
+        if unit.transcript_segment_id not in (target_seg.id, next_seg.id) and not set(ids).intersection({target_seg.id, next_seg.id}):
+            continue
+        keys = json.loads(unit.voice_source_keys or "[]")
+        if f"segment:{next_seg.id}" in keys:
+            keys = [k for k in keys if k != f"segment:{next_seg.id}"]
+            keys.append(f"segment:{target_seg.id}")
+            unit.voice_source_keys = json.dumps(sorted(set(keys)))
+        unit.is_outdated = True
+        unit.voice_revision = (unit.voice_revision or 0) + 1
+        if unit.generated_audio:
+            unit.generated_audio.is_outdated = True
 
     # Delete next_seg
     db.delete(next_seg)
@@ -1216,6 +2151,13 @@ def _enrich_translation_segment(
         project_id=trans_seg.project_id,
         transcript_segment_id=trans_seg.transcript_segment_id,
         segment_order=trans_seg.segment_order,
+        voice_override_provider=trans_seg.voice_override_provider,
+        voice_override_id=trans_seg.voice_override_id,
+        effective_tts_provider=effective_voice(trans_seg.project, trans_seg)[0],
+        effective_tts_voice=effective_voice(trans_seg.project, trans_seg)[1],
+        voice_revision=trans_seg.voice_revision or 0,
+        tts_error=trans_seg.tts_error,
+        speaker_label=trans_seg.speaker_label,
         khmer_text=trans_seg.khmer_text,
         english_text=english_text,
         start_time=start_time,
@@ -1319,6 +2261,418 @@ def get_translations(
         status=project.status,
         segments=enriched,
     )
+
+
+@router.get("/{project_id}/translation/export")
+def export_project_translation(
+    project_id: str,
+    format: str = Query("srt", description="Export format: 'srt', 'vtt', 'txt', 'bilingual', 'json'"),
+    db: Session = Depends(get_db),
+):
+    """Export project translation as Khmer SRT, WebVTT, plain text, bilingual SRT, or JSON."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    trans_segs = (
+        db.query(TranslationSegment)
+        .filter(TranslationSegment.project_id == project_id)
+        .order_by(TranslationSegment.segment_order.asc())
+        .all()
+    )
+    if not trans_segs:
+        raise HTTPException(status_code=400, detail="No translation segments found to export.")
+
+    t_segs = db.query(TranscriptSegment).filter(TranscriptSegment.project_id == project_id).all()
+    t_by_id = {t.id: t for t in t_segs}
+    t_by_order = {t.segment_order: t for t in t_segs}
+
+    base_title = sanitize_filename(project.title or "project").replace(".mp4", "")
+    fmt = (format or "srt").strip().lower()
+
+    if fmt == "json":
+        items = []
+        for tr in trans_segs:
+            t = t_by_id.get(tr.transcript_segment_id) or t_by_order.get(tr.segment_order)
+            st = tr.start_time if tr.start_time is not None else (t.start_time if t else 0.0)
+            et = tr.end_time if tr.end_time is not None else (t.end_time if t else (st + 2.0))
+            items.append({
+                "segment_order": tr.segment_order,
+                "start_time": st,
+                "end_time": et,
+                "source_text": tr.source_text or (t.text if t else ""),
+                "khmer_text": tr.khmer_text,
+                "speaker_label": tr.speaker_label or (t.speaker_label if t else None),
+            })
+        content = json.dumps(items, ensure_ascii=False, indent=2)
+        filename = f"{base_title}_translation.json"
+        mime_type = "application/json; charset=utf-8"
+    else:
+        cues = []
+        for tr in trans_segs:
+            t = t_by_id.get(tr.transcript_segment_id) or t_by_order.get(tr.segment_order)
+            st = tr.start_time if tr.start_time is not None else (t.start_time if t else 0.0)
+            et = tr.end_time if tr.end_time is not None else (t.end_time if t else (st + 2.0))
+            en_text = (tr.source_text or (t.text if t else "")).strip()
+            km_text = (tr.khmer_text or "").strip()
+
+            if fmt == "bilingual":
+                cue_text = f"{en_text}\n{km_text}" if en_text else km_text
+            else:
+                cue_text = km_text
+
+            cues.append(
+                SubtitleCue(
+                    sequence=tr.segment_order,
+                    start_time=st,
+                    end_time=et,
+                    text=cue_text,
+                )
+            )
+
+        if fmt in ("srt", "bilingual"):
+            content = generate_srt(cues, prevent_overlaps=True, filter_empty=True)
+            filename = f"{base_title}_bilingual.srt" if fmt == "bilingual" else f"{base_title}_translation_km.srt"
+            mime_type = "text/plain; charset=utf-8"
+        elif fmt == "vtt":
+            content = generate_vtt(cues, prevent_overlaps=True, filter_empty=True)
+            filename = f"{base_title}_translation_km.vtt"
+            mime_type = "text/vtt; charset=utf-8"
+        elif fmt == "txt":
+            content = generate_txt(cues, filter_empty=True)
+            filename = f"{base_title}_translation_km.txt"
+            mime_type = "text/plain; charset=utf-8"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported format '{fmt}'. Choose 'srt', 'vtt', 'txt', 'bilingual', or 'json'.",
+            )
+
+    return Response(
+        content=content.encode("utf-8"),
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": mime_type,
+        },
+    )
+
+
+@router.post("/{project_id}/translation/import")
+async def import_project_translation(
+    project_id: str,
+    file: Optional[UploadFile] = File(None),
+    raw_content: Optional[str] = Form(None),
+    auto_fit: Optional[bool] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Import Khmer translations from SRT, WebVTT, plain text, or JSON file."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    content = ""
+    filename = ""
+    if file is not None and getattr(file, "filename", None) and hasattr(file, "read"):
+        filename = file.filename or ""
+        raw_bytes = await file.read()
+        content = raw_bytes.decode("utf-8", errors="replace")
+    elif isinstance(raw_content, str) and raw_content.strip():
+        content = raw_content
+        filename = "pasted_translation.txt"
+    else:
+        raise HTTPException(status_code=400, detail="Please upload a file or provide raw_content.")
+
+    content = content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Translation content is empty.")
+
+    imported_items = []
+    is_json = content.startswith(("[", "{")) or filename.lower().endswith(".json")
+
+    if is_json:
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and "segments" in data:
+                data = data["segments"]
+            if isinstance(data, list):
+                for idx, item in enumerate(data, start=1):
+                    if isinstance(item, dict):
+                        km_text = (item.get("khmer_text") or item.get("khmer") or item.get("text") or "").strip()
+                        en_text = (item.get("source_text") or item.get("english") or "").strip()
+                        st = float(item.get("start_time") or item.get("start") or (idx - 1) * 3.0)
+                        et = float(item.get("end_time") or item.get("end") or (st + 2.5))
+                        if km_text or en_text:
+                            imported_items.append({
+                                "order": idx,
+                                "khmer": km_text,
+                                "source": en_text,
+                                "start": max(0.0, st),
+                                "end": max(st + 0.1, et),
+                            })
+        except Exception as e:
+            logger.warning("JSON translation parse failed: %s. Attempting subtitle parser.", e)
+
+    if not imported_items:
+        try:
+            res = parse_transcript_content(content, filename=filename)
+            total_cues = len(res.segments)
+            video_dur = project.video.duration_seconds if (project.video and project.video.duration_seconds) else None
+
+            for idx, seg in enumerate(res.segments, start=1):
+                raw_text = seg.text or ""
+                # Check for bilingual lines (English on top, Khmer below)
+                lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+                en_candidate = None
+                km_candidate = raw_text
+                if len(lines) >= 2:
+                    k_idx = -1
+                    l_idx = -1
+                    for i, l in enumerate(lines):
+                        if re.search(r"[\u1780-\u17ff]", l):
+                            k_idx = i
+                        elif re.search(r"[a-zA-Z]", l):
+                            l_idx = i
+                    if k_idx != -1 and l_idx != -1:
+                        en_candidate = lines[l_idx]
+                        km_candidate = lines[k_idx]
+
+                if not res.has_timestamps or seg.start_time is None:
+                    if video_dur and video_dur > 0 and total_cues > 0:
+                        slot = video_dur / total_cues
+                        st = round((idx - 1) * slot, 3)
+                        et = round(min(video_dur, idx * slot), 3)
+                    else:
+                        st = round((idx - 1) * 3.0, 3)
+                        et = round(idx * 3.0, 3)
+                else:
+                    st = max(0.0, float(seg.start_time))
+                    et = max(st + 0.1, float(seg.end_time))
+
+                imported_items.append({
+                    "order": idx,
+                    "khmer": km_candidate,
+                    "source": en_candidate,
+                    "start": st,
+                    "end": et,
+                })
+        except TranscriptParseError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse translation file: {e}")
+
+    if not imported_items:
+        raise HTTPException(status_code=400, detail="No readable translation cues found in file.")
+
+    # Format all imported Khmer texts
+    for item in imported_items:
+        if item.get("khmer"):
+            item["khmer"] = KhmerTextFormatter.format(item["khmer"])
+
+    is_manual = (auto_fit is not True)
+
+    # Align with transcript segments
+    t_segs = (
+        db.query(TranscriptSegment)
+        .filter(TranscriptSegment.project_id == project_id)
+        .order_by(TranscriptSegment.segment_order.asc())
+        .all()
+    )
+
+    pipeline_ver = getattr(project, "pipeline_version", "v1") or "v1"
+    is_grouped_dubbing = (pipeline_ver in ("v2.3", "v3", "v3.0"))
+
+    updated_count = 0
+    if t_segs and is_grouped_dubbing:
+        # V2.3 Dubbing Unit Alignment
+        saved_voice_units = db.query(TranslationSegment).filter_by(project_id=project_id).all()
+        dubbing_units = voice_aware_groups(t_segs, saved_voice_units)
+        t_seg_dict = {t.id: t for t in t_segs}
+
+        # Build mapping from dubbing unit to combined Khmer text
+        unit_km_map = {}
+        if len(imported_items) == len(t_segs):
+            # 1-to-1 cue import matching transcript segments: coalesce member cues into dubbing units
+            t_id_to_khmer = {
+                t.id: (imported_items[idx]["khmer"] or "").strip()
+                for idx, t in enumerate(t_segs)
+            }
+            for u in dubbing_units:
+                parts = [t_id_to_khmer.get(sid, "") for sid in u.source_segment_ids]
+                parts = [p for p in parts if p]
+                unit_km_map[u.unit_order] = KhmerTextFormatter.format(" ".join(parts))
+        elif len(imported_items) == len(dubbing_units):
+            # Directly matched to dubbing units
+            for idx, u in enumerate(dubbing_units):
+                unit_km_map[u.unit_order] = KhmerTextFormatter.format(imported_items[idx]["khmer"] or "")
+        else:
+            # Timestamp overlap matching or proportional fallback
+            has_timestamps = any(item.get("start") is not None for item in imported_items)
+            for idx, u in enumerate(dubbing_units):
+                matched = False
+                if has_timestamps:
+                    matching = [
+                        item["khmer"].strip()
+                        for item in imported_items
+                        if item.get("khmer") and max(u.start_time, item["start"]) < min(u.end_time, item["end"])
+                    ]
+                    if matching:
+                        unit_km_map[u.unit_order] = KhmerTextFormatter.format(" ".join(matching))
+                        matched = True
+                if not matched:
+                    prop_idx = min(len(imported_items) - 1, int(idx * len(imported_items) / max(1, len(dubbing_units))))
+                    unit_km_map[u.unit_order] = KhmerTextFormatter.format(imported_items[prop_idx]["khmer"] or "")
+
+        existing_translations = (
+            db.query(TranslationSegment)
+            .filter(TranslationSegment.project_id == project_id)
+            .all()
+        )
+        existing_map = {t.segment_order: t for t in existing_translations}
+        retained_ids = set()
+
+        for u in dubbing_units:
+            primary_t_id = u.source_segment_ids[0] if u.source_segment_ids else None
+            src_ids_json = json.dumps(u.source_segment_ids)
+            km_text = unit_km_map.get(u.unit_order, "")
+            existing = existing_map.get(u.unit_order)
+
+            if existing:
+                existing.khmer_text = km_text
+                existing.start_time = u.start_time
+                existing.end_time = u.end_time
+                existing.source_segment_ids = src_ids_json
+                existing.source_text = u.combined_english_text
+                existing.transcript_segment_id = primary_t_id
+                existing.is_manually_edited = is_manual
+                existing.is_outdated = False
+                trans_unit_id = existing.id
+                if existing.generated_audio:
+                    db.delete(existing.generated_audio)
+            else:
+                new_trans = TranslationSegment(
+                    project_id=project_id,
+                    transcript_segment_id=primary_t_id,
+                    segment_order=u.unit_order,
+                    start_time=u.start_time,
+                    end_time=u.end_time,
+                    source_segment_ids=src_ids_json,
+                    source_text=u.combined_english_text,
+                    khmer_text=km_text,
+                    is_manually_edited=is_manual,
+                    is_outdated=False,
+                )
+                db.add(new_trans)
+                db.flush()
+                trans_unit_id = new_trans.id
+
+            # Preserve voice assignment if configured
+            pair = u.voice_override
+            target_unit = existing or new_trans
+            if pair:
+                target_unit.voice_override_provider = pair[0]
+                target_unit.voice_override_id = pair[1]
+                target_unit.voice_source_keys = json.dumps(sorted(source_keys(
+                    [t_seg_dict[i] for i in u.source_segment_ids if i in t_seg_dict]
+                )))
+
+            retained_ids.add(trans_unit_id)
+
+            for src_id in u.source_segment_ids:
+                t_member = t_seg_dict.get(src_id)
+                if t_member:
+                    t_member.dubbing_unit_id = trans_unit_id
+
+        # Clean up stale leftover translation segments
+        for old_t in existing_translations:
+            if old_t.id not in retained_ids:
+                if old_t.generated_audio:
+                    db.delete(old_t.generated_audio)
+                db.delete(old_t)
+
+        updated_count = len(dubbing_units)
+
+    elif t_segs:
+        # Legacy v1: 1-to-1 matching with t_segs
+        for idx, t in enumerate(t_segs):
+            if idx < len(imported_items):
+                item = imported_items[idx]
+                km_text = item["khmer"]
+            else:
+                km_text = ""
+
+            existing_tr = (
+                db.query(TranslationSegment)
+                .filter(
+                    TranslationSegment.project_id == project_id,
+                    TranslationSegment.segment_order == t.segment_order,
+                )
+                .first()
+            )
+            if existing_tr:
+                existing_tr.khmer_text = km_text
+                existing_tr.transcript_segment_id = t.id
+                existing_tr.start_time = t.start_time
+                existing_tr.end_time = t.end_time
+                existing_tr.source_text = t.text
+                existing_tr.is_manually_edited = is_manual
+                existing_tr.is_outdated = False
+                if existing_tr.generated_audio:
+                    db.delete(existing_tr.generated_audio)
+            else:
+                new_tr = TranslationSegment(
+                    project_id=project_id,
+                    transcript_segment_id=t.id,
+                    segment_order=t.segment_order,
+                    start_time=t.start_time,
+                    end_time=t.end_time,
+                    source_text=t.text,
+                    khmer_text=km_text,
+                    is_manually_edited=is_manual,
+                    is_outdated=False,
+                )
+                db.add(new_tr)
+            updated_count += 1
+    else:
+        # No transcript segments exist: create both transcript and translation segments
+        for idx, item in enumerate(imported_items, start=1):
+            src_text = item.get("source") or f"Segment #{idx}"
+            t = TranscriptSegment(
+                project_id=project_id,
+                segment_order=idx,
+                start_time=item["start"],
+                end_time=item["end"],
+                text=src_text,
+                is_manually_edited=is_manual,
+            )
+            db.add(t)
+            db.flush()
+
+            tr = TranslationSegment(
+                project_id=project_id,
+                transcript_segment_id=t.id,
+                segment_order=idx,
+                start_time=item["start"],
+                end_time=item["end"],
+                source_text=src_text,
+                khmer_text=item["khmer"],
+                is_manually_edited=is_manual,
+                is_outdated=False,
+            )
+            db.add(tr)
+            updated_count += 1
+
+    if project.video and project.video.exported_video_path:
+        project.video.is_export_outdated = True
+
+    project.status = ProjectStatus.TRANSLATED
+    db.commit()
+
+    return {
+        "message": f"Successfully imported {updated_count} translation segments.",
+        "segment_count": updated_count,
+        "status": project.status,
+    }
 
 
 @router.patch(
@@ -1758,7 +3112,8 @@ def _enrich_generated_audio(
         duration_seconds=audio.duration_seconds,
         provider=audio.provider,
         voice=audio.voice,
-        is_outdated=audio.is_outdated,
+        voice_revision=audio.voice_revision,
+        is_outdated=not audio_matches_selection(audio.project, audio.translation_segment, audio),
         created_at=audio.created_at,
         updated_at=audio.updated_at,
         audio_url=audio_url,
@@ -1769,6 +3124,7 @@ def _enrich_generated_audio(
 def start_tts(
     project_id: str,
     background_tasks: BackgroundTasks,
+    auto_clone_speakers: bool = False,
     db: Session = Depends(get_db),
 ) -> ProcessingJobResponse:
     """Trigger background text-to-speech generation for all translated Khmer segments."""
@@ -1782,6 +3138,7 @@ def start_tts(
             detail="Project is already in the process of being deleted",
         )
 
+    _voice_mutation_allowed(db, project_id)
     translation_count = (
         db.query(TranslationSegment)
         .filter(TranslationSegment.project_id == project_id)
@@ -1792,6 +3149,21 @@ def start_tts(
             status_code=400,
             detail="No Khmer translation segments found. Please translate transcript first.",
         )
+
+    if auto_clone_speakers:
+        spk_count = db.query(ProjectSpeaker).filter(ProjectSpeaker.project_id == project_id).count()
+        if spk_count == 0:
+            try:
+                diarizer = AudioDiarizer()
+                diarizer.diarize_project(db=db, project_id=project_id, min_speakers=1, max_speakers=6)
+                extractor = VideoVoiceExtractor()
+                clone_res = extractor.clone_speaker_voices(project_id=project_id, db=db, store_in_voice_studio=False)
+                if len(clone_res) == 1:
+                    project.tts_provider = "voxcpm"
+                    project.tts_voice = clone_res[0]["voice_profile_id"]
+                    db.commit()
+            except Exception as e:
+                logger.warning("Auto-clone speakers before TTS failed for project %s: %s", project_id, e)
 
     # Check for existing pending/running job
     active_job = (
@@ -1847,12 +3219,19 @@ def get_generated_audio(
 
     enriched = [_enrich_generated_audio(a, project_id) for a in audios]
     total_duration = sum(a.duration_seconds or 0.0 for a in enriched)
+    trans_count = db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).count()
+    current_cnt = sum(1 for a in enriched if not a.is_outdated)
+    outdated_cnt = sum(1 for a in enriched if a.is_outdated)
+    missing_cnt = max(0, trans_count - len(enriched))
 
     return GeneratedAudioListResponse(
         project_id=project_id,
         status=project.status,
         audios=enriched,
         total_duration_seconds=round(total_duration, 2),
+        current_count=current_cnt,
+        outdated_count=outdated_cnt,
+        missing_count=missing_cnt,
     )
 
 
@@ -1890,9 +3269,11 @@ def regenerate_audio_segment(
     if not segment.khmer_text or not segment.khmer_text.strip():
         raise HTTPException(status_code=400, detail="Cannot synthesize empty Khmer text")
 
+    _voice_mutation_allowed(db, project_id)
+    generation_revision = segment.voice_revision
     try:
-        provider_name = project.tts_provider or DEFAULT_PROVIDER
-        voice_name = project.tts_voice or DEFAULT_VOICE
+        provider_name, voice_name = effective_voice(project, segment)
+        validate_voice(db, provider_name, voice_name, legacy=not segment.voice_override_id)
         provider = get_tts_provider(provider_name)
         audio_record = synthesize_segment_audio(
             project_id=project_id,
@@ -1901,11 +3282,18 @@ def regenerate_audio_segment(
             db=db,
             voice=voice_name,
         )
+        from app.services.dubbing.duration_repair import DurationRepairService
+        DurationRepairService().repair_project(project_id, db, segment_ids={segment_id})
+        db.refresh(audio_record)
         if project.video and project.video.exported_video_path:
             project.video.is_export_outdated = True
             db.commit()
     except Exception as e:
         logger.error("Failed to regenerate audio segment %s: %s", segment_id, e)
+        db.rollback()
+        db.query(TranslationSegment).filter_by(id=segment_id, voice_revision=generation_revision).update(
+            {TranslationSegment.tts_error: str(e)}, synchronize_session=False)
+        db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to generate speech: {e}")
 
     return _enrich_generated_audio(audio_record, project_id)
@@ -1947,6 +3335,19 @@ def start_dubbing_export(
     background_tasks: BackgroundTasks,
     max_tempo: float = Query(1.25, ge=1.0, le=2.0),
     trim_silence: bool = Query(True),
+    fill_mode: str = Query("natural"),
+    overflow_policy: str = Query("allow_overlap"),
+    strict_validation: bool = Query(False),
+    preserve_bgm: bool = Query(False, description="Preserve background music & SFX with audio ducking"),
+    ducking_preset: str = Query("balanced", description="Ducking preset: light, balanced, strong, mute"),
+    bgm_volume: float = Query(0.35, ge=0.0, le=1.5, description="Background music volume (0.0 to 1.5)"),
+    attenuate_center_vocals: bool = Query(True, description="Attenuate original center-channel vocals on stereo audio"),
+    aspect_ratio: str = Query("original", description="Target video aspect ratio: original, 9:16, 1:1, 16:9"),
+    reframe_mode: str = Query("blur_pillar", description="Reframing mode: blur_pillar, center_crop, fit_black"),
+    burn_subtitles: bool = Query(False, description="Burn stylized subtitles directly into exported video"),
+    subtitle_style: str = Query("tiktok_yellow", description="Subtitle styling preset: tiktok_yellow, classic_white, boxed_black, headline_bold"),
+    subtitle_language: str = Query("km", description="Subtitle language: km (Khmer), en (English), bilingual (both)"),
+    subtitle_font: Optional[str] = Query(None, description="Optional custom Khmer font name (Khmer OS Battambang, Khmer OS Muol, etc.)"),
     db: Session = Depends(get_db),
 ) -> ProcessingJobResponse:
     """Trigger background audio synchronization and dubbed video export."""
@@ -1993,7 +3394,7 @@ def start_dubbing_export(
                 status_code=400,
                 detail=f"Missing generated audio for segment #{trans_seg.segment_order}. Please generate audio first.",
             )
-        if audio.is_outdated:
+        if not audio_matches_selection(project, trans_seg, audio):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -2032,6 +3433,19 @@ def start_dubbing_export(
         job.id,
         max_tempo_factor=max_tempo,
         trim_silence=trim_silence,
+        fill_mode=fill_mode,
+        overflow_policy=overflow_policy,
+        strict_validation=strict_validation,
+        preserve_bgm=preserve_bgm,
+        ducking_preset=ducking_preset,
+        bgm_volume=bgm_volume,
+        attenuate_center_vocals=attenuate_center_vocals,
+        aspect_ratio=aspect_ratio,
+        reframe_mode=reframe_mode,
+        burn_subtitles=burn_subtitles,
+        subtitle_style=subtitle_style,
+        subtitle_language=subtitle_language,
+        subtitle_font=subtitle_font,
     )
     return job
 
@@ -2074,6 +3488,29 @@ def get_export_status(
     timing_summary: Optional[Dict[str, Any]] = None
     timing_conflicts: List[TimingConflictResponse] = []
 
+    # Calculate audio freshness status across translation units
+    trans_units = project.translation_segments or []
+    total_units = len(trans_units)
+    current_cnt = 0
+    outdated_cnt = 0
+    missing_cnt = 0
+
+    for tu in trans_units:
+        aud = tu.generated_audio
+        if aud and audio_matches_selection(project, tu, aud) and aud.audio_path:
+            current_cnt += 1
+        elif aud and not audio_matches_selection(project, tu, aud):
+            outdated_cnt += 1
+        else:
+            missing_cnt += 1
+
+    audio_status_obj = AudioStatusSummary(
+        total_dubbing_units=total_units,
+        current=current_cnt,
+        outdated=outdated_cnt,
+        missing=missing_cnt,
+    )
+
     if pipeline_ver in ("v2", "v2.1", "v2.2", "v2.3") and project.translation_segments:
         from app.services.dubbing.timing_optimizer import TimingOptimizerService
         optimizer = TimingOptimizerService(max_tempo=max_tempo)
@@ -2111,7 +3548,33 @@ def get_export_status(
             for u in unresolved_items
         ]
 
+        if outdated_cnt > 0 or missing_cnt > 0:
+            status_label = "speech_generation_required"
+        elif len(unresolved_items) == 0:
+            status_label = "ready"
+        else:
+            status_label = "review_required"
+
         timing_summary = {
+            "alignment_review_units": sum(
+                a.local_overflow_seconds > 0.05 or abs(a.alignment_delay_seconds) > 0.5
+                for a in analyses
+            ),
+            "schedule": [
+                {
+                    "translation_segment_id": a.translation_segment_id,
+                    "segment_order": a.segment_order,
+                    "local_overflow_seconds": a.local_overflow_seconds,
+                    "alignment_delay_seconds": a.alignment_delay_seconds,
+                    "scheduled_start": a.scheduled_start,
+                    "scheduled_end": a.scheduled_end,
+                    "processed_duration": a.processed_duration,
+                    "tempo_factor": a.tempo_factor,
+                    "status": a.status,
+                    "overflow_seconds": a.overflow_seconds,
+                }
+                for a in analyses
+            ],
             "total_segments": len(analyses),
             "fitted_naturally": fitted_naturally,
             "fitted_without_changes": fitted_naturally,
@@ -2120,7 +3583,8 @@ def get_export_status(
             "automatically_optimized": speed_adjusted,
             "synchronized_successfully": len(analyses) - len(unresolved_items),
             "unresolved_conflicts": len(unresolved_items),
-            "status": "ready" if len(unresolved_items) == 0 else "review_required",
+            "status": status_label,
+            "audio_status": audio_status_obj.model_dump(),
         }
     elif project.translation_segments:
         target_dur = float(video.duration_seconds or 0.0) if video else 0.0
@@ -2198,6 +3662,7 @@ def get_export_status(
         exported_file_size_bytes=video.exported_file_size_bytes if video else None,
         timing_conflicts=timing_conflicts,
         timing_summary=timing_summary,
+        audio_status=audio_status_obj,
         pipeline_version=pipeline_ver,
         video_url=video_url,
         download_url=download_url,

@@ -212,10 +212,27 @@ export const AIImproveModal: React.FC<AIImproveModalProps> = ({
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                   >
                     <option value="natural">Natural Spoken (Default)</option>
-                    <option value="short">Short for Video Dubbing</option>
-                    <option value="simple">Simple & Clear Words</option>
-                    <option value="formal">Formal / Professional</option>
-                    <option value="standard">Standard Translation</option>
+                    <optgroup label="🎭 Emotion & Acting Styles (Drama / TVB)">
+                      <option value="storytelling">📖 និទានរឿង (Storytelling / Narration)</option>
+                      <option value="explain">💡 ពន្យល់ / អធិប្បាយ (Explaining / Tutorial)</option>
+                      <option value="dramatic_tvb">🎬 តួឯកកុន (TVB Drama Style)</option>
+                      <option value="angry">😡 ខឹងសម្បារ / ស្រែក (Angry / Combat)</option>
+                      <option value="happy">😊 រីករាយ / សប្បាយ (Happy / Cheerful)</option>
+                      <option value="sad">😢 សោកសៅ / ខ្សឹកខ្សួល (Sad / Mournful)</option>
+                      <option value="whisper">🤫 ខ្សឹប / អាថ៌កំបាំង (Whisper / Suspense)</option>
+                      <option value="excited">⚡ រំភើបញាប់ញ័រ (Excited / High Hype)</option>
+                      <option value="fearful">😨 ភ័យខ្លាច / តក់ស្លុត (Fearful / Horror)</option>
+                      <option value="romantic">💖 ផ្អែមល្ហែម / ស្នេហា (Romantic Love)</option>
+                      <option value="humorous">😄 កំប្លែង / លេងសើច (Humorous Comedy)</option>
+                      <option value="documentary">🎥 ភាពយន្តឯកសារ (Documentary Narration)</option>
+                      <option value="news">🎙️ ព័ត៌មានទូរទស្សន៍ (News Broadcast)</option>
+                    </optgroup>
+                    <optgroup label="General Dubbing Constraints">
+                      <option value="short">Short for Video Dubbing</option>
+                      <option value="simple">Simple & Clear Words</option>
+                      <option value="formal">Formal / Professional</option>
+                      <option value="standard">Standard Translation</option>
+                    </optgroup>
                   </select>
                 </div>
 

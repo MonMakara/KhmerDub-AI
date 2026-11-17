@@ -46,17 +46,21 @@ import {
   ShieldCheck,
   Film,
   Scissors,
+  Zap,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { DeleteToolkitTaskModal } from '../components/common/DeleteToolkitTaskModal';
 import { VideoTrimmer } from '../components/toolkit/VideoTrimmer';
 import { AudioTrimmer } from '../components/toolkit/AudioTrimmer';
+import { AudioCleaning } from '../components/toolkit/AudioCleaning';
+import { TranscriptToText } from '../components/toolkit/TranscriptToText';
 import { formatCambodiaDateTime } from '../utils/date';
 import {
   ProjectSummary,
   ToolkitTask,
   ToolkitTranscriptSegment,
   TTSVoiceOption,
+  EmotionStyleOption,
   ParsedTranscriptCue,
   TimingConflictItem,
   TranslationLanguagePair,
@@ -68,6 +72,8 @@ import {
 export type ToolkitViewMode = 'overview' | 'workspace' | 'history';
 
 export const SLUG_TO_TOOL_ID: Record<string, string> = {
+  'audio-cleaning': 'audio_cleaning',
+  'audio_cleaning': 'audio_cleaning',
   'video-to-audio': 'video_to_audio',
   'video_to_audio': 'video_to_audio',
   'video-to-transcript': 'video_to_transcript',
@@ -88,6 +94,8 @@ export const SLUG_TO_TOOL_ID: Record<string, string> = {
   'subtitle-converter': 'subtitle_conversion',
   'subtitle-conversion': 'subtitle_conversion',
   'subtitle_conversion': 'subtitle_conversion',
+  'transcript-to-text': 'transcript_to_text',
+  'transcript_to_text': 'transcript_to_text',
   'video-downloader': 'video_downloader',
   'video_downloader': 'video_downloader',
   'video-trimmer': 'video_trimmer',
@@ -97,6 +105,7 @@ export const SLUG_TO_TOOL_ID: Record<string, string> = {
 };
 
 export const TOOL_ID_TO_SLUG: Record<string, string> = {
+  'audio_cleaning': 'audio-cleaning',
   'video_to_audio': 'video-to-audio',
   'video_to_transcript': 'video-to-transcript',
   'video_to_text': 'video-to-text',
@@ -107,6 +116,7 @@ export const TOOL_ID_TO_SLUG: Record<string, string> = {
   'text_translation': 'translation',
   'translation': 'translation',
   'subtitle_conversion': 'subtitle-converter',
+  'transcript_to_text': 'transcript-to-text',
   'video_downloader': 'video-downloader',
   'video_trimmer': 'video-trimmer',
   'audio_trimmer': 'audio-trimmer',
@@ -157,8 +167,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
   // Video to Audio State
   const [audioTargetFormat, setAudioTargetFormat] = useState<string>('mp3');
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [processingProgress, setProcessingProgress] = useState<number>(0);
+  const [isExtractingAudio, setIsExtractingAudio] = useState<boolean>(false);
+  const [extractProgress, setExtractProgress] = useState<number>(0);
+  const [extractStatusMsg, setExtractStatusMsg] = useState<string>('');
+
+  // Transcription State (Phase 13E.2)
+  const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
+  const [transcribeProgress, setTranscribeProgress] = useState<number>(0);
+  const [transcribeStatusMsg, setTranscribeStatusMsg] = useState<string>('');
 
   // Transcription State (Phase 13E.2)
   const [transcriptLanguage, setTranscriptLanguage] = useState<string>('en');
@@ -182,6 +198,8 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [ttsVoices, setTtsVoices] = useState<TTSVoiceOption[]>([]);
   const [ttsSelectedVoice, setTtsSelectedVoice] = useState<string>('km-KH-PisethNeural');
   const [ttsSelectedProvider, setTtsSelectedProvider] = useState<string>('edge');
+  const [ttsEmotionStyle, setTtsEmotionStyle] = useState<string>('calm');
+  const [emotionStyles, setEmotionStyles] = useState<EmotionStyleOption[]>([]);
   const [ttsPauseDuration, setTtsPauseDuration] = useState<number>(0.4);
   const [ttsTargetFormat, setTtsTargetFormat] = useState<string>('mp3');
   const [isTtsPreviewLoading, setIsTtsPreviewLoading] = useState<boolean>(false);
@@ -190,6 +208,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [regeneratingSegmentId, setRegeneratingSegmentId] = useState<string | null>(null);
   const [editingTtsSegmentId, setEditingTtsSegmentId] = useState<string | null>(null);
   const [editingTtsSegmentText, setEditingTtsSegmentText] = useState<string>('');
+  const [editingTtsSegmentEmotion, setEditingTtsSegmentEmotion] = useState<string>('calm');
   const [playingSegmentId, setPlayingSegmentId] = useState<string | null>(null);
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -215,10 +234,20 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const [ttaEditingCueEnd, setTtaEditingCueEnd] = useState<number>(0);
   const [ttaEditingCueVoice, setTtaEditingCueVoice] = useState<string>('');
   const [ttaEditingCueProvider, setTtaEditingCueProvider] = useState<string>('');
+  const [ttaEditingCueEmotion, setTtaEditingCueEmotion] = useState<string>('');
   const [ttaSourceFilename, setTtaSourceFilename] = useState<string>('transcript.srt');
   const [ttaSourceTaskId, setTtaSourceTaskId] = useState<string | null>(null);
   const [acknowledgedConflictsTaskId, setAcknowledgedConflictsTaskId] = useState<string | null>(null);
   const ttaFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Timed Fitting Controls (Phase 13E.5)
+  const [ttaFitToTimestamps, setTtaFitToTimestamps] = useState<boolean>(true);
+  const [ttaMinSpeed, setTtaMinSpeed] = useState<number>(0.75);
+  const [ttaMaxSpeed, setTtaMaxSpeed] = useState<number>(1.25);
+  const [ttaFitTolerance] = useState<number>(0.05);
+  const [ttaAllowSlowDown, setTtaAllowSlowDown] = useState<boolean>(true);
+  const [ttaOverflowPolicy, setTtaOverflowPolicy] = useState<'allow_overlap' | 'truncate_fade' | 'fail'>('allow_overlap');
+  const [ttaFillMode, setTtaFillMode] = useState<'natural' | 'stretch'>('natural');
 
   // Translation Studio State (Phase 13E.5)
   const [transMode, setTransMode] = useState<'text' | 'transcript'>('text');
@@ -384,6 +413,8 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       } else if (full.tool_type === 'text_translation' || full.tool_type === 'translation') {
         targetTool = 'text_translation';
         setTransMode('text');
+      } else if (full.tool_type === 'transcript_to_text') {
+        targetTool = 'transcript_to_text';
       } else if (full.tool_type === 'text_to_speech' && full.full_text) {
         setTtsText(full.full_text);
       }
@@ -400,33 +431,116 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     fetchTasks();
   }, [fetchTasks]);
 
-  // Video Downloader Polling (Phase 13F)
+  // Active Concurrent Processing Tasks
+  const activeProcessingTasks = useMemo(() => {
+    return tasks.filter((t) => ['pending', 'processing', 'cancelling'].includes(t.status));
+  }, [tasks]);
+
+  const getToolIcon = (toolType: string) => {
+    switch (toolType) {
+      case 'video_to_audio':
+        return <FileAudio className="w-4 h-4 text-purple-400" />;
+      case 'video_to_transcript':
+      case 'video_to_text':
+      case 'audio_to_transcript':
+      case 'audio_to_text':
+        return <FileText className="w-4 h-4 text-indigo-400" />;
+      case 'text_to_speech':
+        return <Volume2 className="w-4 h-4 text-amber-400" />;
+      case 'transcript_to_audio':
+        return <Mic2 className="w-4 h-4 text-emerald-400" />;
+      case 'text_translation':
+      case 'transcript_translation':
+      case 'translation':
+        return <Languages className="w-4 h-4 text-blue-400" />;
+      case 'audio_cleaning':
+        return <Sparkles className="w-4 h-4 text-teal-400" />;
+      case 'video_downloader':
+        return <Download className="w-4 h-4 text-rose-400" />;
+      case 'video_trimmer':
+      case 'audio_trimmer':
+        return <Scissors className="w-4 h-4 text-orange-400" />;
+      default:
+        return <Zap className="w-4 h-4 text-indigo-400" />;
+    }
+  };
+
+  const getToolLabel = (toolType: string) => {
+    switch (toolType) {
+      case 'video_to_audio':
+        return 'Video to Audio';
+      case 'video_to_transcript':
+        return 'Video to Transcript';
+      case 'video_to_text':
+        return 'Video to Text';
+      case 'audio_to_transcript':
+        return 'Audio to Transcript';
+      case 'audio_to_text':
+        return 'Audio to Text';
+      case 'text_to_speech':
+        return 'Text to Speech';
+      case 'transcript_to_audio':
+        return 'Transcript to Audio';
+      case 'text_translation':
+        return 'Text Translation';
+      case 'transcript_translation':
+        return 'Transcript Translation';
+      case 'audio_cleaning':
+        return 'Audio Cleaning';
+      case 'video_downloader':
+        return 'Media Downloader';
+      case 'video_trimmer':
+        return 'Video Trimmer';
+      case 'audio_trimmer':
+        return 'Audio Trimmer';
+      default:
+        return toolType.replace(/_/g, ' ');
+    }
+  };
+
+  // Unified Multi-Task Concurrency Polling (Runs automatically whenever tasks are active)
   useEffect(() => {
-    if (!downloaderActiveTaskId) return;
+    if (activeProcessingTasks.length === 0 && !downloaderActiveTaskId) return;
 
     let isMounted = true;
     const interval = setInterval(async () => {
       try {
-        const task = await api.getToolkitTask(downloaderActiveTaskId);
+        const updated = await api.listToolkitTasks();
         if (!isMounted) return;
-        setDownloaderActiveTask(task);
-        if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
-          setDownloaderActiveTaskId(null);
-          fetchTasks();
-          if (task.status === 'completed') {
-            setActiveTask(task);
+        setTasks(updated);
+
+        // Keep activeTask synced if it's currently processing or recently completed
+        if (activeTask && ['pending', 'processing', 'cancelling'].includes(activeTask.status)) {
+          const matching = updated.find((t) => t.id === activeTask.id);
+          if (matching && matching.status !== activeTask.status) {
+            const fullTask = await api.getToolkitTask(matching.id);
+            if (isMounted) setActiveTask(fullTask);
+          }
+        }
+
+        // Also sync downloader if active
+        if (downloaderActiveTaskId) {
+          const dlTask = updated.find((t) => t.id === downloaderActiveTaskId);
+          if (dlTask) {
+            setDownloaderActiveTask(dlTask);
+            if (['completed', 'failed', 'cancelled'].includes(dlTask.status)) {
+              setDownloaderActiveTaskId(null);
+              if (dlTask.status === 'completed') {
+                setActiveTask(dlTask);
+              }
+            }
           }
         }
       } catch (err) {
-        console.warn('Failed to poll download task status:', err);
+        console.warn('Unified multi-task polling error:', err);
       }
-    }, 1000);
+    }, 1500);
 
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [downloaderActiveTaskId, fetchTasks]);
+  }, [activeProcessingTasks.length, downloaderActiveTaskId, activeTask]);
 
   // Load TTS voices when language or tool changes (Phase 13E.3)
   const fetchTtsVoices = useCallback(async (lang: string) => {
@@ -468,6 +582,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     api.getTranslationLanguages()
       .then((data) => setTransLanguagePairs(data))
       .catch((e) => console.warn('Could not load translation language pairs:', e));
+
+    api.getEmotionStyles()
+      .then((data) => setEmotionStyles(data))
+      .catch((e) => console.warn('Could not load emotion styles:', e));
   }, []);
 
   // Initial parse for Transcript to Audio pasted sample if empty
@@ -531,9 +649,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
 
     try {
-      setIsProcessing(true);
-      setProcessingProgress(20);
-      setStatusMessage('Validating video container & audio streams...');
+      setIsExtractingAudio(true);
+      setExtractProgress(20);
+      setExtractStatusMsg('Validating video container & audio streams...');
 
       const formData = new FormData();
       if (inputMode === 'upload' && selectedFile) {
@@ -543,12 +661,12 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       }
       formData.append('target_format', audioTargetFormat);
 
-      setProcessingProgress(50);
-      setStatusMessage(`Extracting audio stream into ${audioTargetFormat.toUpperCase()}...`);
+      setExtractProgress(50);
+      setExtractStatusMsg(`Extracting audio stream into ${audioTargetFormat.toUpperCase()}...`);
 
       const result = await api.extractAudio(formData);
-      setProcessingProgress(100);
-      setStatusMessage('Extraction completed successfully!');
+      setExtractProgress(100);
+      setExtractStatusMsg('Extraction completed successfully!');
       setActiveTask(result);
 
       await fetchTasks();
@@ -561,10 +679,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       console.error('Audio extraction failed:', err);
       setError(err.message || 'Failed to extract audio track. Check that video contains audio.');
     } finally {
-      setIsProcessing(false);
+      setIsExtractingAudio(false);
       setTimeout(() => {
-        setProcessingProgress(0);
-        setStatusMessage('');
+        setExtractProgress(0);
+        setExtractStatusMsg('');
       }, 3000);
     }
   };
@@ -581,17 +699,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       return;
     }
 
-    if (transcriptLanguage === 'km') {
-      setError(
-        'Khmer speech recognition is not supported by the current Whisper checkpoint and requires a verified Khmer ASR engine. Please select English (en).'
-      );
-      return;
-    }
-
     try {
-      setIsProcessing(true);
-      setProcessingProgress(15);
-      setStatusMessage('Analyzing media container & preparing 16kHz audio stream...');
+      setIsTranscribing(true);
+      setTranscribeProgress(15);
+      setTranscribeStatusMsg('Analyzing media container & preparing 16kHz audio stream...');
 
       const formData = new FormData();
       if (inputMode === 'upload' && selectedFile) {
@@ -607,13 +718,13 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const defaultFormat = selectedTool.endsWith('_text') ? 'txt' : 'srt';
       formData.append('target_format', defaultFormat);
 
-      setProcessingProgress(45);
-      setStatusMessage('Transcribing speech segments with Faster-Whisper ASR...');
+      setTranscribeProgress(45);
+      setTranscribeStatusMsg('Transcribing speech segments with Faster-Whisper ASR...');
 
       const result = await api.transcribeMedia(formData);
 
-      setProcessingProgress(100);
-      setStatusMessage('Transcription completed successfully!');
+      setTranscribeProgress(100);
+      setTranscribeStatusMsg('Transcription completed successfully!');
       setActiveTask(result);
 
       await fetchTasks();
@@ -626,10 +737,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       console.error('Transcription failed:', err);
       setError(err.message || 'Transcription failed. Please ensure the media contains clear speech.');
     } finally {
-      setIsProcessing(false);
+      setIsTranscribing(false);
       setTimeout(() => {
-        setProcessingProgress(0);
-        setStatusMessage('');
+        setTranscribeProgress(0);
+        setTranscribeStatusMsg('');
       }, 3000);
     }
   };
@@ -726,7 +837,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const full = await api.getToolkitTask(task.id);
       setActiveTask(full);
       // Auto-switch selected tool if matching
-      if (['video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech', 'transcript_to_audio', 'text_translation', 'transcript_translation', 'subtitle_conversion'].includes(full.tool_type)) {
+      if (['audio_cleaning', 'video_to_audio', 'video_to_transcript', 'video_to_text', 'audio_to_transcript', 'audio_to_text', 'text_to_speech', 'transcript_to_audio', 'text_translation', 'transcript_translation', 'subtitle_conversion'].includes(full.tool_type)) {
         if (full.tool_type === 'transcript_translation') {
           setSelectedTool('text_translation');
           setTransMode('transcript');
@@ -767,6 +878,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         provider: ttsSelectedProvider,
         voice: ttsSelectedVoice,
         language: ttsLanguage,
+        emotion_style: ttsEmotionStyle,
       });
       const url = URL.createObjectURL(blob);
       setTtsPreviewAudioUrl(url);
@@ -796,6 +908,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         provider: ttsSelectedProvider,
         voice: ttsSelectedVoice,
         language: ttsLanguage,
+        emotion_style: ttsEmotionStyle,
         target_format: ttsTargetFormat,
         pause_duration_seconds: ttsPauseDuration,
       });
@@ -811,9 +924,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
   };
 
-  const handleStartEditTtsSegment = (segId: string, currentText: string) => {
+  const handleStartEditTtsSegment = (segId: string, currentText: string, currentEmotion?: string | null) => {
     setEditingTtsSegmentId(segId);
     setEditingTtsSegmentText(currentText);
+    setEditingTtsSegmentEmotion(currentEmotion || ttsEmotionStyle || 'calm');
   };
 
   const handleCancelEditTtsSegment = () => {
@@ -821,7 +935,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     setEditingTtsSegmentText('');
   };
 
-  const handleRegenerateTtsSegment = async (segmentId: string, textToUse?: string) => {
+  const handleRegenerateTtsSegment = async (segmentId: string, textToUse?: string, emotionToUse?: string) => {
     if (!activeTask) return;
     setError(null);
     try {
@@ -829,6 +943,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       const updated = await api.regenerateToolkitTTSSegment(activeTask.id, segmentId, {
         text: textToUse,
         pause_duration_seconds: ttsPauseDuration,
+        emotion_style: emotionToUse || editingTtsSegmentEmotion || ttsEmotionStyle,
       });
       setActiveTask(updated);
       setEditingTtsSegmentId(null);
@@ -903,7 +1018,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setTtaWarnings(res.warnings || []);
       setTtaSourceFilename('pasted_' + (res.format === 'text' ? 'text.txt' : `${res.format}.srt`));
       setTtaSourceTaskId(null);
-      if (!res.has_timestamps) {
+      if (res.has_timestamps) {
+        setTtaMode('timed');
+        setTtaFitToTimestamps(true);
+      } else {
         setTtaMode('narration');
       }
       setStatusMessage(`Parsed ${res.segments.length} segment(s) successfully.`);
@@ -938,7 +1056,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         setTtaWarnings(res.warnings || []);
         setTtaSourceFilename(file.name);
         setTtaSourceTaskId(null);
-        if (!res.has_timestamps) {
+        if (res.has_timestamps) {
+          setTtaMode('timed');
+          setTtaFitToTimestamps(true);
+        } else {
           setTtaMode('narration');
         }
         setStatusMessage(`Loaded ${res.segments.length} segment(s) from ${file.name}.`);
@@ -972,6 +1093,12 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       setTtaWarnings(res.warnings || []);
       setTtaSourceFilename(res.source_filename || `imported_${ttaImportTaskId.slice(0, 8)}.srt`);
       setTtaSourceTaskId(res.source_task_id || ttaImportTaskId);
+      if (res.has_timestamps) {
+        setTtaMode('timed');
+        setTtaFitToTimestamps(true);
+      } else {
+        setTtaMode('narration');
+      }
       setStatusMessage(`Imported ${res.segments.length} segment(s) from previous task.`);
     } catch (err: any) {
       console.error('Failed to import transcript task:', err);
@@ -1010,13 +1137,22 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
           end_time: c.end_time,
           voice: c.voice,
           provider: c.provider,
+          emotion_style: c.emotion_style || ttsEmotionStyle,
         })),
         mode: ttaMode,
         provider: ttsSelectedProvider,
         voice: ttsSelectedVoice,
         language: ttsLanguage,
+        emotion_style: ttsEmotionStyle,
         target_format: ttsTargetFormat,
         pause_duration_seconds: ttsPauseDuration,
+        fit_to_timestamps: ttaFitToTimestamps,
+        min_speed: ttaMinSpeed,
+        max_speed: ttaMaxSpeed,
+        fit_tolerance_sec: ttaFitTolerance,
+        allow_slow_down: ttaAllowSlowDown,
+        overflow_policy: ttaOverflowPolicy,
+        fill_mode: ttaFillMode,
         source_task_id: ttaSourceTaskId || undefined,
         filename: ttaSourceFilename,
       });
@@ -1041,6 +1177,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     setTtaEditingCueEnd(cue.end_time ?? 1);
     setTtaEditingCueVoice(cue.voice || '');
     setTtaEditingCueProvider(cue.provider || '');
+    setTtaEditingCueEmotion(cue.emotion_style || '');
   };
 
   const handleTtaSaveEditCue = () => {
@@ -1053,6 +1190,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       end_time: Math.max(ttaEditingCueStart + 0.1, ttaEditingCueEnd),
       voice: ttaEditingCueVoice || null,
       provider: ttaEditingCueProvider || null,
+      emotion_style: ttaEditingCueEmotion || null,
     };
     setTtaParsedCues(updated);
     setTtaEditingCueIndex(null);
@@ -1096,6 +1234,13 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         provider: provToUse,
         start_time: startToUse,
         end_time: endToUse,
+        fit_to_timestamps: ttaFitToTimestamps,
+        min_speed: ttaMinSpeed,
+        max_speed: ttaMaxSpeed,
+        fit_tolerance_sec: ttaFitTolerance,
+        allow_slow_down: ttaAllowSlowDown,
+        overflow_policy: ttaOverflowPolicy,
+        fill_mode: ttaFillMode,
       });
       setActiveTask(updated);
       setEditingTtsSegmentId(null);
@@ -1131,7 +1276,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     }
 
     try {
-      setIsProcessing(true);
       setTransIsTranslating(true);
       setStatusMessage('Translating text with neural AI model...');
       const result = await api.translateText({
@@ -1146,7 +1290,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     } catch (err: any) {
       setError(err.message || 'Translation failed.');
     } finally {
-      setIsProcessing(false);
       setTransIsTranslating(false);
     }
   };
@@ -1154,7 +1297,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   const handleTranslateTranscript = async () => {
     setError(null);
     try {
-      setIsProcessing(true);
       setTransIsTranslating(true);
       setStatusMessage('Translating transcript segments with timing preservation...');
 
@@ -1167,7 +1309,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       if (transInputTab === 'import') {
         if (!transImportTaskId) {
           setError('Please select a completed transcription task to import.');
-          setIsProcessing(false);
           setTransIsTranslating(false);
           return;
         }
@@ -1175,7 +1316,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       } else if (transInputTab === 'upload') {
         if (!transSelectedFile) {
           setError('Please select a subtitle file (.srt or .vtt) to translate.');
-          setIsProcessing(false);
           setTransIsTranslating(false);
           return;
         }
@@ -1191,7 +1331,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       } else {
         if (!transPastedSrt.trim()) {
           setError('Please paste subtitle content with timestamps.');
-          setIsProcessing(false);
           setTransIsTranslating(false);
           return;
         }
@@ -1212,7 +1351,6 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
     } catch (err: any) {
       setError(err.message || 'Transcript translation failed.');
     } finally {
-      setIsProcessing(false);
       setTransIsTranslating(false);
     }
   };
@@ -1465,6 +1603,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
   // Tools list for grid
   const toolsList = [
+    { id: 'audio_cleaning', title: 'Audio Noise & Music Remover',
+      desc: 'Remove background noise or music from audio and video while keeping speech clear.',
+      icon: Mic2, status: 'available' as const, category: 'audio_asr' as const },
     {
       id: 'video_to_audio',
       title: 'Video to Audio',
@@ -1502,6 +1643,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
       title: 'Audio to Text',
       desc: 'Transcribe audio recordings into plain text.',
       icon: FileCode,
+      status: 'available' as const,
+      category: 'audio_asr' as const,
+    },
+    {
+      id: 'transcript_to_text',
+      title: 'Transcript to Text',
+      desc: 'Convert subtitle files or cues into clean, readable narrative paragraphs or plain text.',
+      icon: FileText,
       status: 'available' as const,
       category: 'audio_asr' as const,
     },
@@ -1564,6 +1713,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
   ];
 
   const getToolTitle = (toolId: string) => {
+    if (toolId === 'transcript_to_text' || toolId === 'transcript-to-text') {
+      return 'Transcript to Text';
+    }
     if (toolId === 'video_downloader' || toolId === 'video-downloader') {
       return 'Video Downloader';
     }
@@ -1626,6 +1778,99 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
         onEnded={() => setPlayingTaskId(null)}
         onError={() => setPlayingTaskId(null)}
       />
+
+      {/* ======================================================== */}
+      {/* MULTI-TASK CONCURRENT PROCESSING TRAY                    */}
+      {/* ======================================================== */}
+      {activeProcessingTasks.length > 0 && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/40 text-white shadow-xl space-y-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-indigo-500/20 pb-3">
+            <div className="flex items-center gap-2.5">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+              </span>
+              <span className="font-bold text-xs sm:text-sm tracking-wide text-white flex items-center gap-1.5">
+                <Zap className="w-4 h-4 text-amber-400" />
+                Multi-Task Engine Active ({activeProcessingTasks.length} {activeProcessingTasks.length === 1 ? 'task' : 'tasks'} running in parallel)
+              </span>
+            </div>
+            <span className="text-[11px] text-indigo-300 bg-indigo-500/20 px-2.5 py-0.5 rounded-full border border-indigo-500/30 font-medium">
+              Asynchronous background workers executing concurrently
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {activeProcessingTasks.map((task) => (
+              <div
+                key={task.id}
+                className="p-3.5 rounded-xl bg-slate-950/70 border border-indigo-500/30 hover:border-indigo-400/50 transition-all flex flex-col justify-between space-y-2.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-300 shrink-0">
+                      {getToolIcon(task.tool_type)}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-slate-100 truncate">
+                        {task.source_filename || 'Media Task'}
+                      </div>
+                      <div className="text-[10px] text-indigo-300 font-medium">
+                        {getToolLabel(task.tool_type)}
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-300 bg-amber-400/15 border border-amber-400/30 px-2 py-0.5 rounded-full shrink-0 flex items-center gap-1">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    {task.progress_percentage || 25}%
+                  </span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="w-full bg-slate-800/80 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-indigo-500 via-indigo-400 to-emerald-400 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${Math.max(task.progress_percentage || 20, 10)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span className="truncate">{task.error_message || 'Processing in background...'}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTask(task);
+                        if (TOOL_ID_TO_SLUG[task.tool_type]) {
+                          navigateToTool(task.tool_type);
+                        }
+                      }}
+                      className="text-indigo-300 hover:text-white font-medium underline ml-2 shrink-0 cursor-pointer"
+                    >
+                      Inspect Output
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Global Status / Notification Message */}
+      {statusMessage && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center justify-between shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{statusMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStatusMessage('')}
+            className="text-emerald-600 hover:text-emerald-800 cursor-pointer p-0.5"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* ======================================================== */}
       {/* VIEW 1: OVERVIEW (viewMode === 'overview')               */}
@@ -1925,6 +2170,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               <RefreshCw className="w-3 h-3 animate-spin" /> Processing
                             </span>
                           )}
+                          {['pending', 'cancelling', 'cancelled'].includes(task.status) && (
+                            <span className="text-slate-600 font-medium capitalize">{task.status === 'pending' ? 'Queued' : task.status}</span>
+                          )}
                           {task.status === 'failed' && (
                             <span className="text-rose-600 font-medium inline-flex items-center gap-1">
                               <AlertCircle className="w-3 h-3" /> Failed
@@ -1987,6 +2235,23 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Global Status / Notification Message */}
+      {statusMessage && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center justify-between shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{statusMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStatusMessage('')}
+            className="text-emerald-600 hover:text-emerald-800 cursor-pointer p-0.5"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -2226,19 +2491,19 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             </div>
 
             {/* Progress */}
-            {isProcessing && (
+            {isExtractingAudio && (
               <div className="space-y-2 p-4 rounded-xl bg-slate-50 border border-slate-200">
                 <div className="flex items-center justify-between text-xs text-slate-600 font-medium">
                   <span className="flex items-center gap-2">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" />
-                    {statusMessage || 'Extracting audio...'}
+                    {extractStatusMsg || 'Extracting audio...'}
                   </span>
-                  <span>{processingProgress}%</span>
+                  <span>{extractProgress}%</span>
                 </div>
                 <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
                   <div
                     className="bg-indigo-600 h-1.5 rounded-full transition-all duration-300"
-                    style={{ width: `${processingProgress}%` }}
+                    style={{ width: `${extractProgress}%` }}
                   />
                 </div>
               </div>
@@ -2247,10 +2512,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             {/* Button */}
             <button
               onClick={handleExtractAudio}
-              disabled={isProcessing || (inputMode === 'upload' && !selectedFile) || (inputMode === 'project' && !selectedProjectId)}
+              disabled={isExtractingAudio || (inputMode === 'upload' && !selectedFile) || (inputMode === 'project' && !selectedProjectId)}
               className="w-full py-3 px-4 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white shadow-sm transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
             >
-              {isProcessing ? (
+              {isExtractingAudio ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
                   Extracting Audio Track...
@@ -2516,47 +2781,41 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   value={transcriptLanguage}
                   onChange={(e) => {
                     setTranscriptLanguage(e.target.value);
-                    if (e.target.value === 'km') {
-                      setError(
-                        'Khmer speech recognition is not supported by the current Whisper checkpoint and requires a verified Khmer ASR engine.'
-                      );
-                    } else {
-                      setError(null);
-                    }
+                    setError(null);
                   }}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 >
-                  <option value="en">English (en) — Fully Supported & Verified</option>
-                  <option value="km">Khmer (km) — Requires Verified Khmer ASR Engine (Unavailable)</option>
+                  <option value="en">English (en) — Faster-Whisper Base Model</option>
+                  <option value="km">Khmer (km) — Fine-Tuned Whisper ASR Engine</option>
                 </select>
 
-                {/* Honest Language Capability Notice */}
-                <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200/80 text-xs text-amber-900 space-y-1">
-                  <div className="flex items-center gap-1.5 font-semibold text-amber-800">
+                {/* Language Capability Notice */}
+                <div className="p-3 rounded-xl bg-indigo-50/70 border border-indigo-200/80 text-xs text-indigo-950 space-y-1">
+                  <div className="flex items-center gap-1.5 font-semibold text-indigo-900">
                     <Info className="w-3.5 h-3.5 shrink-0" />
-                    <span>Language Capability Notice</span>
+                    <span>Supported Transcription Languages</span>
                   </div>
-                  <p className="text-[11px] text-amber-700 leading-relaxed">
-                    English speech recognition is fully optimized via Faster-Whisper with word/phrase timestamps and punctuation. Khmer speech-to-text requires a specialized fine-tuned Khmer ASR model and is deliberately disabled here to prevent inaccurate transcription.
+                  <p className="text-[11px] text-indigo-700 leading-relaxed">
+                    Speech recognition supports both <strong>English (en)</strong> and <strong>Khmer (km)</strong>. Khmer speech is transcribed using a specialized fine-tuned Whisper ASR model with timestamped segments.
                   </p>
                 </div>
               </div>
             </div>
 
             {/* Progress Bar */}
-            {isProcessing && (
+            {isTranscribing && (
               <div className="space-y-2 p-4 rounded-xl bg-slate-50 border border-slate-200">
                 <div className="flex items-center justify-between text-xs text-slate-600 font-medium">
                   <span className="flex items-center gap-2">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" />
-                    {statusMessage || 'Transcribing audio speech...'}
+                    {transcribeStatusMsg || 'Transcribing audio speech...'}
                   </span>
-                  <span>{processingProgress}%</span>
+                  <span>{transcribeProgress}%</span>
                 </div>
                 <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
                   <div
                     className="bg-indigo-600 h-1.5 rounded-full transition-all duration-300"
-                    style={{ width: `${processingProgress}%` }}
+                    style={{ width: `${transcribeProgress}%` }}
                   />
                 </div>
               </div>
@@ -2565,10 +2824,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             {/* Transcribe Button */}
             <button
               onClick={handleTranscribeMedia}
-              disabled={isProcessing || (inputMode === 'upload' && !selectedFile) || (inputMode === 'project' && !selectedProjectId) || transcriptLanguage === 'km'}
+              disabled={isTranscribing || (inputMode === 'upload' && !selectedFile) || (inputMode === 'project' && !selectedProjectId)}
               className="w-full py-3 px-4 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white shadow-sm transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
             >
-              {isProcessing ? (
+              {isTranscribing ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
                   Transcribing Speech Segments...
@@ -3090,6 +3349,79 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               })()}
             </div>
 
+            {/* Acting & Emotion Style Control (Drama / TVB Style, Storytelling, Explain, etc.) */}
+            <div className="space-y-2.5 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  <span>Emotion & Acting Style (Drama / TVB)</span>
+                </label>
+                <span className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                  Adaptive Prosody
+                </span>
+              </div>
+
+              {/* Quick Pills for instant 1-click selection */}
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { id: 'calm', label: 'ធម្មតា' },
+                  { id: 'storytelling', label: '📖 និទានរឿង' },
+                  { id: 'explain', label: '💡 ពន្យល់' },
+                  { id: 'dramatic_tvb', label: '🎬 TVB Drama' },
+                  { id: 'angry', label: '😡 ខឹង' },
+                  { id: 'happy', label: '😊 រីករាយ' },
+                  { id: 'sad', label: '😢 សោកសៅ' },
+                  { id: 'whisper', label: '🤫 ខ្សឹប' },
+                  { id: 'excited', label: '⚡ រំភើប' },
+                ].map((pill) => (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => setTtsEmotionStyle(pill.id)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-all cursor-pointer ${
+                      ttsEmotionStyle === pill.id
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'bg-white hover:bg-slate-200/80 text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    {pill.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Full Emotion Style Dropdown */}
+              <select
+                value={ttsEmotionStyle}
+                onChange={(e) => setTtsEmotionStyle(e.target.value)}
+                className="w-full p-2 rounded-lg border border-slate-200 bg-white text-slate-800 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+              >
+                {emotionStyles.map((emo) => (
+                  <option key={emo.id} value={emo.id}>
+                    {emo.label_km} ({emo.label_en}) • Rate: {emo.prosody.rate || '+0%'}, Pitch: {emo.prosody.pitch || '+0Hz'}
+                  </option>
+                ))}
+              </select>
+
+              {/* Active Emotion Description & Prosody Card */}
+              {(() => {
+                const currentEmo = emotionStyles.find((e) => e.id === ttsEmotionStyle);
+                if (!currentEmo) return null;
+                return (
+                  <div className="p-2.5 rounded-lg bg-white border border-amber-200/80 text-[11px] space-y-1">
+                    <div className="flex items-center justify-between text-amber-900 font-semibold">
+                      <span>{currentEmo.label_km} ({currentEmo.label_en})</span>
+                      <span className="font-mono text-[10px] bg-amber-100/80 text-amber-800 px-1.5 py-0.5 rounded">
+                        Rate: {currentEmo.prosody.rate || '+0%'} | Pitch: {currentEmo.prosody.pitch || '+0Hz'} | Vol: {currentEmo.prosody.volume || '+0%'}
+                      </span>
+                    </div>
+                    <p className="text-slate-500 text-[11px] leading-relaxed">
+                      {currentEmo.description}
+                    </p>
+                  </div>
+                );
+              })()}
+            </div>
+
             {/* Input Textarea with Presets */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -3106,6 +3438,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   type="button"
                   onClick={() => {
                     setTtsLanguage('km');
+                    setTtsEmotionStyle('calm');
                     setTtsText(
                       'សួស្តីបងប្អូនទាំងអស់គ្នា។ សូមស្វាគមន៍មកកាន់ KhmerDub AI។ ថ្ងៃនេះយើងសាកល្បងបង្កើតសំឡេងនិយាយដោយស្វ័យប្រវត្តិ។'
                     );
@@ -3118,18 +3451,59 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   type="button"
                   onClick={() => {
                     setTtsLanguage('km');
+                    setTtsEmotionStyle('storytelling');
                     setTtsText(
                       'កាលពីព្រេងនាយ មានកុមារាម្នាក់រស់នៅតាមជនបទដ៏ស្រស់ស្អាត។ គាត់តែងតែឧស្សាហ៍ព្យាយាមរៀនសូត្ររាល់ថ្ងៃ។ ដោយសារការតស៊ូ គាត់បានក្លាយជាមនុស្សជោគជ័យ។'
                     );
                   }}
                   className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
                 >
-                  Khmer Story
+                  📖 និទានរឿង
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtsLanguage('km');
+                    setTtsEmotionStyle('explain');
+                    setTtsText(
+                      'សូមជម្រាបសួរអ្នកទាំងអស់គ្នា។ ថ្ងៃនេះខ្ញុំនឹងពន្យល់អំពីរបៀបប្រើប្រាស់ប្រព័ន្ធបញ្ញាសិប្បនិម្មិត។ ដំបូងយើងត្រូវជ្រើសរើសឯកសារ បន្ទាប់មកចុចដំណើរការ។'
+                    );
+                  }}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                >
+                  💡 ពន្យល់ (Tutorial)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtsLanguage('km');
+                    setTtsEmotionStyle('dramatic_tvb');
+                    setTtsText(
+                      'ឯងគិតថាឯងអាចគេចផុតពីកណ្តាប់ដៃរបស់ខ្ញុំបានឬ? ថ្ងៃនេះជាថ្ងៃចុងក្រោយរបស់ឯងហើយ! ចូលមក!'
+                    );
+                  }}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                >
+                  🎬 TVB Drama
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtsLanguage('km');
+                    setTtsEmotionStyle('angry');
+                    setTtsText(
+                      'ឈប់ភ្លាម! ឯងហ៊ានក្បត់នឹងយើងឬ? ឆាប់ប្រគល់របស់នោះមកវិញភ្លាម វ៉ើយ!'
+                    );
+                  }}
+                  className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                >
+                  😡 ខឹងសម្បារ
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     setTtsLanguage('en');
+                    setTtsEmotionStyle('calm');
                     setTtsText(
                       'Welcome to KhmerDub AI. Today we are testing standalone speech synthesis with multi-sentence segmentation and pause control. Everything sounds great.'
                     );
@@ -3362,6 +3736,11 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               <span className="font-mono text-slate-400">
                                 {seg.duration_seconds ? `${seg.duration_seconds.toFixed(2)}s` : '--'}
                               </span>
+                              {seg.emotion_style && (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                                  {emotionStyles.find((e) => e.id === seg.emotion_style)?.label_km || seg.emotion_style}
+                                </span>
+                              )}
                               <span
                                 className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
                                   seg.status === 'completed'
@@ -3393,7 +3772,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               {!isEditing && (
                                 <button
                                   type="button"
-                                  onClick={() => handleStartEditTtsSegment(seg.id, seg.text)}
+                                  onClick={() => handleStartEditTtsSegment(seg.id, seg.text, seg.emotion_style)}
                                   className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
                                   title="Edit sentence text"
                                 >
@@ -3415,7 +3794,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
 
                           {/* Segment Text or Edit Area */}
                           {isEditing ? (
-                            <div className="space-y-2">
+                            <div className="space-y-2.5">
                               <textarea
                                 value={editingTtsSegmentText}
                                 onChange={(e) => setEditingTtsSegmentText(e.target.value)}
@@ -3423,27 +3802,44 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                                 rows={2}
                                 autoFocus
                               />
-                              <div className="flex items-center justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={handleCancelEditTtsSegment}
-                                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold cursor-pointer"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRegenerateTtsSegment(seg.id, editingTtsSegmentText)}
-                                  disabled={isRegenerating || !editingTtsSegmentText.trim()}
-                                  className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
-                                >
-                                  {isRegenerating ? (
-                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                  ) : (
-                                    <Save className="w-3.5 h-3.5" />
-                                  )}
-                                  <span>Save & Regenerate</span>
-                                </button>
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                                <div className="flex items-center gap-1.5 text-xs">
+                                  <span className="font-semibold text-slate-600">Acting Style:</span>
+                                  <select
+                                    value={editingTtsSegmentEmotion}
+                                    onChange={(e) => setEditingTtsSegmentEmotion(e.target.value)}
+                                    className="p-1 rounded-md border border-slate-300 bg-white text-xs font-medium cursor-pointer"
+                                  >
+                                    {emotionStyles.map((emo) => (
+                                      <option key={emo.id} value={emo.id}>
+                                        {emo.label_km} ({emo.label_en})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={handleCancelEditTtsSegment}
+                                    className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRegenerateTtsSegment(seg.id, editingTtsSegmentText, editingTtsSegmentEmotion)}
+                                    disabled={isRegenerating || !editingTtsSegmentText.trim()}
+                                    className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                                  >
+                                    {isRegenerating ? (
+                                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <Save className="w-3.5 h-3.5" />
+                                    )}
+                                    <span>Save & Regenerate</span>
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           ) : (
@@ -3716,6 +4112,134 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   onChange={(e) => setTtsPauseDuration(parseFloat(e.target.value))}
                   className="w-full accent-indigo-600 cursor-pointer"
                 />
+              </div>
+            )}
+
+            {/* Timed Mode Slot Fitting Controls (Phase 13E.5) */}
+            {ttaMode === 'timed' && (
+              <div className="space-y-3 p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-800 flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={ttaFitToTimestamps}
+                      onChange={(e) => setTtaFitToTimestamps(e.target.checked)}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer w-4 h-4"
+                    />
+                    <span>Fit to timestamps</span>
+                  </label>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${ttaFitToTimestamps ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-slate-200 text-slate-600'}`}>
+                    {ttaFitToTimestamps ? 'Exact Fit Active' : 'Pass-through'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 leading-snug">
+                  Speed up or slow down speech to fit every segment into its exact SRT slot.
+                </p>
+
+                {ttaFitToTimestamps && (
+                  <div className="space-y-3 pt-2 border-t border-slate-200/80 text-xs">
+                    {/* Fill Mode Setting (Phase 13E.5) */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-medium text-slate-600">Fill Mode</span>
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {ttaFillMode === 'natural' ? 'Min 0.75x + Pad Silence' : 'Min 0.50x Stretch'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTtaFillMode('natural');
+                            setTtaMinSpeed(0.75);
+                          }}
+                          className={`py-1.5 px-2 rounded-lg border text-xs font-semibold transition-all cursor-pointer text-left ${
+                            ttaFillMode === 'natural'
+                              ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="font-bold text-[11px]">Natural (Default)</div>
+                          <div className="text-[10px] text-slate-500 font-normal">Min 0.75x + pad silence</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTtaFillMode('stretch');
+                            setTtaMinSpeed(0.5);
+                          }}
+                          className={`py-1.5 px-2 rounded-lg border text-xs font-semibold transition-all cursor-pointer text-left ${
+                            ttaFillMode === 'stretch'
+                              ? 'bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="font-bold text-[11px]">Stretch</div>
+                          <div className="text-[10px] text-slate-500 font-normal">Min 0.50x speech fills slot</div>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Speed limits */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-medium text-slate-600">Speed Clamping Limits</span>
+                        <span className="font-mono font-bold text-indigo-600">{ttaMinSpeed.toFixed(2)}x – {ttaMaxSpeed.toFixed(2)}x</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-white p-2 rounded-lg border border-slate-200">
+                          <span className="text-[10px] text-slate-500 font-medium">Min Speed: {ttaMinSpeed.toFixed(2)}x</span>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="1.0"
+                            step="0.05"
+                            value={ttaMinSpeed}
+                            onChange={(e) => setTtaMinSpeed(parseFloat(e.target.value))}
+                            className="w-full accent-indigo-600 cursor-pointer mt-1"
+                          />
+                        </div>
+                        <div className="bg-white p-2 rounded-lg border border-slate-200">
+                          <span className="text-[10px] text-slate-500 font-medium">Max Speed: {ttaMaxSpeed.toFixed(2)}x</span>
+                          <input
+                            type="range"
+                            min="1.0"
+                            max="2.0"
+                            step="0.05"
+                            value={ttaMaxSpeed}
+                            onChange={(e) => setTtaMaxSpeed(parseFloat(e.target.value))}
+                            className="w-full accent-indigo-600 cursor-pointer mt-1"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Allow Slow Down */}
+                    <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={ttaAllowSlowDown}
+                        onChange={(e) => setTtaAllowSlowDown(e.target.checked)}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <span>Allow slow-down for short segments</span>
+                    </label>
+
+                    {/* Overflow policy */}
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-slate-600">Overflow Policy</label>
+                      <select
+                        value={ttaOverflowPolicy}
+                        onChange={(e: any) => setTtaOverflowPolicy(e.target.value)}
+                        className="w-full p-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 text-xs cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      >
+                        <option value="allow_overlap">Allow overlap into gap until next cue (default)</option>
+                        <option value="truncate_fade">Truncate at slot with 50ms fade-out</option>
+                        <option value="fail">Stop and fail on timing overflow</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -4037,8 +4561,8 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                           key={seg.id}
                           className="p-4 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition-all space-y-3 shadow-xs"
                         >
-                          <div className="flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-2">
+                          <div className="flex items-center justify-between text-xs gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="px-2 py-0.5 rounded font-mono font-bold bg-slate-100 text-slate-700 text-[11px]">
                                 #{seg.segment_order}
                               </span>
@@ -4047,21 +4571,58 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                                   {formatTimestamp(seg.start_time)} → {formatTimestamp(seg.end_time)}
                                 </span>
                               )}
-                              <span className="font-mono text-slate-400">
-                                {seg.duration_seconds ? `${seg.duration_seconds.toFixed(2)}s` : '--'}
+                              {seg.slot_sec !== undefined && seg.slot_sec !== null && (
+                                <span className="font-mono text-[11px] text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                  Slot: {seg.slot_sec.toFixed(2)}s
+                                </span>
+                              )}
+                              {/* Primary FINAL duration */}
+                              <span
+                                className="font-mono text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded border border-slate-200"
+                                title="Final segment duration"
+                              >
+                                {seg.final_duration_sec !== undefined && seg.final_duration_sec !== null
+                                  ? `${seg.final_duration_sec.toFixed(2)}s`
+                                  : seg.duration_seconds
+                                  ? `${seg.duration_seconds.toFixed(2)}s`
+                                  : '--'}
                               </span>
+                              {/* Detailed Timing Label: e.g. "1.60s -> 3.00s (0.75x, +0.9s pad)" */}
+                              {seg.raw_duration_sec !== undefined && seg.raw_duration_sec !== null && (
+                                <span className="font-mono text-[11px] text-indigo-700 font-semibold bg-indigo-50/80 px-2 py-0.5 rounded border border-indigo-200/60">
+                                  {seg.raw_duration_sec.toFixed(2)}s → {(seg.final_duration_sec ?? seg.duration_seconds ?? 0).toFixed(2)}s
+                                  {seg.speed_factor_applied !== undefined && seg.speed_factor_applied !== null && (
+                                    <span className="ml-1 text-slate-600 font-medium">
+                                      ({seg.speed_factor_applied.toFixed(2)}x{seg.padded_sec && seg.padded_sec > 0.04 ? `, +${seg.padded_sec.toFixed(1)}s pad` : ''})
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                              {seg.method && seg.method !== 'none' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                  {seg.method}
+                                </span>
+                              )}
                               <span
                                 className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                                  seg.status === 'completed'
+                                  seg.status === 'completed' || seg.status === 'fit'
                                     ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                    : seg.status === 'padded'
+                                    ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                                    : seg.status === 'sped_up'
+                                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                    : seg.status === 'slowed'
+                                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                    : seg.status === 'overflow'
+                                    ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                    : 'bg-slate-50 text-slate-700 border border-slate-200'
                                 }`}
                               >
                                 {seg.status}
                               </span>
                             </div>
 
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 shrink-0">
                               {/* Play individual segment */}
                               <button
                                 type="button"
@@ -4075,6 +4636,17 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                                 ) : (
                                   <Play className="w-3.5 h-3.5" />
                                 )}
+                              </button>
+
+                              {/* Regenerate with fit individual segment */}
+                              <button
+                                type="button"
+                                onClick={() => handleTtaRegenerateTaskSegment(seg.id, seg.text)}
+                                disabled={isRegenerating}
+                                className="p-1.5 rounded-lg hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer disabled:opacity-40"
+                                title="Regenerate with fit"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isRegenerating ? 'animate-spin text-indigo-600' : ''}`} />
                               </button>
 
                               {/* Edit segment text and timing */}
@@ -4110,6 +4682,14 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               </button>
                             </div>
                           </div>
+
+                          {/* Overflow Warning Banner */}
+                          {seg.warning && (
+                            <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 flex items-center gap-2">
+                              <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                              <span>{seg.warning}</span>
+                            </div>
+                          )}
 
                           {/* Segment Text or Edit Area */}
                           {isEditing ? (
@@ -4229,6 +4809,11 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                                 {cue.voice}
                               </span>
                             )}
+                            {cue.emotion_style && (
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-amber-50 text-amber-800 font-semibold border border-amber-200">
+                                {emotionStyles.find((e) => e.id === cue.emotion_style)?.label_km || cue.emotion_style}
+                              </span>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-1">
@@ -4316,30 +4901,48 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               </div>
                             )}
 
-                            {/* Voice override dropdown */}
-                            <div>
-                              <label className="text-[11px] font-semibold text-slate-600">Voice Override (Optional)</label>
-                              <select
-                                value={`${ttaEditingCueProvider}::${ttaEditingCueVoice}`}
-                                onChange={(e) => {
-                                  if (!e.target.value) {
-                                    setTtaEditingCueProvider('');
-                                    setTtaEditingCueVoice('');
-                                  } else {
-                                    const [p, v] = e.target.value.split('::');
-                                    setTtaEditingCueProvider(p);
-                                    setTtaEditingCueVoice(v);
-                                  }
-                                }}
-                                className="w-full mt-1 p-1.5 rounded border border-slate-200 text-slate-800 text-xs"
-                              >
-                                <option value="">-- Use Global Voice --</option>
-                                {ttsVoices.map((v) => (
-                                  <option key={`${v.provider}-${v.voice}`} value={`${v.provider}::${v.voice}`}>
-                                    {v.label} ({v.provider.toUpperCase()})
-                                  </option>
-                                ))}
-                              </select>
+                            {/* Voice & Emotion overrides */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[11px] font-semibold text-slate-600">Voice Override (Optional)</label>
+                                <select
+                                  value={`${ttaEditingCueProvider}::${ttaEditingCueVoice}`}
+                                  onChange={(e) => {
+                                    if (!e.target.value) {
+                                      setTtaEditingCueProvider('');
+                                      setTtaEditingCueVoice('');
+                                    } else {
+                                      const [p, v] = e.target.value.split('::');
+                                      setTtaEditingCueProvider(p);
+                                      setTtaEditingCueVoice(v);
+                                    }
+                                  }}
+                                  className="w-full mt-1 p-1.5 rounded border border-slate-200 text-slate-800 text-xs"
+                                >
+                                  <option value="">-- Use Global Voice --</option>
+                                  {ttsVoices.map((v) => (
+                                    <option key={`${v.provider}-${v.voice}`} value={`${v.provider}::${v.voice}`}>
+                                      {v.label} ({v.provider.toUpperCase()})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="text-[11px] font-semibold text-slate-600">Acting & Emotion Style</label>
+                                <select
+                                  value={ttaEditingCueEmotion}
+                                  onChange={(e) => setTtaEditingCueEmotion(e.target.value)}
+                                  className="w-full mt-1 p-1.5 rounded border border-slate-200 text-slate-800 text-xs font-medium"
+                                >
+                                  <option value="">-- Use Global Emotion ({ttsEmotionStyle}) --</option>
+                                  {emotionStyles.map((emo) => (
+                                    <option key={emo.id} value={emo.id}>
+                                      {emo.label_km} ({emo.label_en})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                             </div>
 
                             <div className="flex items-center justify-end gap-2 pt-1">
@@ -4540,8 +5143,10 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               >
                 {transProviders.map((p) => {
                   const isUnavailable = p.requires_api_key && !p.is_configured;
-                  let badge = p.type === 'local' ? '(Local CPU · Zero Cost)' : '(Cloud Neural)';
-                  if (isUnavailable) {
+                  let badge = '(Cloud Neural)';
+                  if (p.type === 'local') {
+                    badge = '(Local CPU · Zero Cost)';
+                  } else if (isUnavailable) {
                     badge = '(Cloud · API Key Required)';
                   }
                   return (
@@ -4552,7 +5157,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                 })}
               </select>
 
-              {/* Cloud Privacy Notice per Phase 13E.6 Section 4 */}
+              {/* Privacy Notice */}
               {transProviders.find((p) => p.id === transProvider)?.type !== 'local' && (
                 <div className="p-3 rounded-xl bg-blue-50/80 border border-blue-200 text-xs text-blue-800 flex items-start gap-2">
                   <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
@@ -4680,7 +5285,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             <button
               type="button"
               onClick={transMode === 'text' ? handleTranslateText : handleTranslateTranscript}
-              disabled={transIsTranslating || isProcessing}
+              disabled={transIsTranslating}
               className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
             >
               {transIsTranslating ? (
@@ -5654,6 +6259,34 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
             )}
           </div>
         </div>
+      ) : selectedTool === 'transcript_to_text' ? (
+        <TranscriptToText
+          tasks={tasks}
+          initialTask={activeTask?.tool_type === 'transcript_to_text' ? activeTask : null}
+          onTaskCreated={(task) => {
+            setActiveTask(task);
+            fetchTasks();
+          }}
+          onSendToTTS={(text) => {
+            setTtsText(text);
+            navigateToTool('text_to_speech');
+          }}
+          onSendToTranslation={(text) => {
+            setTransText(text);
+            setTransMode('text');
+            navigateToTool('text_translation');
+          }}
+          onSendToTranscriptToAudio={(taskId) => {
+            const task = tasks.find((t) => t.id === taskId);
+            if (task) {
+              handleSendToTranscriptToAudio(task);
+            }
+          }}
+          onNavigateToTool={(toolId) => navigateToTool(toolId)}
+        />
+      ) : selectedTool === 'audio_cleaning' ? (
+        <AudioCleaning projects={projects} initialTask={activeTask}
+          onTaskUpdate={(task) => { setActiveTask(task); if (!['pending', 'processing', 'cancelling'].includes(task.status)) fetchTasks(); }} />
       ) : selectedTool === 'video_trimmer' ? (
         <VideoTrimmer
           tasks={tasks}
@@ -5781,6 +6414,7 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
                 >
                   <option value="all">All Tool Types</option>
+                  <option value="audio_cleaning">Audio Noise &amp; Music Remover</option>
                   <option value="video_downloader">Video Downloader</option>
                   <option value="video_to_audio">Video to Audio</option>
                   <option value="video_to_transcript">Video to Transcript</option>
@@ -5807,6 +6441,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                   <option value="completed">Completed</option>
                   <option value="processing">Processing</option>
                   <option value="failed">Failed</option>
+                  <option value="pending">Queued</option>
+                  <option value="cancelling">Cancelling</option>
+                  <option value="cancelled">Cancelled</option>
                 </select>
               </div>
 
@@ -5915,6 +6552,9 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
                               <AlertCircle className="w-3.5 h-3.5" /> Failed
                             </span>
                           )}
+                          {['pending', 'cancelling', 'cancelled'].includes(task.status) && (
+                            <span className="text-slate-600 font-medium capitalize">{task.status === 'pending' ? 'Queued' : task.status}</span>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1.5">
@@ -5983,6 +6623,23 @@ export const MediaToolkit: React.FC<MediaToolkitProps> = ({ projects = [] }) => 
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Global Status / Notification Message */}
+      {statusMessage && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center justify-between shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{statusMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStatusMessage('')}
+            className="text-emerald-600 hover:text-emerald-800 cursor-pointer p-0.5"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 

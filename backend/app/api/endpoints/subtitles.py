@@ -1,6 +1,5 @@
 import logging
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db

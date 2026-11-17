@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 import psutil
+import numpy as np
 import soundfile as sf
 import torch
 import uvicorn
@@ -118,6 +119,7 @@ class SynthesizeRequest(BaseModel):
     cfg_value: float = Field(2.0, ge=1.0, le=5.0)
     inference_timesteps: int = Field(10, ge=5, le=50)
     seed: Optional[int] = Field(None, description="Optional RNG seed for consistent speaker tone and diffusion noise")
+    trim_silence_vad: bool = Field(True, description="Whether to apply VAD-based silence trimming before encoding reference audio")
 
 
 class SynthesizeResponse(BaseModel):
@@ -162,15 +164,51 @@ def resolve_path(path_str: str) -> Path:
 
 
 def get_optimized_reference_path(ref_path: Path, max_duration_sec: float = 15.0) -> Path:
-    """Ensure reference audio does not exceed max_duration_sec to prevent CUDA OOM on long recordings.
-
-    VoxCPM2 achieves optimal voice conditioning on 5-15s samples. Excessively long reference
-    audio (e.g. 30-60s) causes O(N^2) memory explosion in the LLM prefill attention layers on 8GB GPUs.
+    """Ensure reference audio does not exceed max_duration_sec to prevent CUDA OOM on long recordings,
+    and trim leading/trailing dead silence to prevent conditioning the autoregressive model on hesitation pauses.
+    VoxCPM2 achieves optimal voice conditioning on 5-15s clean speech samples.
     Original reference audio files are never modified.
     """
     try:
-        info = sf.info(str(ref_path))
-        if info.duration <= max_duration_sec:
+        data, sr = sf.read(str(ref_path))
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        total_sec = len(data) / sr
+
+        # Find first voiced frame using energy threshold (~ -36 dBFS)
+        frame_len = int(0.02 * sr)
+        threshold = 0.015
+        start_sample = 0
+        end_sample = len(data)
+
+        # Detect start of voice (with 50ms pre-speech margin)
+        for i in range(0, len(data) - frame_len, frame_len):
+            if np.max(np.abs(data[i : i + frame_len])) > threshold:
+                start_sample = max(0, i - int(0.05 * sr))
+                break
+
+        # Detect end of voice (with 80ms post-speech margin)
+        for i in range(len(data) - frame_len, 0, -frame_len):
+            if np.max(np.abs(data[i : i + frame_len])) > threshold:
+                end_sample = min(len(data), i + frame_len + int(0.08 * sr))
+                break
+
+        # Cap length to max_duration_sec
+        max_samples = int(max_duration_sec * sr)
+        if (end_sample - start_sample) > max_samples:
+            end_sample = start_sample + max_samples
+
+        sliced_data = data[start_sample:end_sample]
+        voiced_dur = len(sliced_data) / sr
+
+        # Check if reference needed trimming (leading silence > 0.15s, trailing silence > 0.20s, or duration > 15s)
+        has_trim = (
+            (start_sample > int(0.15 * sr))
+            or (total_sec > max_duration_sec)
+            or (end_sample < (len(data) - int(0.20 * sr)))
+        )
+
+        if not has_trim:
             return ref_path
 
         slices_dir = DATA_DIR / "temp" / "voxcpm_worker" / "ref_slices"
@@ -182,30 +220,31 @@ def get_optimized_reference_path(ref_path: Path, max_duration_sec: float = 15.0)
 
         ref_stat = ref_path.stat()
         cache_key = hashlib.md5(
-            f"{ref_path.name}_{ref_stat.st_mtime}_{ref_stat.st_size}_{max_duration_sec}".encode()
+            f"{ref_path.name}_{ref_stat.st_mtime}_{ref_stat.st_size}_{start_sample}_{end_sample}_{int(max_duration_sec)}".encode()
         ).hexdigest()
-        sliced_path = slices_dir / f"{ref_path.stem}_{cache_key[:12]}_{int(max_duration_sec)}s.wav"
+        sliced_path = slices_dir / f"{ref_path.stem}_{cache_key[:12]}_{voiced_dur:.1f}s.wav"
 
         if sliced_path.exists() and sliced_path.stat().st_size > 44:
             return sliced_path
 
-        data, sr = sf.read(str(ref_path), stop=int(max_duration_sec * info.samplerate))
-        sf.write(str(sliced_path), data, sr, subtype="PCM_16")
+        sf.write(str(sliced_path), sliced_data, sr, subtype="PCM_16")
         try:
             sliced_path.chmod(0o666)
         except OSError:
             pass
 
         logger.info(
-            "Conditioning reference audio '%s' (%.1fs) safely capped to %.1fs at '%s' to protect VRAM.",
+            "Conditioning reference audio '%s' (%.1fs) voiced-trimmed (start=%.2fs, end=%.2fs) and capped to %.1fs at '%s'.",
             ref_path.name,
-            info.duration,
-            max_duration_sec,
+            total_sec,
+            start_sample / sr,
+            end_sample / sr,
+            voiced_dur,
             sliced_path.name,
         )
         return sliced_path
     except Exception as e:
-        logger.warning("Failed to optimize reference audio length (%s); falling back to original: %s", e, ref_path)
+        logger.warning("Failed to optimize reference audio (%s); falling back to original: %s", e, ref_path)
         return ref_path
 
 
@@ -352,7 +391,12 @@ async def synthesize_khmer_speech(
     # Protect VRAM: automatically optimize reference audio duration (safe 15s conditioning slice)
     conditioning_ref_path = get_optimized_reference_path(ref_host_path, max_duration_sec=15.0)
     ref_stat = conditioning_ref_path.stat()
-    prompt_cache_key = (str(conditioning_ref_path), ref_stat.st_mtime, ref_stat.st_size)
+    prompt_cache_key = (
+        str(conditioning_ref_path),
+        ref_stat.st_mtime,
+        ref_stat.st_size,
+        payload.trim_silence_vad,
+    )
 
     # Determine output destination path
     if payload.output_audio_path:
@@ -401,6 +445,7 @@ async def synthesize_khmer_speech(
                     with torch.inference_mode():
                         return model.tts_model.build_prompt_cache(
                             reference_wav_path=str(conditioning_ref_path),
+                            trim_silence_vad=payload.trim_silence_vad,
                         )
 
                 prompt_cache = await asyncio.to_thread(_build_cache)
@@ -439,7 +484,12 @@ async def synthesize_khmer_speech(
                             retry_badcase=True,
                             streaming=False,
                         )
-                        wav, _, _ = next_and_close(gen_result)
+                        wav, _, generated_features = next_and_close(gen_result)
+                        from app.services.voice.generation import validate_generation_length
+                        validate_generation_length(
+                            generated_features.shape[0],
+                            len(model.tts_model.text_tokenizer(clean_text)),
+                        )
                         return wav.squeeze(0).cpu().numpy()
                     except torch.cuda.OutOfMemoryError as initial_oom:
                         logger.warning(
@@ -465,7 +515,12 @@ async def synthesize_khmer_speech(
                             retry_badcase=True,
                             streaming=False,
                         )
-                        wav, _, _ = next_and_close(gen_result)
+                        wav, _, generated_features = next_and_close(gen_result)
+                        from app.services.voice.generation import validate_generation_length
+                        validate_generation_length(
+                            generated_features.shape[0],
+                            len(model.tts_model.text_tokenizer(clean_text)),
+                        )
                         return wav.squeeze(0).cpu().numpy()
 
             wav = await asyncio.to_thread(_run_inference)

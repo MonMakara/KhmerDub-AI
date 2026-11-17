@@ -1,3 +1,4 @@
+import wave
 import json
 import logging
 import subprocess
@@ -343,6 +344,12 @@ class FFmpegVideoProcessor(VideoProcessor):
         if not audio_path.exists() or audio_path.stat().st_size == 0:
             return 0.0
 
+        if audio_path.suffix.lower() == ".wav":
+            try:
+                with wave.open(str(audio_path), "rb") as audio:
+                    return audio.getnframes() / audio.getframerate()
+            except (wave.Error, EOFError):
+                pass
         cmd = [
             self.ffprobe_bin,
             "-v", "error",
@@ -353,7 +360,7 @@ class FFmpegVideoProcessor(VideoProcessor):
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if res.returncode == 0 and res.stdout.strip():
-                return round(float(res.stdout.strip()), 2)
+                return float(res.stdout.strip())
         except Exception as e:
             logger.warning("Failed to probe audio duration for %s: %s", audio_path, e)
         return 0.0

@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, Field
 from app.models.project import ProjectStatus, JobStatus
 
 
@@ -41,6 +41,9 @@ class ProcessingJobResponse(BaseModel):
 
 
 class TranscriptSegmentResponse(BaseModel):
+    source_word_ids: List[str] = Field(default_factory=list)
+    source_audio_reference: Optional[str] = None
+    duration_seconds: Optional[float] = None
     id: str
     segment_order: int
     start_time: float
@@ -49,6 +52,7 @@ class TranscriptSegmentResponse(BaseModel):
     is_approximate: bool = False
     is_manually_edited: bool = False
     dubbing_unit_id: Optional[str] = None
+    speaker_label: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -115,7 +119,25 @@ class SegmentSplitResponse(BaseModel):
     segments: List[TranscriptSegmentResponse]
 
 
+class SegmentVoiceUpdate(BaseModel):
+    provider: Optional[str] = None
+    voice: Optional[str] = None
+    style: Optional[str] = None
+    emotion_style: Optional[str] = None
+
+
+class BulkSegmentVoiceUpdate(SegmentVoiceUpdate):
+    segment_ids: List[str] = Field(min_length=1, max_length=1000)
+
+
 class TranslationSegmentResponse(BaseModel):
+    voice_override_provider: Optional[str] = None
+    voice_override_id: Optional[str] = None
+    effective_tts_provider: Optional[str] = None
+    effective_tts_voice: Optional[str] = None
+    voice_revision: int = 0
+    tts_error: Optional[str] = None
+    speaker_label: Optional[str] = None
     id: str
     project_id: str
     transcript_segment_id: Optional[str] = None
@@ -167,6 +189,7 @@ class TranslationListResponse(BaseModel):
 
 
 class GeneratedAudioResponse(BaseModel):
+    voice_revision: Optional[int] = None
     id: str
     project_id: str
     translation_segment_id: Optional[str] = None
@@ -189,6 +212,9 @@ class GeneratedAudioListResponse(BaseModel):
     status: ProjectStatus
     audios: List[GeneratedAudioResponse]
     total_duration_seconds: float = 0.0
+    current_count: int = 0
+    outdated_count: int = 0
+    missing_count: int = 0
 
 
 class TimingConflictResponse(BaseModel):
@@ -209,6 +235,15 @@ class TimingConflictResponse(BaseModel):
     message: str
 
 
+class AudioStatusSummary(BaseModel):
+    total_dubbing_units: int
+    current: int
+    outdated: int
+    missing: int
+    generating: int = 0
+    failed: int = 0
+
+
 class ExportStatusResponse(BaseModel):
     project_id: str
     status: ProjectStatus
@@ -221,6 +256,7 @@ class ExportStatusResponse(BaseModel):
     exported_file_size_bytes: Optional[int] = None
     timing_conflicts: List[TimingConflictResponse] = []
     timing_summary: Optional[Dict[str, Any]] = None
+    audio_status: Optional[AudioStatusSummary] = None
     pipeline_version: str = "v2.3"
     video_url: Optional[str] = None
     download_url: Optional[str] = None
@@ -248,9 +284,29 @@ class VoiceListResponse(BaseModel):
 
 
 class VoicePreviewRequest(BaseModel):
-    provider: str = "gtts"
-    voice: str = "default"
+    provider: str = "edge"
+    voice: str = "km-KH-PisethNeural"
     text: Optional[str] = None
+    emotion_style: Optional[str] = None
+    pitch: Optional[str] = None
+    volume: Optional[str] = None
+    rate: Optional[str] = None
+
+
+class EmotionStyleResponse(BaseModel):
+    id: str
+    label_km: str
+    label_en: str
+    category: str
+    icon: str
+    description: str
+    prosody: Dict[str, str]
+    translation_guidance: Optional[str] = None
+
+
+class EmotionListResponse(BaseModel):
+    emotions: List[EmotionStyleResponse]
+    default_emotion: str = "calm"
 
 
 class TranslationProviderResponse(BaseModel):
@@ -356,8 +412,8 @@ class ProjectCreate(BaseModel):
     target_language: str = "km"
     translation_provider: Optional[str] = "nllb"
     translation_style: Optional[str] = "natural"
-    tts_provider: Optional[str] = "gtts"
-    tts_voice: Optional[str] = "default"
+    tts_provider: Optional[str] = "edge"
+    tts_voice: Optional[str] = "km-KH-PisethNeural"
     pipeline_version: Optional[str] = "v2.3"
 
 
@@ -390,8 +446,8 @@ class ProjectSummaryResponse(BaseModel):
     target_language: str
     translation_provider: str = "nllb"
     translation_style: str = "natural"
-    tts_provider: str = "gtts"
-    tts_voice: str = "default"
+    tts_provider: str = "edge"
+    tts_voice: str = "km-KH-PisethNeural"
     pipeline_version: str = "v2.3"
     status: ProjectStatus
     created_at: datetime
@@ -465,4 +521,52 @@ class SubtitleResetResponse(BaseModel):
     message: str
     deleted_count: int
     language: str
+
+
+class ProjectSpeakerResponse(BaseModel):
+    id: str
+    project_id: str
+    speaker_label: str
+    display_name: str
+    detected_gender: str
+    average_pitch_hz: Optional[float] = None
+    color: str
+    assigned_voice_provider: Optional[str] = None
+    assigned_voice_id: Optional[str] = None
+    segment_count: int = 0
+    total_duration: float = 0.0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectSpeakerUpdate(BaseModel):
+    display_name: Optional[str] = None
+    assigned_voice_provider: Optional[str] = None
+    assigned_voice_id: Optional[str] = None
+    color: Optional[str] = None
+
+
+class SegmentSpeakerUpdate(BaseModel):
+    speaker_label: Optional[str] = None
+
+
+class BulkSegmentSpeakerUpdate(BaseModel):
+    segment_ids: List[str] = Field(min_length=1, max_length=1000)
+    speaker_label: Optional[str] = None
+
+
+class DiarizationRunRequest(BaseModel):
+    min_speakers: Optional[int] = Field(default=1, ge=1, le=10)
+    max_speakers: Optional[int] = Field(default=6, ge=1, le=10)
+
+
+class DiarizationRunResponse(BaseModel):
+    project_id: str
+    speakers_detected: int
+    speakers: List[ProjectSpeakerResponse]
+    assigned_segments_count: int
+    message: str
+
 

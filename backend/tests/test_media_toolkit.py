@@ -14,7 +14,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.storage import (
     get_project_original_dir,
     get_toolkit_task_dir,
@@ -503,17 +502,29 @@ def test_transcribe_reusing_project_transcripts(sample_video_with_audio: Path, d
         assert "reused_from_project" in json.dumps(data["output_media_metadata"])
 
 
-def test_transcribe_khmer_language_unsupported_notice():
-    """Test that requesting Khmer language explicitly returns a clear descriptive 400 error."""
-    resp = client.post(
-        "/api/toolkit/transcribe",
-        data={
-            "project_id": "dummy-project",
-            "language": "km",
-        },
-    )
-    assert resp.status_code == 400
-    assert "Khmer speech recognition is not officially supported" in resp.json()["detail"]
+def test_transcribe_khmer_language_supported(sample_audio_wav: Path):
+    """Test that requesting Khmer language is supported and routes to Khmer transcription."""
+    mock_segments = [
+        TranscriptionSegment(segment_order=1, start_time=0.0, end_time=2.0, text="សួស្តីពិភពលោក"),
+    ]
+    with patch("app.api.endpoints.toolkit.whisper_provider.transcribe", return_value=mock_segments) as mock_transcribe:
+        with open(sample_audio_wav, "rb") as f:
+            resp = client.post(
+                "/api/toolkit/transcribe",
+                files={"file": ("khmer_sample.wav", f, "audio/wav")},
+                data={
+                    "tool_type": "audio_to_transcript",
+                    "language": "km",
+                },
+            )
+        assert resp.status_code == 200
+        mock_transcribe.assert_called_once()
+        _, kwargs = mock_transcribe.call_args
+        assert kwargs.get("language") == "km"
+        data = resp.json()
+        assert data["status"] == "completed"
+        assert len(data["segments"]) == 1
+        assert data["segments"][0]["text"] == "សួស្តីពិភពលោក"
 
 
 def test_segment_edit_and_persistence(sample_video_with_audio: Path):

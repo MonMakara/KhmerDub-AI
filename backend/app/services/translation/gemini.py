@@ -42,11 +42,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 SUPPORTED_GEMINI_MODELS = [
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash-lite",
     "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-    "gemini-3.8-flash",
     "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-lite-latest",
+]
+FALLBACK_GEMINI_MODELS = [
+    "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
 ]
 DEPRECATED_GEMINI_MODELS = {
     "gemini-2.5-flash",
@@ -64,11 +69,13 @@ class GeminiTranslationProvider(TranslationProvider):
     natural conversational rewriting, and alternatives tailored for video dubbing.
     """
 
+    BATCH_CHUNK_SIZE: int = 15
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         max_retries: int = 3,
     ):
         self._explicit_key = api_key
@@ -84,6 +91,7 @@ class GeminiTranslationProvider(TranslationProvider):
             self.model = raw_model
         self.timeout = timeout
         self.max_retries = max_retries
+        self._exhausted_models = set()
 
     @property
     def api_key(self) -> Optional[str]:
@@ -159,7 +167,10 @@ class GeminiTranslationProvider(TranslationProvider):
         cfg = config or types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
             temperature=0.3,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
+        if getattr(cfg, "thinking_config", None) is None:
+            cfg.thinking_config = types.ThinkingConfig(thinking_budget=0)
 
         last_error = None
         for attempt in range(1, self.max_retries + 1):
@@ -181,25 +192,77 @@ class GeminiTranslationProvider(TranslationProvider):
                 if code in (401, 403) or "API_KEY_INVALID" in msg:
                     raise ProviderAuthenticationError(f"Gemini API authentication failed: {msg}") from e
                 elif code == 429 or "RESOURCE_EXHAUSTED" in msg:
+                    is_daily_quota = any(
+                        k in msg
+                        for k in (
+                            "per day limit exceeded",
+                            "PerDay",
+                            "quotaValue",
+                            "retryDelay",
+                            "retry in ",
+                            "PerProjectPerModel",
+                        )
+                    )
+
+                    # If model hit per-model daily quota, attempt automatic fallback to next available model
+                    if is_daily_quota or attempt == self.max_retries:
+                        self._exhausted_models.add(self.model)
+                        fallback_found = False
+                        for fb_model in FALLBACK_GEMINI_MODELS:
+                            if fb_model != self.model and fb_model not in self._exhausted_models:
+                                logger.warning(
+                                    "Gemini model '%s' quota exhausted (429). Attempting automatic fallback to '%s'...",
+                                    self.model,
+                                    fb_model,
+                                )
+                                self.model = fb_model
+                                fallback_found = True
+                                break
+                        if fallback_found:
+                            # Retry immediately with the alternate model
+                            continue
+
                     if attempt < self.max_retries:
-                        delay = 2.0 * attempt
-                        logger.warning("Gemini rate limit encountered. Retrying in %.1fs...", delay)
+                        delay = 2.5 * attempt
+                        logger.warning(
+                            "Gemini rate limit encountered on '%s'. Retrying in %.1fs (attempt %d/%d)...",
+                            self.model,
+                            delay,
+                            attempt,
+                            self.max_retries,
+                        )
                         time.sleep(delay)
                         continue
-                    raise RateLimitError(f"Gemini API quota or rate limit exceeded: {msg}") from e
-                elif code in (500, 503) or "UNAVAILABLE" in msg:
+
+                    # Extract retry delay if available from Google error
+                    m_delay = re.search(r"retry in ([0-9a-zA-Z\.\s]+)", msg, re.IGNORECASE)
+                    delay_str = f" (please retry in {m_delay.group(1).strip()})" if m_delay else ""
+                    clean_msg = (
+                        f"Google Gemini Free Tier daily quota or rate limit exceeded on model '{self.model}'{delay_str}. "
+                        f"To continue translating immediately without quota limits, select the offline 'NLLB' provider in project settings."
+                    )
+                    raise RateLimitError(clean_msg) from e
+                elif code in (500, 502, 503, 504) or "UNAVAILABLE" in msg or "DEADLINE_EXCEEDED" in msg:
                     if attempt < self.max_retries:
                         delay = 1.5 * attempt
+                        logger.warning(
+                            "Gemini transient error (%s: %s). Retrying in %.1fs (attempt %d/%d)...",
+                            code, msg, delay, attempt, self.max_retries,
+                        )
                         time.sleep(delay)
                         continue
-                    raise ProviderUnavailableError(f"Gemini service unavailable: {msg}") from e
+                    if code == 504 or "DEADLINE_EXCEEDED" in msg:
+                        raise ProviderTimeoutError(f"Gemini deadline exceeded (504): {msg}") from e
+                    raise ProviderUnavailableError(f"Gemini service unavailable ({code}): {msg}") from e
                 else:
                     raise TextTranslationError(f"Gemini API error ({code}): {msg}") from e
 
             except (TimeoutError, ConnectionError) as e:
                 last_error = e
                 if attempt < self.max_retries:
-                    time.sleep(1.5 * attempt)
+                    delay = 1.5 * attempt
+                    logger.warning("Gemini network timeout/connection error: %s. Retrying in %.1fs (attempt %d/%d)...", e, delay, attempt, self.max_retries)
+                    time.sleep(delay)
                     continue
                 raise ProviderTimeoutError(f"Network timeout contacting Gemini API: {e}") from e
             except Exception as e:
@@ -207,69 +270,165 @@ class GeminiTranslationProvider(TranslationProvider):
 
         raise TextTranslationError(f"Gemini request failed after {self.max_retries} attempts: {last_error}")
 
+    def _translate_single_segment(
+        self,
+        text: str,
+        style: str = "natural",
+        context: Optional[str] = None,
+        duration: Optional[float] = None,
+    ) -> str:
+        """Translate a single segment with retry and duration fitting."""
+        raw_text = (text or "").strip()
+        if not raw_text:
+            return ""
+
+        prompt = build_single_translation_prompt(raw_text, style=style, context=context, duration=duration)
+        cfg = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        )
+        raw_out = self._call_gemini_with_retry(prompt, config=cfg)
+        formatted = KhmerGlossary.align_terminology(raw_text, raw_out)
+        formatted = KhmerTextFormatter.format(formatted)
+        if duration and duration > 0.0:
+            from app.services.dubbing.auto_fit import shorten_khmer_text
+            c_lim = max(18, int(duration * 12.0))
+            if len(formatted) > c_lim:
+                formatted = shorten_khmer_text(formatted, target_char_count=c_lim)
+        return formatted
+
+    def _translate_chunk(
+        self,
+        chunk_texts: List[str],
+        style: str = "natural",
+        contexts: Optional[List[str]] = None,
+        durations: Optional[List[float]] = None,
+    ) -> List[str]:
+        """Translate a small batch chunk (up to BATCH_CHUNK_SIZE) with structured JSON, falling back to per-segment on error."""
+        if not chunk_texts:
+            return []
+
+        if len(chunk_texts) == 1:
+            dur = durations[0] if (durations and len(durations) > 0) else None
+            ctx = contexts[0] if (contexts and len(contexts) > 0) else None
+            return [self._translate_single_segment(chunk_texts[0], style=style, context=ctx, duration=dur)]
+
+        # Attempt batch translation with structured JSON output
+        try:
+            prompt = build_batch_translation_prompt(
+                chunk_texts,
+                style=style,
+                durations=durations,
+                contexts=contexts,
+            )
+            cfg = types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.3,
+                response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            )
+            raw_json = self._call_gemini_with_retry(prompt, config=cfg)
+
+            cleaned_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_json.strip())
+            data = json.loads(cleaned_json)
+
+            if isinstance(data, dict) and "segments" in data:
+                data = data["segments"]
+
+            if isinstance(data, list):
+                lookup = {item.get("id"): item.get("khmer", "") for item in data if isinstance(item, dict)}
+                chunk_results = []
+                for idx, eng in enumerate(chunk_texts):
+                    if not eng:
+                        chunk_results.append("")
+                        continue
+                    km = lookup.get(idx + 1, "")
+                    if not km:
+                        dur = durations[idx] if (durations and idx < len(durations)) else None
+                        ctx = contexts[idx] if (contexts and idx < len(contexts)) else None
+                        km = self._translate_single_segment(eng, style=style, context=ctx, duration=dur)
+                    else:
+                        km = KhmerGlossary.align_terminology(eng, km)
+                        km = KhmerTextFormatter.format(km)
+                        if durations and idx < len(durations) and durations[idx] and durations[idx] > 0.0:
+                            from app.services.dubbing.auto_fit import shorten_khmer_text
+                            c_lim = max(18, int(durations[idx] * 12.0))
+                            if len(km) > c_lim:
+                                km = shorten_khmer_text(km, target_char_count=c_lim)
+                    chunk_results.append(km)
+                return chunk_results
+
+            logger.warning("Batch translation JSON output was not a list: %s", raw_json[:100])
+
+        except Exception as e:
+            logger.warning(
+                "Batch translation failed for chunk of %d segments (%s). Falling back to per-segment translation.",
+                len(chunk_texts),
+                e,
+            )
+
+        # Fallback to per-segment translation for this chunk
+        chunk_results = []
+        for idx, eng in enumerate(chunk_texts):
+            dur = durations[idx] if (durations and idx < len(durations)) else None
+            ctx = contexts[idx] if (contexts and idx < len(contexts)) else None
+            km = self._translate_single_segment(eng, style=style, context=ctx, duration=dur)
+            chunk_results.append(km)
+
+        return chunk_results
+
     def translate(
         self,
         texts: List[str],
         source_lang: str = "en",
         target_lang: str = "km",
         style: str = "natural",
+        contexts: Optional[List[str]] = None,
+        durations: Optional[List[float]] = None,
+        **kwargs,
     ) -> List[str]:
-        """Translate a list of English sentences into Khmer using Gemini with chosen style."""
+        """Translate a list of English sentences into Khmer using Gemini with chosen style.
+
+        Segments are chunked into small sub-batches (BATCH_CHUNK_SIZE) with thinking budget=0
+        and a 60s timeout to prevent 504 DEADLINE_EXCEEDED errors.
+        """
         if not texts:
             return []
 
-        clean_texts = [t.strip() for t in texts]
-        results = []
+        clean_texts = [t.strip() if t else "" for t in texts]
+        non_empty = [t for t in clean_texts if t]
+        if not non_empty:
+            return [""] * len(texts)
 
         # If translating a single segment
         if len(clean_texts) == 1:
             raw_text = clean_texts[0]
             if not raw_text:
                 return [""]
-            prompt = build_single_translation_prompt(raw_text, style=style)
-            cfg = types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.3,
+            seg_dur = durations[0] if (durations and len(durations) > 0) else None
+            seg_ctx = contexts[0] if (contexts and len(contexts) > 0) else None
+            return [self._translate_single_segment(raw_text, style=style, context=seg_ctx, duration=seg_dur)]
+
+        # Multiple segments: chunk into sub-batches of BATCH_CHUNK_SIZE
+        results: List[str] = []
+        chunk_size = self.BATCH_CHUNK_SIZE
+
+        for i in range(0, len(clean_texts), chunk_size):
+            if i > 0:
+                # Brief pacing pause between chunks to respect free-tier RPM limits
+                time.sleep(0.5)
+            chunk_texts = clean_texts[i : i + chunk_size]
+            chunk_durations = durations[i : i + chunk_size] if durations else None
+            chunk_contexts = contexts[i : i + chunk_size] if contexts else None
+
+            chunk_results = self._translate_chunk(
+                chunk_texts=chunk_texts,
+                style=style,
+                contexts=chunk_contexts,
+                durations=chunk_durations,
             )
-            raw_out = self._call_gemini_with_retry(prompt, config=cfg)
-            formatted = KhmerGlossary.align_terminology(raw_text, raw_out)
-            formatted = KhmerTextFormatter.format(formatted)
-            return [formatted]
-
-        # For multiple segments, translate with structured batch prompt
-        prompt = build_batch_translation_prompt(clean_texts, style=style)
-        cfg = types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.3,
-            response_mime_type="application/json",
-        )
-        raw_json = self._call_gemini_with_retry(prompt, config=cfg)
-
-        try:
-            # Strip markdown if present
-            cleaned_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_json.strip())
-            data = json.loads(cleaned_json)
-            if isinstance(data, list):
-                lookup = {item.get("id"): item.get("khmer", "") for item in data}
-                for i, eng in enumerate(clean_texts):
-                    km = lookup.get(i + 1, "")
-                    km = KhmerGlossary.align_terminology(eng, km)
-                    km = KhmerTextFormatter.format(km)
-                    results.append(km)
-                return results
-        except Exception as e:
-            logger.warning("Batch JSON parsing failed (%s). Falling back to per-segment translation.", e)
-
-        # Fallback to per-segment translation
-        for t in clean_texts:
-            if not t:
-                results.append("")
-                continue
-            p = build_single_translation_prompt(t, style=style)
-            out = self._call_gemini_with_retry(p)
-            out = KhmerGlossary.align_terminology(t, out)
-            out = KhmerTextFormatter.format(out)
-            results.append(out)
+            results.extend(chunk_results)
 
         return results
 
@@ -304,6 +463,7 @@ class GeminiTranslationProvider(TranslationProvider):
             system_instruction=SYSTEM_INSTRUCTION,
             temperature=0.3,
             response_mime_type="application/json",
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
         raw_json = self._call_gemini_with_retry(prompt, config=cfg)
 
@@ -357,6 +517,7 @@ class GeminiTranslationProvider(TranslationProvider):
             system_instruction=SYSTEM_INSTRUCTION,
             temperature=0.4,
             response_mime_type="application/json",
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
         raw_json = self._call_gemini_with_retry(prompt, config=cfg)
 

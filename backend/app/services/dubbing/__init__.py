@@ -12,6 +12,11 @@ from app.services.dubbing.timing_optimizer import (
     TimelineOptimizationResult,
     SegmentTimingAnalysis,
 )
+from app.services.dubbing.audio_mixer import (
+    AudioDuckingMixer,
+    DuckingConfig,
+    DuckingPreset,
+)
 
 __all__ = [
     "AudioSynchronizationService",
@@ -20,6 +25,9 @@ __all__ = [
     "TimingConflictError",
     "VideoExportService",
     "ExportResult",
+    "AudioDuckingMixer",
+    "DuckingConfig",
+    "DuckingPreset",
     "DubbingPipeline",
     "DubbingPipelineResult",
     "AutoFitService",

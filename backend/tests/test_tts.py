@@ -4,10 +4,8 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.project import (
     Project,
-    TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
     ProcessingJob,
@@ -116,6 +114,8 @@ def test_tts_worker_missing_translations(db_session: Session):
 def test_tts_worker_success(db_session: Session, tmp_path: Path):
     project = Project(
         title="TTS Success Project",
+        tts_provider="gtts",
+        tts_voice="default",
         original_language="en",
         target_language="km",
         status=ProjectStatus.TRANSLATED,
@@ -244,6 +244,8 @@ def test_tts_audio_invalidation_on_translation_edit(client: TestClient, db_sessi
 def test_tts_single_segment_regenerate(client: TestClient, db_session: Session, tmp_path: Path):
     project = Project(
         title="Regenerate Project",
+        tts_provider="gtts",
+        tts_voice="default",
         original_language="en",
         target_language="km",
         status=ProjectStatus.VOICE_GENERATED,
@@ -355,3 +357,26 @@ def test_real_gtts_synthesis_integration(tmp_path: Path):
     assert result.provider_name == "gtts"
     assert result.voice == "default"
     assert result.language == "km"
+
+
+def test_edge_text_sanitizer():
+    """Verify that Edge TTS text sanitizer handles HTML, Latin-Khmer boundaries, and punctuation."""
+    from app.services.tts.edge import _sanitize_text_for_edge
+
+    # Latin boundary spacing
+    res = _sanitize_text_for_edge("CPUដំណើរការ100ភាគរយ")
+    assert "CPU" in res and "100" in res
+    assert " " in res
+
+    # HTML tags and entities
+    res2 = _sanitize_text_for_edge("<p>ជំរាបសួរ &amp; សួស្តី</p>")
+    assert "<p>" not in res2
+    assert "និង" in res2
+
+    # Trailing period converted to Khmer full stop
+    res3 = _sanitize_text_for_edge("ខ្ញុំយល់ព្រម.")
+    assert res3.endswith("។")
+
+    # Sentence punctuation check
+    res4 = _sanitize_text_for_edge("តើអ្នកសុខសប្បាយទេ?")
+    assert res4.endswith("?")

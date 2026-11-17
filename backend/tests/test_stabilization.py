@@ -1,6 +1,5 @@
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -12,13 +11,9 @@ from app.models.project import (
     ProcessingJob,
     JobStatus,
     ProjectStatus,
-    TranscriptSegment,
-    TranslationSegment,
-    GeneratedAudio,
 )
 from app.services.dubbing.synchronizer import (
     AudioSynchronizationService,
-    TimingConflictError,
 )
 
 

@@ -129,6 +129,22 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [fetchHealth, fetchProjects]);
 
+  // Auto-poll projects when any project is actively processing in background
+  useEffect(() => {
+    const hasActiveProjects = projects.some((p) =>
+      ['uploaded', 'audio_extracted', 'transcribing', 'translating', 'generating_voice', 'synchronizing'].includes(
+        p.status
+      )
+    );
+    if (!hasActiveProjects) return;
+
+    const interval = setInterval(() => {
+      fetchProjects();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [projects, fetchProjects]);
+
   const handleCreateProject = async (title: string): Promise<string> => {
     const created = await api.createProject(title);
     await fetchProjects();

@@ -4,7 +4,6 @@ Tests provider interface, database authorization checks, audio transcode/sync,
 outdated audio invalidation, error resilience, and end-to-end dubbing compatibility.
 """
 
-import os
 import shutil
 import subprocess
 import uuid
@@ -15,10 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.storage import (
     get_audio_segment_path,
-    get_exported_video_path,
     get_project_output_dir,
     get_timeline_audio_path,
     get_voice_profile_audio_path,
@@ -36,12 +33,10 @@ from app.models.project import (
     Video,
 )
 from app.models.voice import VoiceConsent, VoiceProfile
-from app.services.dubbing.exporter import VideoExportService
 from app.services.dubbing.synchronizer import AudioSynchronizationService
 from app.services.tts.base import TTSAudioResult
 from app.services.tts.exceptions import (
     EmptyTextError,
-    TTSGenerationError,
     TTSNetworkError,
     VoiceNotSupportedError,
 )
@@ -51,8 +46,6 @@ from app.services.tts.registry import (
     list_supported_voices,
 )
 from app.services.tts.voxcpm import VoxCPM2TTSProvider
-from app.services.video.ffmpeg import FFmpegVideoProcessor
-from app.workers.tts import synthesize_segment_audio
 
 client = TestClient(app)
 
@@ -270,6 +263,7 @@ def test_api_tts_voices_includes_custom_voices(authorized_profile):
     assert custom_voice["is_custom"] is True
 
 
+@patch("app.services.tts.voxcpm.VoxCPM2TTSProvider.is_worker_online", new=lambda self: True)
 def test_project_voice_selection_and_audio_invalidation(authorized_profile, db_session):
     """Verify changing project voice to custom voice marks existing audio and exports as outdated."""
     proj = Project(
@@ -440,6 +434,7 @@ def test_voxcpm_seed_parameter_forwarded_to_worker(authorized_profile: VoiceProf
     assert captured_payloads[0]["text"] == "សូមស្វាគមន៍"
 
 
+@patch("app.services.tts.voxcpm.VoxCPM2TTSProvider.is_worker_online", new=lambda self: True)
 def test_multi_segment_project_seed_deterministic_derivation(db_session: Session, authorized_profile: VoiceProfile):
     """Phase 13D: Verify process_tts derives deterministic seed and synthesizes all segments consistently."""
     import hashlib

@@ -2,24 +2,17 @@ import io
 import wave
 import struct
 import math
-from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.core.config import settings
 from app.core.storage import (
-    get_voice_profile_dir,
     get_voice_profile_audio_path,
-    delete_voice_profile_storage,
-    delete_project_storage,
 )
-from app.models.voice import VoiceProfile, VoiceConsent
 from app.services.voice.inspector import AudioQualityInspector
 from app.services.voice.exceptions import (
     AudioValidationError,
     AudioTooShortError,
-    AudioTooLongError,
     AudioSilentError,
 )
 
@@ -113,7 +106,7 @@ def test_voice_studio_get_empty_or_system_voices():
     data = response.json()
     assert "system_voices" in data
     assert len(data["system_voices"]) >= 3
-    assert any(v["voice"] == "default" for v in data["system_voices"])
+    assert not any(v["provider"] == "gtts" for v in data["system_voices"])
     assert any(v["voice"] == "km-KH-PisethNeural" for v in data["system_voices"])
     assert any(v["voice"] == "km-KH-SreymomNeural" for v in data["system_voices"])
     assert "custom_profiles" in data
@@ -261,12 +254,11 @@ def test_storage_isolation_between_projects_and_voices(tmp_path):
     assert not voice_audio.exists()
 
 
-def test_existing_tts_preview_unaffected():
-    """Verify existing TTS preview endpoints continue to work seamlessly."""
-    # Test Google TTS preview
+def test_removed_google_preview_rejected():
+    """The removed Google Khmer voice cannot be previewed."""
+    # Google Khmer is no longer selectable
     res = client.post(
         "/api/tts/preview",
         json={"provider": "gtts", "voice": "default", "text": "សួស្តី"},
     )
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "audio/mpeg"
+    assert res.status_code == 400

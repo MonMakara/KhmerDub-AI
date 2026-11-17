@@ -1,0 +1,35 @@
+{
+  "light": {
+    "duration_seconds": 10.2,
+    "frames_preserved": true,
+    "si_sdr_before_db": 19.68366813659668,
+    "si_sdr_after_db": 23.191862106323242,
+    "background_only_reduction_db": 4.017848491668701,
+    "speech_correlation": 0.9990767221956764,
+    "quiet_phrase_gain": 0.9983126521110535,
+    "clipped_samples": 0,
+    "lexical_and_perceptual_quality": "not human-verified"
+  },
+  "balanced": {
+    "duration_seconds": 10.2,
+    "frames_preserved": true,
+    "si_sdr_before_db": 19.68366813659668,
+    "si_sdr_after_db": 24.351804733276367,
+    "background_only_reduction_db": 5.544119834899902,
+    "speech_correlation": 0.9992270298341064,
+    "quiet_phrase_gain": 0.998110294342041,
+    "clipped_samples": 0,
+    "lexical_and_perceptual_quality": "not human-verified"
+  },
+  "strong": {
+    "duration_seconds": 10.2,
+    "frames_preserved": true,
+    "si_sdr_before_db": 19.68366813659668,
+    "si_sdr_after_db": 25.147172927856445,
+    "background_only_reduction_db": 6.738944053649902,
+    "speech_correlation": 0.9993042489904512,
+    "quiet_phrase_gain": 0.9980102777481079,
+    "clipped_samples": 0,
+    "lexical_and_perceptual_quality": "not human-verified"
+  }
+}

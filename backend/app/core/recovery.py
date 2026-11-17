@@ -171,7 +171,7 @@ def recover_interrupted_toolkit_tasks(db: Session) -> int:
     """
     interrupted_tasks = (
         db.query(ToolkitTask)
-        .filter(ToolkitTask.status.in_(["pending", "processing"]))
+        .filter(ToolkitTask.status.in_(["pending", "processing", "cancelling"]))
         .all()
     )
 
@@ -195,6 +195,15 @@ def recover_interrupted_toolkit_tasks(db: Session) -> int:
         # Clean partial files in toolkit task directory
         try:
             task_dir = get_toolkit_task_dir(task_id)
+            if task.tool_type == "audio_cleaning":
+                import shutil
+                import json
+                work = task_dir / ".cleaning-work"
+                if work.is_dir() and work.resolve().parent == task_dir.resolve():
+                    shutil.rmtree(work)
+                meta = json.loads(task.output_media_metadata or "{}")
+                meta["phase"] = "Failed — interrupted by restart"
+                task.output_media_metadata = json.dumps(meta)
             if task_dir.exists():
                 for item in task_dir.rglob("*"):
                     if item.is_file() and (item.suffix in {".part", ".ytdl", ".tmp"} or "temp" in item.name or "raw_" in item.name):

@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -19,8 +18,6 @@ from app.core.storage import (
 from app.services.downloader.security import (
     safe_connection_guard,
     validate_and_classify_url,
-    SSRFSecurityError,
-    DownloaderSecurityError,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 

@@ -1,12 +1,15 @@
 import csv
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
 import uuid
 import zipfile
 from datetime import datetime
+from functools import partial
+import anyio.to_thread
 from app.core.timezone import get_cambodia_now, get_cambodia_now_naive
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +21,6 @@ from fastapi import (
     File,
     Form,
     HTTPException,
-    Response,
     UploadFile,
     status,
 )
@@ -53,7 +55,6 @@ from app.models.toolkit import (
     ToolkitTTSSegment,
     ToolkitTranslationSegment,
 )
-from app.schemas.project import VoiceOptionResponse
 from app.services.subtitles.generator import (
     SubtitleCue,
     generate_csv,
@@ -65,9 +66,18 @@ from app.services.subtitles.parser import (
     parse_transcript_content,
     TranscriptParseError,
 )
+from app.services.subtitles.text_extractor import (
+    TranscriptTextExtractor,
+    TranscriptToTextResult,
+)
 from app.services.dubbing.synchronizer import (
     AudioSynchronizationService,
-    TimingConflict,
+)
+from app.services.tts.segment_fitter import (
+    SegmentFitResult,
+    fit_segment_audio,
+    assemble_fitted_timeline,
+    TimingOverflowError,
 )
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
 from app.services.translation.registry import (
@@ -85,7 +95,6 @@ from app.services.video.exceptions import (
     CorruptedVideoError,
     InvalidVideoFormatError,
     NoAudioTrackError,
-    VideoProcessingError,
 )
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 
@@ -94,6 +103,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 video_processor = FFmpegVideoProcessor()
 whisper_provider = FasterWhisperTranscriptionProvider()
+transcript_text_extractor = TranscriptTextExtractor()
 
 # MIME types for audio, video, and exported file formats
 AUDIO_MIME_TYPES = {
@@ -113,6 +123,7 @@ MEDIA_MIME_TYPES = {
 
 EXPORT_MIME_TYPES = {
     "txt": "text/plain; charset=utf-8",
+    "md": "text/markdown; charset=utf-8",
     "srt": "application/x-subrip; charset=utf-8",
     "vtt": "text/vtt; charset=utf-8",
     "json": "application/json; charset=utf-8",
@@ -154,6 +165,13 @@ class ToolkitTTSSegmentResponse(BaseModel):
     file_size_bytes: Optional[int] = None
     status: str
     error_message: Optional[str] = None
+    slot_sec: Optional[float] = None
+    raw_duration_sec: Optional[float] = None
+    final_duration_sec: Optional[float] = None
+    speed_factor_applied: Optional[float] = None
+    method: Optional[str] = None
+    padded_sec: Optional[float] = None
+    warning: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -165,6 +183,10 @@ class TTSPreviewRequest(BaseModel):
     provider: str
     voice: str
     language: str = "km"
+    emotion_style: Optional[str] = None
+    pitch: Optional[str] = None
+    volume: Optional[str] = None
+    rate: Optional[str] = None
 
 
 class TTSGenerateRequest(BaseModel):
@@ -172,6 +194,7 @@ class TTSGenerateRequest(BaseModel):
     provider: str
     voice: str
     language: str = "km"
+    emotion_style: Optional[str] = "calm"
     target_format: str = "mp3"
     pause_duration_seconds: float = 0.4
     source_task_id: Optional[str] = None
@@ -182,6 +205,7 @@ class TTSSegmentRegenerateRequest(BaseModel):
     pause_duration_seconds: Optional[float] = None
     voice: Optional[str] = None
     provider: Optional[str] = None
+    emotion_style: Optional[str] = None
 
 
 class TranscriptToAudioParseRequest(BaseModel):
@@ -196,16 +220,25 @@ class TranscriptToAudioSegmentInput(BaseModel):
     end_time: Optional[float] = None
     voice: Optional[str] = None
     provider: Optional[str] = None
+    emotion_style: Optional[str] = None
 
 
 class TranscriptToAudioGenerateRequest(BaseModel):
     segments: List[TranscriptToAudioSegmentInput]
     mode: str = "narration"  # "narration" or "timed"
-    provider: str = "gtts"
-    voice: str = "default"
+    provider: str = "edge"
+    voice: str = "km-KH-PisethNeural"
     language: str = "km"
+    emotion_style: Optional[str] = "calm"
     target_format: str = "mp3"
     pause_duration_seconds: float = 0.4
+    fit_to_timestamps: Optional[bool] = None
+    min_speed: float = 0.75
+    max_speed: float = 1.25
+    fit_tolerance_sec: float = 0.05
+    allow_slow_down: bool = True
+    overflow_policy: str = "allow_overlap"
+    fill_mode: str = "natural"  # "natural" (min 0.75x + pad) or "stretch" (min 0.5x)
     source_task_id: Optional[str] = None
     filename: Optional[str] = "transcript.srt"
 
@@ -216,6 +249,14 @@ class TranscriptSegmentUpdateRequest(BaseModel):
     end_time: Optional[float] = None
     voice: Optional[str] = None
     provider: Optional[str] = None
+    emotion_style: Optional[str] = None
+    fit_to_timestamps: Optional[bool] = None
+    min_speed: Optional[float] = None
+    max_speed: Optional[float] = None
+    fit_tolerance_sec: Optional[float] = None
+    allow_slow_down: Optional[bool] = None
+    overflow_policy: Optional[str] = None
+    fill_mode: Optional[str] = None
 
 
 class SegmentUpdateRequest(BaseModel):
@@ -282,6 +323,19 @@ class SubtitleConvertRequest(BaseModel):
     source_format: str = "srt"
     target_format: str = "vtt"
     filename: Optional[str] = "subtitles.vtt"
+
+
+class TranscriptToTextRequest(BaseModel):
+    content: Optional[str] = None
+    source_task_id: Optional[str] = None
+    filename: Optional[str] = "transcript.srt"
+    paragraph_mode: str = "smart_paragraphs"  # smart_paragraphs, continuous, line_by_line, timestamped
+    speaker_handling: str = "strip"  # strip, keep
+    pause_threshold_seconds: float = 1.5
+    deduplicate_phrases: bool = True
+    strip_tags: bool = True
+    target_format: str = "txt"  # txt, md, json
+    title: Optional[str] = "Extracted Transcript"
 
 
 class DownloaderInfoRequest(BaseModel):
@@ -373,8 +427,13 @@ def _serialize_segment(seg: ToolkitTranscriptSegment) -> Dict[str, Any]:
     }
 
 
-def _serialize_tts_segment(seg: ToolkitTTSSegment) -> Dict[str, Any]:
-    """Helper to convert TTS segment model to dict."""
+def _serialize_tts_segment(seg: ToolkitTTSSegment, fit_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Helper to convert TTS segment model to dict with optional fit metadata."""
+    fit_data = fit_meta or {}
+    status_val = seg.status
+    if fit_data.get("status"):
+        status_val = fit_data["status"]
+
     return {
         "id": seg.id,
         "task_id": seg.task_id,
@@ -384,11 +443,19 @@ def _serialize_tts_segment(seg: ToolkitTTSSegment) -> Dict[str, Any]:
         "end_time": seg.end_time,
         "voice": seg.voice,
         "provider": seg.provider,
+        "emotion_style": getattr(seg, "emotion_style", None) or "calm",
         "audio_file_path": seg.audio_file_path,
-        "duration_seconds": seg.duration_seconds,
+        "duration_seconds": fit_data.get("final_duration_sec") if fit_data.get("final_duration_sec") is not None else seg.duration_seconds,
         "file_size_bytes": seg.file_size_bytes,
-        "status": seg.status,
+        "status": status_val,
         "error_message": seg.error_message,
+        "slot_sec": fit_data.get("slot_sec"),
+        "raw_duration_sec": fit_data.get("raw_duration_sec"),
+        "final_duration_sec": fit_data.get("final_duration_sec"),
+        "speed_factor_applied": fit_data.get("speed_factor_applied"),
+        "method": fit_data.get("method"),
+        "padded_sec": fit_data.get("padded_sec"),
+        "warning": fit_data.get("warning"),
         "created_at": seg.created_at,
         "updated_at": seg.updated_at,
     }
@@ -447,8 +514,10 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
 
     serialized_tts_segments: List[Dict[str, Any]] = []
     if hasattr(task, "tts_segments") and task.tts_segments:
+        fit_meta_dict = (out_meta.get("segment_fit_metadata", {}) if out_meta and isinstance(out_meta, dict) else {})
         for s in sorted(task.tts_segments, key=lambda seg: seg.segment_order):
-            serialized_tts_segments.append(_serialize_tts_segment(s))
+            s_fit = fit_meta_dict.get(s.id) or fit_meta_dict.get(str(s.segment_order)) or {}
+            serialized_tts_segments.append(_serialize_tts_segment(s, fit_meta=s_fit))
             if s.text and s.text.strip():
                 full_text_parts.append(s.text.strip())
 
@@ -486,6 +555,17 @@ def _serialize_task(task: ToolkitTask) -> Dict[str, Any]:
         "translation_segments": serialized_translation_segments or None,
         "full_text": full_text,
     }
+
+
+def _calculate_word_count(text: str, language: str) -> int:
+    """Calculate word count respecting language characteristics (e.g. Khmer script without space delimiters)."""
+    clean = (text or "").strip()
+    if not clean:
+        return 0
+    if language in ("km", "khmer"):
+        clean_no_spaces = clean.replace(" ", "")
+        return max(1, round(len(clean_no_spaces) / 3.8))
+    return len(clean.split())
 
 
 def _generate_transcript_files_on_disk(
@@ -682,7 +762,9 @@ def build_task_bundle_zip(task: ToolkitTask, db: Session) -> Path:
                     folder = "translated"
                 elif suffix in [".mp3", ".wav", ".m4a"] or t.tool_type in ["text_to_speech", "transcript_to_audio"]:
                     folder = "audio"
-                elif suffix in [".srt", ".vtt", ".txt", ".csv", ".json"] or t.tool_type in [
+                elif t.tool_type == "transcript_to_text":
+                    folder = "text"
+                elif suffix in [".srt", ".vtt", ".txt", ".csv", ".json", ".md"] or t.tool_type in [
                     "video_to_transcript", "audio_to_transcript", "video_to_text", "audio_to_text"
                 ]:
                     folder = "original"
@@ -711,6 +793,9 @@ def get_toolkit_capabilities():
     return {
         "version": "1.0.0",
         "tools": [
+            {"id": "audio_cleaning", "title": "Audio Noise & Music Remover",
+             "description": "Reduce background noise or separate speech from music with local processing.",
+             "category": "Audio", "status": "available", "supported_formats": ["wav", "mp3", "mp4"]},
             {
                 "id": "video_to_audio",
                 "title": "Video to Audio",
@@ -791,6 +876,15 @@ def get_toolkit_capabilities():
                 "status": "available",
                 "phase": "13E.5",
                 "supported_formats": ["srt", "vtt", "txt"],
+            },
+            {
+                "id": "transcript_to_text",
+                "title": "Transcript to Text",
+                "description": "Extract and format clean, readable plain text or structured narrative paragraphs from subtitle and transcript files (.srt, .vtt, .json, .sbv, .ass).",
+                "category": "Transcription",
+                "status": "available",
+                "phase": "13E.5",
+                "supported_formats": ["txt", "md", "json", "srt", "vtt"],
             },
             {
                 "id": "video_downloader",
@@ -958,9 +1052,11 @@ async def extract_audio_from_video(
         output_filename = f"{stem}_extracted.{clean_fmt}"
         output_path = output_dir / output_filename
 
-        video_processor.extract_audio_format(source_path, output_path, target_format=clean_fmt)
+        await anyio.to_thread.run_sync(
+            partial(video_processor.extract_audio_format, source_path, output_path, target_format=clean_fmt)
+        )
 
-        out_meta = video_processor.get_audio_metadata(output_path)
+        out_meta = await anyio.to_thread.run_sync(video_processor.get_audio_metadata, output_path)
         out_file_size = output_path.stat().st_size
 
         out_meta_dict = {
@@ -1036,14 +1132,13 @@ async def transcribe_media(
 
     clean_lang = (language or "en").strip().lower()
     if clean_lang in ["km", "khmer"]:
+        target_lang = "km"
+    elif clean_lang in ["en", "english"]:
+        target_lang = "en"
+    else:
         raise HTTPException(
             status_code=400,
-            detail="Khmer speech recognition is not officially supported by the current Whisper checkpoint and requires a verified Khmer ASR engine. Please select English (en).",
-        )
-    elif clean_lang not in ["en", "english"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Language '{language}' is not supported. Supported transcription language: 'en' (English).",
+            detail=f"Language '{language}' is not supported. Supported transcription languages: 'km' (Khmer) and 'en' (English).",
         )
 
     if not file and not project_id:
@@ -1126,9 +1221,9 @@ async def transcribe_media(
                 task.output_file_path = str(primary_export)
                 task.output_filename = primary_export.name
 
-                total_words = sum(len(s.raw_text.split()) for s in seg_records)
+                total_words = sum(_calculate_word_count(s.raw_text, target_lang) for s in seg_records)
                 task.output_media_metadata = json.dumps({
-                    "language": "en",
+                    "language": target_lang,
                     "segment_count": len(seg_records),
                     "word_count": total_words,
                     "reused_from_project": project.id,
@@ -1222,14 +1317,16 @@ async def transcribe_media(
         # Step D: Prepare 16kHz mono WAV for Whisper
         task_dir = get_toolkit_task_dir(task_id)
         wav_prep_path = task_dir / "prepared_audio_16k.wav"
-        video_processor.prepare_audio_for_transcription(source_path, wav_prep_path)
+        await anyio.to_thread.run_sync(video_processor.prepare_audio_for_transcription, source_path, wav_prep_path)
 
         task.progress_percentage = 50
         db.commit()
 
         # Step E: Perform Whisper Transcription
-        logger.info("Transcribing audio %s with Faster-Whisper...", wav_prep_path.name)
-        raw_segments = whisper_provider.transcribe(wav_prep_path, language="en")
+        logger.info("Transcribing audio %s with Faster-Whisper (language=%s)...", wav_prep_path.name, target_lang)
+        raw_segments = await anyio.to_thread.run_sync(
+            partial(whisper_provider.transcribe, wav_prep_path, language=target_lang)
+        )
         task.progress_percentage = 85
         db.commit()
 
@@ -1256,9 +1353,9 @@ async def transcribe_media(
         clean_target_fmt = target_format.lower().lstrip(".")
         primary_export = files_on_disk.get(clean_target_fmt, files_on_disk["srt"])
 
-        total_words = sum(len(s.raw_text.split()) for s in seg_records)
+        total_words = sum(_calculate_word_count(s.raw_text, target_lang) for s in seg_records)
         out_meta_dict = {
-            "language": "en",
+            "language": target_lang,
             "segment_count": len(seg_records),
             "word_count": total_words,
             "duration_seconds": audio_meta.duration_seconds,
@@ -1418,6 +1515,20 @@ def export_toolkit_transcript(
             detail=f"Unsupported export format '{format}'. Supported formats: {', '.join(EXPORT_MIME_TYPES.keys())}.",
         )
 
+    # Check for direct transcript_to_text output files first
+    if task.tool_type == "transcript_to_text":
+        out_dir = get_toolkit_task_output_dir(safe_task_id)
+        stem = Path(task.source_filename).stem
+        target_file = out_dir / f"{stem}.{clean_fmt}"
+        if target_file.exists() and target_file.stat().st_size > 0:
+            mime_type = EXPORT_MIME_TYPES.get(clean_fmt, "text/plain; charset=utf-8")
+            return FileResponse(
+                path=str(target_file),
+                media_type=mime_type,
+                filename=f"{stem}.{clean_fmt}",
+                content_disposition_type="attachment",
+            )
+
     # Check for translation segments first
     translation_segments = (
         db.query(ToolkitTranslationSegment)
@@ -1557,6 +1668,9 @@ def delete_toolkit_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(ToolkitTask).filter(ToolkitTask.id == safe_id).first()
     if not task:
         raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
+
+    if task.tool_type == "audio_cleaning" and task.status in ("pending", "processing", "cancelling"):
+        raise HTTPException(status_code=409, detail="Cancel processing and wait for it to stop before deleting this task.")
 
     # Section 8: Deleting a source task must not unexpectedly destroy valuable derived content.
     # Disconnect downstream derived tasks and flag them as detached/outdated while preserving their files.
@@ -1761,9 +1875,16 @@ def get_tts_voices(language: Optional[str] = None, db: Session = Depends(get_db)
     return list_supported_voices(db=db, language=language)
 
 
+@router.get("/tts/emotions")
+def get_toolkit_emotion_styles():
+    """List all supported emotion and acting styles for TTS and Transcript-to-Audio."""
+    from app.services.tts.emotions import list_emotion_styles
+    return list_emotion_styles()
+
+
 @router.post("/tts/preview")
 def preview_tts(request: TTSPreviewRequest, db: Session = Depends(get_db)):
-    """Generate a short audio preview for the selected voice and sample text."""
+    """Generate a short audio preview for the selected voice, emotion style, and sample text."""
     clean_text = (request.text or "").strip()
     if not clean_text:
         raise HTTPException(status_code=400, detail="Preview text cannot be empty.")
@@ -1797,11 +1918,22 @@ def preview_tts(request: TTSPreviewRequest, db: Session = Depends(get_db)):
     preview_file = temp_preview_dir / f"preview_{preview_id}.{ext}"
 
     try:
+        synth_kwargs = {}
+        if request.emotion_style:
+            synth_kwargs["emotion_style"] = request.emotion_style
+        if request.pitch:
+            synth_kwargs["pitch"] = request.pitch
+        if request.volume:
+            synth_kwargs["volume"] = request.volume
+        if request.rate:
+            synth_kwargs["rate"] = request.rate
+
         provider.synthesize(
             text=sample_text,
             output_path=preview_file,
             language=request.language,
             voice=voice,
+            **synth_kwargs,
         )
     except Exception as e:
         logger.error("TTS preview synthesis failed: %s", e)
@@ -1871,6 +2003,7 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
             "language": request.language,
             "provider": provider_name,
             "voice": voice,
+            "emotion_style": request.emotion_style or "calm",
             "pause_duration_seconds": request.pause_duration_seconds,
         }),
     )
@@ -1887,6 +2020,9 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
             task_id=task.id,
             segment_order=idx,
             text=s_text,
+            voice=voice,
+            provider=provider_name,
+            emotion_style=request.emotion_style or "calm",
             status="pending",
         )
         db.add(seg)
@@ -1904,6 +2040,7 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
                 output_path=seg_file,
                 language=request.language,
                 voice=voice,
+                emotion_style=seg.emotion_style,
             )
             dur = video_processor.get_audio_duration(seg_file)
             seg.audio_file_path = str(seg_file)
@@ -1946,6 +2083,7 @@ def generate_tts(request: TTSGenerateRequest, db: Session = Depends(get_db)):
             "provider": provider_name,
             "voice": voice,
             "language": request.language,
+            "emotion_style": request.emotion_style or "calm",
             "segment_count": len(segments_objs),
             "pause_duration_seconds": request.pause_duration_seconds,
             "wav_path": str(wav_out),
@@ -1997,9 +2135,10 @@ def regenerate_tts_segment(
         except Exception:
             pass
 
-    provider_name = meta.get("provider", "gtts")
-    voice = meta.get("voice", "default")
+    provider_name = request.provider or seg.provider or meta.get("provider", "edge")
+    voice = request.voice or seg.voice or meta.get("voice", "default")
     language = meta.get("language", "km")
+    emotion_style = request.emotion_style or getattr(seg, "emotion_style", None) or meta.get("emotion_style", "calm")
     pause_dur = request.pause_duration_seconds if request.pause_duration_seconds is not None else meta.get("pause_duration_seconds", 0.4)
 
     if provider_name in ("voxcpm", "voxcpm2", "custom"):
@@ -2021,8 +2160,12 @@ def regenerate_tts_segment(
             output_path=seg_file,
             language=language,
             voice=voice,
+            emotion_style=emotion_style,
         )
         dur = video_processor.get_audio_duration(seg_file)
+        seg.voice = voice
+        seg.provider = provider_name
+        seg.emotion_style = emotion_style
         seg.audio_file_path = str(seg_file)
         seg.duration_seconds = dur
         seg.file_size_bytes = seg_file.stat().st_size
@@ -2142,9 +2285,20 @@ def _assemble_transcript_audio(
     segments: List[ToolkitTTSSegment],
     target_format: str = "mp3",
     pause_duration_seconds: float = 0.4,
-) -> tuple[Path, Path, Path, float, List[Dict[str, Any]]]:
+    fit_to_timestamps: bool = True,
+    min_speed: float = 0.75,
+    max_speed: float = 1.25,
+    fit_tolerance_sec: float = 0.05,
+    allow_slow_down: bool = True,
+    overflow_policy: str = "allow_overlap",
+    fill_mode: str = "natural",
+    language: str = "km",
+    default_provider: str = "edge",
+    default_voice: str = "km-KH-PisethNeural",
+    existing_fit_metadata: Optional[Dict[str, Any]] = None,
+) -> tuple[Path, Path, Path, float, List[Dict[str, Any]], Dict[str, Any]]:
     """Assemble segments according to mode ('narration' vs 'timed').
-    Returns (primary_output, wav_path, mp3_path, duration, conflicts_list).
+    Returns (primary_output, wav_path, mp3_path, duration, conflicts_list, fit_metadata_dict).
     """
     output_dir = get_toolkit_task_output_dir(task_id)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2162,58 +2316,162 @@ def _assemble_transcript_audio(
     sorted_segs = sorted(valid_segs, key=lambda s: (s.start_time if s.start_time is not None else 0.0, s.segment_order))
 
     if mode == "timed":
-        sync_items = [
-            {
-                "segment_order": s.segment_order,
-                "segment_id": s.id,
-                "start_time": s.start_time if s.start_time is not None else 0.0,
-                "end_time": s.end_time if s.end_time is not None else ((s.start_time or 0.0) + (s.duration_seconds or 1.0)),
-                "audio_path": Path(s.audio_file_path),
-                "duration_seconds": s.duration_seconds or 1.0,
-            }
-            for s in sorted_segs
-        ]
-        sync_service = AudioSynchronizationService()
-        wav_out = output_dir / "narration.wav"
-        sync_res = sync_service.synchronize_timed_segments(
-            task_id=task_id,
-            segments=sync_items,
-            output_timeline_path=wav_out,
-            target_duration=None,
-            strict_validation=False,
-        )
-        total_dur = sync_res.total_duration_seconds
-        mp3_out = output_dir / "narration.mp3"
-        cmd_mp3 = [
-            "ffmpeg",
-            "-y",
-            "-i", str(wav_out),
-            "-c:a", "libmp3lame",
-            "-b:a", "192k",
-            str(mp3_out),
-        ]
-        res_mp3 = subprocess.run(cmd_mp3, capture_output=True, text=True, check=False)
-        if res_mp3.returncode != 0:
-            raise RuntimeError(f"FFmpeg MP3 transcoding failed: {res_mp3.stderr}")
-        primary_out = mp3_out if clean_fmt == "mp3" else wav_out
-        conflicts = [
-            {
-                "segment_order": c.segment_order,
-                "transcript_segment_id": c.transcript_segment_id,
-                "start_time": c.start_time,
-                "end_time": c.end_time,
-                "original_duration": c.original_duration,
-                "khmer_duration": c.khmer_duration,
-                "available_window": c.available_window,
-                "effective_window": c.effective_window,
-                "tempo_factor": c.tempo_factor,
-                "overflow_seconds": c.overflow_seconds,
-                "suggested_action": c.suggested_action,
-                "message": c.message,
-            }
-            for c in sync_res.conflicts
-        ]
-        return primary_out, wav_out, mp3_out, total_dur, conflicts
+        if fit_to_timestamps:
+            fit_results_dict: Dict[str, Any] = {}
+            fitted_objects: List[SegmentFitResult] = []
+            conflicts: List[Dict[str, Any]] = []
+
+            total_segments = len(sorted_segs)
+            for idx, s in enumerate(sorted_segs):
+                seg_start = s.start_time if s.start_time is not None else 0.0
+                seg_end = s.end_time if s.end_time is not None else (seg_start + (s.duration_seconds or 1.0))
+                slot = max(0.01, seg_end - seg_start)
+
+                next_start = None
+                if idx + 1 < total_segments:
+                    next_start = sorted_segs[idx + 1].start_time
+                available_gap = (next_start - seg_start) if next_start is not None else None
+
+                seg_prov = s.provider or default_provider
+                seg_voice = s.voice or default_voice
+                fit_out = output_dir / f"segment_{s.segment_order:03d}.wav"
+                fit_work = output_dir / f"fit_work_{s.segment_order:03d}"
+
+                raw_path = Path(s.audio_file_path) if s.audio_file_path and Path(s.audio_file_path).exists() else None
+
+                fit_res = fit_segment_audio(
+                    segment_id=s.id,
+                    segment_order=s.segment_order,
+                    text=s.text,
+                    slot_sec=slot,
+                    provider_name=seg_prov,
+                    voice=seg_voice,
+                    language=language,
+                    work_dir=fit_work,
+                    output_path=fit_out,
+                    min_speed=min_speed,
+                    max_speed=max_speed,
+                    fit_tolerance_sec=fit_tolerance_sec,
+                    allow_slow_down=allow_slow_down,
+                    overflow_policy=overflow_policy,
+                    fill_mode=fill_mode,
+                    available_window_sec=available_gap,
+                    raw_audio_input_path=raw_path,
+                )
+
+                s.audio_file_path = str(fit_out)
+                s.duration_seconds = fit_res.final_duration_sec
+                s.file_size_bytes = fit_out.stat().st_size
+                fitted_objects.append(fit_res)
+                fit_results_dict[s.id] = fit_res.to_dict()
+
+                logger.info(
+                    "[TranscriptToAudio:SegmentFit] Segment #%d (id=%s): mode=%s, slot=%.3fs, raw_duration=%.3fs, speed_factor=%.3fx, final_duration=%.3fs, status=%s, method=%s, padded=%.3fs, fill_mode=%s",
+                    s.segment_order,
+                    s.id,
+                    mode,
+                    fit_res.slot_sec,
+                    fit_res.raw_duration_sec,
+                    fit_res.speed_factor_applied,
+                    fit_res.final_duration_sec,
+                    fit_res.status,
+                    fit_res.method,
+                    fit_res.padded_sec,
+                    fill_mode,
+                )
+
+                if fit_res.status == "overflow":
+                    overflow_val = max(0.0, fit_res.final_duration_sec - fit_res.slot_sec)
+                    est_words = max(1, math.ceil(overflow_val / 0.35))
+                    action_msg = (
+                        f"Shorten Segment #{s.segment_order} by approximately {est_words} word(s) "
+                        f"(~{overflow_val:.1f}s), regenerate audio, or switch to Narration Mode."
+                    )
+                    conflicts.append({
+                        "segment_order": s.segment_order,
+                        "transcript_segment_id": s.id,
+                        "start_time": seg_start,
+                        "end_time": seg_end,
+                        "original_duration": fit_res.slot_sec,
+                        "khmer_duration": fit_res.final_duration_sec,
+                        "available_window": available_gap or fit_res.slot_sec,
+                        "effective_window": fit_res.slot_sec,
+                        "tempo_factor": fit_res.speed_factor_applied,
+                        "overflow_seconds": overflow_val,
+                        "suggested_action": action_msg,
+                        "message": fit_res.warning or action_msg,
+                    })
+
+            wav_out = output_dir / "narration.wav"
+            mp3_out = output_dir / "narration.mp3"
+            timing_list = [
+                {"segment_order": s.segment_order, "start_time": s.start_time, "end_time": s.end_time}
+                for s in sorted_segs
+            ]
+            wav_out, mp3_out, total_dur = assemble_fitted_timeline(
+                task_id=task_id,
+                fitted_segments=fitted_objects,
+                segment_timing_list=timing_list,
+                output_wav_path=wav_out,
+                output_mp3_path=mp3_out,
+                target_timeline_duration=None,
+            )
+            primary_out = mp3_out if clean_fmt == "mp3" else wav_out
+            return primary_out, wav_out, mp3_out, total_dur, conflicts, fit_results_dict
+
+        else:
+            sync_items = [
+                {
+                    "segment_order": s.segment_order,
+                    "segment_id": s.id,
+                    "start_time": s.start_time if s.start_time is not None else 0.0,
+                    "end_time": s.end_time if s.end_time is not None else ((s.start_time or 0.0) + (s.duration_seconds or 1.0)),
+                    "audio_path": Path(s.audio_file_path),
+                    "duration_seconds": s.duration_seconds or 1.0,
+                }
+                for s in sorted_segs
+            ]
+            sync_service = AudioSynchronizationService()
+            wav_out = output_dir / "narration.wav"
+            sync_res = sync_service.synchronize_timed_segments(
+                task_id=task_id,
+                segments=sync_items,
+                output_timeline_path=wav_out,
+                target_duration=None,
+                strict_validation=False,
+            )
+            total_dur = sync_res.total_duration_seconds
+            mp3_out = output_dir / "narration.mp3"
+            cmd_mp3 = [
+                "ffmpeg",
+                "-y",
+                "-i", str(wav_out),
+                "-c:a", "libmp3lame",
+                "-b:a", "192k",
+                str(mp3_out),
+            ]
+            res_mp3 = subprocess.run(cmd_mp3, capture_output=True, text=True, check=False)
+            if res_mp3.returncode != 0:
+                raise RuntimeError(f"FFmpeg MP3 transcoding failed: {res_mp3.stderr}")
+            primary_out = mp3_out if clean_fmt == "mp3" else wav_out
+            conflicts = [
+                {
+                    "segment_order": c.segment_order,
+                    "transcript_segment_id": c.transcript_segment_id,
+                    "start_time": c.start_time,
+                    "end_time": c.end_time,
+                    "original_duration": c.original_duration,
+                    "khmer_duration": c.khmer_duration,
+                    "available_window": c.available_window,
+                    "effective_window": c.effective_window,
+                    "tempo_factor": c.tempo_factor,
+                    "overflow_seconds": c.overflow_seconds,
+                    "suggested_action": c.suggested_action,
+                    "message": c.message,
+                }
+                for c in sync_res.conflicts
+            ]
+            return primary_out, wav_out, mp3_out, total_dur, conflicts, {}
     else:
         # Narration mode
         primary_out, wav_out, mp3_out, total_dur = assemble_tts_narration(
@@ -2222,7 +2480,7 @@ def _assemble_transcript_audio(
             pause_duration_seconds=pause_duration_seconds,
             target_format=clean_fmt,
         )
-        return primary_out, wav_out, mp3_out, total_dur, []
+        return primary_out, wav_out, mp3_out, total_dur, [], {}
 
 
 @router.post("/transcript-to-audio/parse")
@@ -2293,6 +2551,31 @@ def generate_transcript_to_audio(
     clean_mode = request.mode.strip().lower()
     if clean_mode not in ["narration", "timed"]:
         clean_mode = "narration"
+
+    has_all_timestamps = bool(
+        request.segments
+        and all(
+            s.start_time is not None and s.end_time is not None and s.end_time > s.start_time
+            for s in request.segments
+        )
+    )
+
+    fit_to_timestamps = request.fit_to_timestamps
+    if fit_to_timestamps is None:
+        fit_to_timestamps = True if clean_mode == "timed" else False
+
+    # Timed mode MUST be used whenever the transcript has timestamps and "Fit to timestamps" is on.
+    if fit_to_timestamps and has_all_timestamps:
+        clean_mode = "timed"
+
+    logger.info(
+        "[TranscriptToAudio] Processing %d segments in mode='%s' (requested='%s', fit_to_timestamps=%s, fill_mode='%s')",
+        len(request.segments),
+        clean_mode,
+        request.mode,
+        fit_to_timestamps,
+        request.fill_mode,
+    )
 
     if clean_mode == "timed":
         missing_timing = [s for s in request.segments if s.start_time is None or s.end_time is None]
@@ -2374,6 +2657,7 @@ def generate_transcript_to_audio(
             "language": request.language,
             "provider": provider_name,
             "voice": voice,
+            "emotion_style": request.emotion_style or "calm",
             "pause_duration_seconds": request.pause_duration_seconds,
             "source_task_id": request.source_task_id,
         }),
@@ -2393,6 +2677,7 @@ def generate_transcript_to_audio(
             end_time=s_in.end_time,
             voice=s_in.voice.strip() if s_in.voice else None,
             provider=s_in.provider.strip().lower() if s_in.provider else None,
+            emotion_style=(s_in.emotion_style or request.emotion_style or "calm").strip(),
             status="pending",
         )
         db.add(seg)
@@ -2413,6 +2698,7 @@ def generate_transcript_to_audio(
                 output_path=seg_file,
                 language=request.language,
                 voice=seg_voice_name,
+                emotion_style=getattr(seg, "emotion_style", None) or request.emotion_style or "calm",
             )
             dur = video_processor.get_audio_duration(seg_file)
             seg.audio_file_path = str(seg_file)
@@ -2436,12 +2722,22 @@ def generate_transcript_to_audio(
         return _serialize_task(task)
 
     # Assemble timeline based on mode
-    primary_out, wav_out, mp3_out, total_dur, conflicts = _assemble_transcript_audio(
+    primary_out, wav_out, mp3_out, total_dur, conflicts, fit_metadata = _assemble_transcript_audio(
         task_id=task.id,
         mode=clean_mode,
         segments=completed_segs,
         target_format=target_format,
         pause_duration_seconds=request.pause_duration_seconds,
+        fit_to_timestamps=fit_to_timestamps,
+        min_speed=request.min_speed,
+        max_speed=request.max_speed,
+        fit_tolerance_sec=request.fit_tolerance_sec,
+        allow_slow_down=request.allow_slow_down,
+        overflow_policy=request.overflow_policy,
+        fill_mode=request.fill_mode,
+        language=request.language,
+        default_provider=provider_name,
+        default_voice=voice,
     )
 
     task.status = "completed"
@@ -2456,10 +2752,18 @@ def generate_transcript_to_audio(
         "voice": voice,
         "language": request.language,
         "pause_duration_seconds": request.pause_duration_seconds,
+        "fit_to_timestamps": fit_to_timestamps,
+        "min_speed": request.min_speed,
+        "max_speed": request.max_speed,
+        "fit_tolerance_sec": request.fit_tolerance_sec,
+        "allow_slow_down": request.allow_slow_down,
+        "overflow_policy": request.overflow_policy,
+        "fill_mode": request.fill_mode,
         "duration": total_dur,
         "wav_path": str(wav_out),
         "mp3_path": str(mp3_out),
         "conflicts": conflicts,
+        "segment_fit_metadata": fit_metadata,
     })
     db.commit()
     db.refresh(task)
@@ -2504,6 +2808,8 @@ def update_transcript_to_audio_segment(
         seg.voice = request.voice.strip() if request.voice.strip() else None
     if request.provider is not None:
         seg.provider = request.provider.strip().lower() if request.provider.strip() else None
+    if request.emotion_style is not None:
+        seg.emotion_style = request.emotion_style.strip() if request.emotion_style.strip() else "calm"
 
     db.commit()
     db.refresh(task)
@@ -2544,6 +2850,8 @@ def regenerate_transcript_segment(
         seg.voice = request.voice.strip() if request.voice.strip() else None
     if request.provider is not None:
         seg.provider = request.provider.strip().lower() if request.provider.strip() else None
+    if request.emotion_style is not None:
+        seg.emotion_style = request.emotion_style.strip() if request.emotion_style.strip() else "calm"
 
     db.commit()
 
@@ -2582,6 +2890,7 @@ def regenerate_transcript_segment(
             output_path=seg_file,
             language=language,
             voice=seg_voice,
+            emotion_style=getattr(seg, "emotion_style", None) or "calm",
         )
         dur = video_processor.get_audio_duration(seg_file)
         seg.audio_file_path = str(seg_file)
@@ -2601,12 +2910,30 @@ def regenerate_transcript_segment(
     all_segs = db.query(ToolkitTTSSegment).filter(ToolkitTTSSegment.task_id == safe_id).order_by(ToolkitTTSSegment.segment_order).all()
     completed_segs = [s for s in all_segs if s.status == "completed"]
     if completed_segs:
-        primary_out, wav_out, mp3_out, total_dur, conflicts = _assemble_transcript_audio(
+        fit_to_timestamps = request.fit_to_timestamps if request.fit_to_timestamps is not None else meta.get("fit_to_timestamps", True)
+        min_speed = request.min_speed if request.min_speed is not None else meta.get("min_speed", 0.75)
+        max_speed = request.max_speed if request.max_speed is not None else meta.get("max_speed", 1.25)
+        fit_tolerance_sec = request.fit_tolerance_sec if request.fit_tolerance_sec is not None else meta.get("fit_tolerance_sec", 0.05)
+        allow_slow_down = request.allow_slow_down if request.allow_slow_down is not None else meta.get("allow_slow_down", True)
+        overflow_policy = request.overflow_policy if request.overflow_policy is not None else meta.get("overflow_policy", "allow_overlap")
+        fill_mode = request.fill_mode if request.fill_mode is not None else meta.get("fill_mode", "natural")
+
+        primary_out, wav_out, mp3_out, total_dur, conflicts, fit_metadata = _assemble_transcript_audio(
             task_id=safe_id,
             mode=mode,
             segments=completed_segs,
             target_format=task.target_format,
             pause_duration_seconds=pause_dur,
+            fit_to_timestamps=fit_to_timestamps,
+            min_speed=min_speed,
+            max_speed=max_speed,
+            fit_tolerance_sec=fit_tolerance_sec,
+            allow_slow_down=allow_slow_down,
+            overflow_policy=overflow_policy,
+            fill_mode=fill_mode,
+            language=language,
+            default_provider=global_prov,
+            default_voice=global_voice,
         )
         task.output_file_path = str(primary_out)
         task.output_filename = primary_out.name
@@ -2616,6 +2943,8 @@ def regenerate_transcript_segment(
         meta["wav_path"] = str(wav_out)
         meta["mp3_path"] = str(mp3_out)
         meta["conflicts"] = conflicts
+        meta["segment_fit_metadata"] = fit_metadata
+        meta["fill_mode"] = fill_mode
         task.output_media_metadata = json.dumps(meta)
         db.commit()
 
@@ -2666,15 +2995,35 @@ def delete_transcript_segment(
 
     mode = meta.get("mode", "narration")
     pause_dur = meta.get("pause_duration_seconds", 0.4)
+    language = meta.get("language", "km")
+    global_prov = meta.get("provider", "gtts")
+    global_voice = meta.get("voice", "default")
+    fit_to_timestamps = meta.get("fit_to_timestamps", True)
+    min_speed = meta.get("min_speed", 0.75)
+    max_speed = meta.get("max_speed", 1.25)
+    fit_tolerance_sec = meta.get("fit_tolerance_sec", 0.05)
+    allow_slow_down = meta.get("allow_slow_down", True)
+    overflow_policy = meta.get("overflow_policy", "allow_overlap")
+    fill_mode = meta.get("fill_mode", "natural")
 
     completed_segs = [s for s in remaining if s.status == "completed"]
     if completed_segs:
-        primary_out, wav_out, mp3_out, total_dur, conflicts = _assemble_transcript_audio(
+        primary_out, wav_out, mp3_out, total_dur, conflicts, fit_metadata = _assemble_transcript_audio(
             task_id=safe_id,
             mode=mode,
             segments=completed_segs,
             target_format=task.target_format,
             pause_duration_seconds=pause_dur,
+            fit_to_timestamps=fit_to_timestamps,
+            min_speed=min_speed,
+            max_speed=max_speed,
+            fit_tolerance_sec=fit_tolerance_sec,
+            allow_slow_down=allow_slow_down,
+            overflow_policy=overflow_policy,
+            fill_mode=fill_mode,
+            language=language,
+            default_provider=global_prov,
+            default_voice=global_voice,
         )
         task.output_file_path = str(primary_out)
         task.output_filename = primary_out.name
@@ -2684,6 +3033,8 @@ def delete_transcript_segment(
         meta["wav_path"] = str(wav_out)
         meta["mp3_path"] = str(mp3_out)
         meta["conflicts"] = conflicts
+        meta["segment_fit_metadata"] = fit_metadata
+        meta["fill_mode"] = fill_mode
         task.output_media_metadata = json.dumps(meta)
         db.commit()
     else:
@@ -2691,6 +3042,7 @@ def delete_transcript_segment(
         task.output_file_size_bytes = 0
         meta["duration"] = 0.0
         meta["conflicts"] = []
+        meta["segment_fit_metadata"] = {}
         task.output_media_metadata = json.dumps(meta)
         db.commit()
 
@@ -3139,6 +3491,248 @@ def convert_subtitles(request: SubtitleConvertRequest, db: Session = Depends(get
     }
 
 
+def _handle_transcript_to_text(
+    request: TranscriptToTextRequest,
+    db: Session,
+    source_type_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Internal processor for transcript-to-text extraction."""
+    content = (request.content or "").strip()
+    source_segments = None
+    source_filename = request.filename or "transcript.srt"
+    source_type = source_type_override or ("source_task" if request.source_task_id else "pasted_text")
+
+    if not content and request.source_task_id:
+        src_task = db.query(ToolkitTask).filter(ToolkitTask.id == request.source_task_id.strip()).first()
+        if not src_task:
+            raise HTTPException(status_code=404, detail=f"Source task '{request.source_task_id}' not found.")
+
+        if hasattr(src_task, "segments") and src_task.segments:
+            source_segments = sorted(src_task.segments, key=lambda s: s.segment_order)
+            source_filename = src_task.source_filename or source_filename
+        else:
+            out_dir = get_toolkit_task_output_dir(src_task.id)
+            candidates = (
+                list(out_dir.glob("*.srt"))
+                + list(out_dir.glob("*.vtt"))
+                + list(out_dir.glob("*.json"))
+                + list(out_dir.glob("*.txt"))
+            )
+            if candidates:
+                content = candidates[0].read_text(encoding="utf-8")
+                source_filename = candidates[0].name
+            else:
+                raise HTTPException(status_code=404, detail="No transcript data or files found for source task.")
+
+    if not content and not source_segments:
+        raise HTTPException(status_code=400, detail="No transcript content or source task provided.")
+
+    target_fmt = (request.target_format or "txt").lower().strip().lstrip(".")
+    if target_fmt not in ["txt", "md", "json"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported target format '{request.target_format}'. Supported: txt, md, json.",
+        )
+
+    mode = request.paragraph_mode or "smart_paragraphs"
+    speaker_handling = request.speaker_handling or "strip"
+    title = request.title or "Extracted Transcript"
+
+    try:
+        if source_segments:
+            result = transcript_text_extractor.extract_from_parsed_segments(
+                segments=source_segments,
+                paragraph_mode=mode,
+                speaker_handling=speaker_handling,
+                pause_threshold_seconds=request.pause_threshold_seconds,
+                deduplicate_phrases=request.deduplicate_phrases,
+                strip_tags=request.strip_tags,
+                target_format=target_fmt,
+                title=title,
+            )
+        else:
+            result = transcript_text_extractor.extract_from_content(
+                content=content,
+                filename=source_filename,
+                paragraph_mode=mode,
+                speaker_handling=speaker_handling,
+                pause_threshold_seconds=request.pause_threshold_seconds,
+                deduplicate_phrases=request.deduplicate_phrases,
+                strip_tags=request.strip_tags,
+                target_format=target_fmt,
+                title=title,
+            )
+    except Exception as e:
+        logger.error(f"Transcript to text conversion failed: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to process transcript: {e}")
+
+    task_id = str(uuid.uuid4())
+    get_toolkit_task_dir(task_id)
+    input_dir = get_toolkit_task_input_dir(task_id)
+    output_dir = get_toolkit_task_output_dir(task_id)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = Path(source_filename).stem or f"transcript_{task_id[:8]}"
+    if content:
+        src_input_path = input_dir / source_filename
+        src_input_path.write_text(content, encoding="utf-8")
+    else:
+        src_input_path = input_dir / f"{stem}.json"
+        src_input_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "text": s.text if hasattr(s, "text") else (s.raw_text if hasattr(s, "raw_text") else ""),
+                        "start_time": getattr(s, "start_time", 0.0),
+                        "end_time": getattr(s, "end_time", 0.0),
+                    }
+                    for s in (source_segments or [])
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    # 1. Plain text (.txt)
+    txt_path = output_dir / f"{stem}.txt"
+    txt_path.write_text(result.full_text, encoding="utf-8")
+
+    # 2. Markdown (.md)
+    if target_fmt == "md":
+        md_content = result.formatted_content
+    else:
+        md_res = transcript_text_extractor.extract_from_parsed_segments(
+            segments=result.paragraphs,
+            paragraph_mode=mode,
+            speaker_handling=speaker_handling,
+            target_format="md",
+            title=title,
+        )
+        md_content = md_res.formatted_content
+    md_path = output_dir / f"{stem}.md"
+    md_path.write_text(md_content, encoding="utf-8")
+
+    # 3. JSON (.json)
+    if target_fmt == "json":
+        json_content = result.formatted_content
+    else:
+        json_res = transcript_text_extractor.extract_from_parsed_segments(
+            segments=result.paragraphs,
+            paragraph_mode=mode,
+            speaker_handling=speaker_handling,
+            target_format="json",
+            title=title,
+        )
+        json_content = json_res.formatted_content
+    json_path = output_dir / f"{stem}.json"
+    json_path.write_text(json_content, encoding="utf-8")
+
+    primary_file = output_dir / f"{stem}.{target_fmt}"
+
+    task = ToolkitTask(
+        id=task_id,
+        tool_type="transcript_to_text",
+        source_type=source_type,
+        source_task_id=request.source_task_id,
+        is_outdated=False,
+        source_filename=source_filename,
+        source_file_path=str(src_input_path),
+        target_format=target_fmt,
+        output_filename=primary_file.name,
+        output_file_path=str(primary_file),
+        output_file_size_bytes=primary_file.stat().st_size if primary_file.exists() else 0,
+        status="completed",
+        progress_percentage=100,
+        source_media_metadata=json.dumps({
+            "source_type": source_type,
+            "filename": source_filename,
+            "source_task_id": request.source_task_id,
+        }),
+        output_media_metadata=json.dumps({
+            **result.stats,
+            "title": title,
+            "target_format": target_fmt,
+            "files": {
+                "txt": f"{stem}.txt",
+                "md": f"{stem}.md",
+                "json": f"{stem}.json",
+            },
+        }),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    for p in result.paragraphs:
+        seg = ToolkitTranscriptSegment(
+            id=str(uuid.uuid4()),
+            task_id=task.id,
+            segment_order=p.index,
+            start_time=p.start_time,
+            end_time=p.end_time,
+            raw_text=p.text,
+            edited_text=None,
+        )
+        db.add(seg)
+    db.commit()
+    db.refresh(task)
+
+    return _serialize_task(task)
+
+
+@router.post("/transcript-to-text", response_model=ToolkitTaskResponse)
+def convert_transcript_to_text(
+    request: TranscriptToTextRequest,
+    db: Session = Depends(get_db),
+):
+    """Convert subtitle/transcript text or from existing transcript task into narrative text/paragraphs."""
+    return _handle_transcript_to_text(request=request, db=db)
+
+
+@router.post("/transcript-to-text/file", response_model=ToolkitTaskResponse)
+async def upload_and_convert_transcript_to_text(
+    file: UploadFile = File(...),
+    paragraph_mode: str = Form("smart_paragraphs"),
+    speaker_handling: str = Form("strip"),
+    pause_threshold_seconds: float = Form(1.5),
+    deduplicate_phrases: bool = Form(True),
+    strip_tags: bool = Form(True),
+    target_format: str = Form("txt"),
+    title: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Upload subtitle/transcript file (.srt, .vtt, .json, .sbv, .ass) and convert into formatted text."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    bytes_data = await file.read()
+    if not bytes_data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        content = bytes_data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            content = bytes_data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            content = bytes_data.decode("latin-1", errors="replace")
+
+    req = TranscriptToTextRequest(
+        content=content,
+        filename=file.filename,
+        paragraph_mode=paragraph_mode,
+        speaker_handling=speaker_handling,
+        pause_threshold_seconds=pause_threshold_seconds,
+        deduplicate_phrases=deduplicate_phrases,
+        strip_tags=strip_tags,
+        target_format=target_format,
+        title=title or Path(file.filename).stem,
+    )
+    return _handle_transcript_to_text(request=req, db=db, source_type_override="file_upload")
+
+
 @router.get("/tasks/{task_id}/bundle")
 def download_task_bundle(task_id: str, db: Session = Depends(get_db)):
     """Download consolidated ZIP archive containing related inputs, transcripts, translations, and audio."""
@@ -3147,6 +3741,8 @@ def download_task_bundle(task_id: str, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail=f"Toolkit task '{task_id}' not found.")
 
+    if task.tool_type == "audio_cleaning" and task.status != "completed":
+        raise HTTPException(status_code=409, detail="Cleaned results are available after processing completes.")
     zip_file = build_task_bundle_zip(task, db)
     if not zip_file.exists() or zip_file.stat().st_size == 0:
         raise HTTPException(status_code=500, detail="Failed to create bundle archive.")

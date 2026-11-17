@@ -5,23 +5,18 @@ speech generation in Narration Mode and Timed Mode, timing conflict detection,
 segment inline editing & regeneration, per-segment voice override, and cascade deletion.
 """
 
-import json
 import uuid
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.storage import (
-    get_toolkit_task_dir,
-    get_toolkit_task_output_dir,
-)
 from app.database.session import SessionLocal
 from app.main import app
-from app.models.toolkit import ToolkitTask, ToolkitTranscriptSegment, ToolkitTTSSegment
-from app.services.subtitles.parser import parse_transcript_content, TranscriptParseError
+from app.models.toolkit import ToolkitTask, ToolkitTranscriptSegment
+from app.services.subtitles.parser import parse_transcript_content
 from app.services.tts.base import TTSAudioResult
 
 client = TestClient(app)
@@ -167,7 +162,7 @@ def test_import_transcript_from_completed_task(db_session: Session):
     db_session.commit()
 
 
-def _mock_dummy_synthesize(text, output_path, language="km", voice="default"):
+def _mock_dummy_synthesize(text, output_path, language="km", voice="km-KH-PisethNeural", **kwargs):
     """Helper to generate a valid minimal silent PCM WAV for TTS test mocks."""
     import subprocess
     cmd = [
@@ -183,7 +178,7 @@ def _mock_dummy_synthesize(text, output_path, language="km", voice="default"):
     return TTSAudioResult(
         audio_path=Path(output_path),
         duration_seconds=1.2,
-        provider_name="gtts",
+        provider_name="edge",
         voice=voice,
         language=language,
     )
@@ -192,7 +187,7 @@ def _mock_dummy_synthesize(text, output_path, language="km", voice="default"):
 def test_generate_transcript_to_audio_narration_mode(db_session: Session):
     """Verify converting transcript into natural continuous speech narration."""
     created_task_id = None
-    with patch("app.services.tts.google.GoogleTTSProvider.synthesize", side_effect=_mock_dummy_synthesize):
+    with patch("app.services.tts.edge.EdgeTTSProvider.synthesize", side_effect=_mock_dummy_synthesize):
         req_payload = {
             "segments": [
                 {
@@ -209,8 +204,8 @@ def test_generate_transcript_to_audio_narration_mode(db_session: Session):
                 },
             ],
             "mode": "narration",
-            "provider": "gtts",
-            "voice": "default",
+            "provider": "edge",
+            "voice": "km-KH-PisethNeural",
             "language": "km",
             "target_format": "mp3",
             "pause_duration_seconds": 0.3,
@@ -244,7 +239,7 @@ def test_generate_transcript_to_audio_narration_mode(db_session: Session):
 def test_generate_transcript_to_audio_timed_mode(db_session: Session):
     """Verify converting transcript into aligned timed speech matching timestamps."""
     created_task_id = None
-    with patch("app.services.tts.google.GoogleTTSProvider.synthesize", side_effect=_mock_dummy_synthesize):
+    with patch("app.services.tts.edge.EdgeTTSProvider.synthesize", side_effect=_mock_dummy_synthesize):
         req_payload = {
             "segments": [
                 {
@@ -261,8 +256,8 @@ def test_generate_transcript_to_audio_timed_mode(db_session: Session):
                 },
             ],
             "mode": "timed",
-            "provider": "gtts",
-            "voice": "default",
+            "provider": "edge",
+            "voice": "km-KH-PisethNeural",
             "language": "km",
             "target_format": "wav",
             "filename": "timed_subtitles.srt",
@@ -295,15 +290,15 @@ def test_generate_timed_mode_rejects_missing_timestamps():
             }
         ],
         "mode": "timed",
-        "provider": "gtts",
-        "voice": "default",
+        "provider": "edge",
+        "voice": "km-KH-PisethNeural",
     }
     resp = client.post("/api/toolkit/transcript-to-audio/generate", json=req_payload)
     assert resp.status_code == 400
     assert "Timed Mode requires timestamps" in resp.json()["detail"]
 
 
-def _mock_long_synthesize(text, output_path, language="km", voice="default"):
+def _mock_long_synthesize(text, output_path, language="km", voice="km-KH-PisethNeural", **kwargs):
     """Helper to generate a long 4.0s silent WAV for overflow conflict testing."""
     import subprocess
     cmd = [
@@ -319,7 +314,7 @@ def _mock_long_synthesize(text, output_path, language="km", voice="default"):
     return TTSAudioResult(
         audio_path=Path(output_path),
         duration_seconds=4.0,
-        provider_name="gtts",
+        provider_name="edge",
         voice=voice,
         language=language,
     )
@@ -328,7 +323,7 @@ def _mock_long_synthesize(text, output_path, language="km", voice="default"):
 def test_timing_conflict_detection_in_timed_mode():
     """Verify that speech exceeding available duration even at 1.25x tempo is preserved and reports conflicts."""
     created_task_id = None
-    with patch("app.services.tts.google.GoogleTTSProvider.synthesize", side_effect=_mock_long_synthesize):
+    with patch("app.services.tts.edge.EdgeTTSProvider.synthesize", side_effect=_mock_long_synthesize):
         req_payload = {
             "segments": [
                 {
@@ -346,8 +341,8 @@ def test_timing_conflict_detection_in_timed_mode():
                 },
             ],
             "mode": "timed",
-            "provider": "gtts",
-            "voice": "default",
+            "provider": "edge",
+            "voice": "km-KH-PisethNeural",
             "language": "km",
             "target_format": "mp3",
         }
@@ -371,7 +366,7 @@ def test_timing_conflict_detection_in_timed_mode():
 def test_segment_update_regeneration_and_deletion(db_session: Session):
     """Verify editing segment, regenerating audio, and deleting segment re-stitches timeline."""
     created_task_id = None
-    with patch("app.services.tts.google.GoogleTTSProvider.synthesize", side_effect=_mock_dummy_synthesize):
+    with patch("app.services.tts.edge.EdgeTTSProvider.synthesize", side_effect=_mock_dummy_synthesize):
         # 1. Create task with 3 segments
         req_payload = {
             "segments": [
@@ -380,8 +375,8 @@ def test_segment_update_regeneration_and_deletion(db_session: Session):
                 {"segment_order": 3, "text": "ប្រយោគបី។", "start_time": 5.0, "end_time": 7.0},
             ],
             "mode": "narration",
-            "provider": "gtts",
-            "voice": "default",
+            "provider": "edge",
+            "voice": "km-KH-PisethNeural",
             "language": "km",
         }
         create_resp = client.post("/api/toolkit/transcript-to-audio/generate", json=req_payload)

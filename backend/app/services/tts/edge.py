@@ -1,14 +1,19 @@
 import asyncio
 import concurrent.futures
 import logging
+import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Optional, Dict
 
+import aiohttp
 import edge_tts
+from edge_tts.exceptions import EdgeTTSException
 
 from app.core.config import settings
 from app.services.tts.base import TTSProvider, TTSAudioResult
+from app.services.tts.emotions import resolve_prosody
 from app.services.tts.exceptions import (
     EmptyTextError,
     VoiceNotSupportedError,
@@ -18,6 +23,46 @@ from app.services.tts.exceptions import (
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_text_for_edge(text: str) -> str:
+    """Sanitize, normalize, and format text for natural Edge TTS speech synthesis."""
+    if not text:
+        return ""
+    cleaned = unicodedata.normalize("NFC", text)
+    # Strip HTML tags
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    # Clean HTML entities
+    cleaned = re.sub(r"&amp;", " និង ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"&quot;", '"', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"&(?:lt|gt|nbsp|apos);", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"&(?![a-zA-Z0-9#]+;)", " និង ", cleaned)
+    # Remove control characters except newline and tab
+    cleaned = "".join(
+        ch for ch in cleaned
+        if ch in ("\n", "\t") or not unicodedata.category(ch).startswith("C")
+    )
+
+    # If text contains Khmer characters, apply Khmer orthographic formatting
+    has_khmer = bool(re.search(r"[\u1780-\u17ff]", cleaned))
+    if has_khmer:
+        try:
+            from app.services.translation.formatter import KhmerTextFormatter
+            cleaned = KhmerTextFormatter.format(cleaned)
+        except Exception:
+            pass
+
+        # Convert trailing Western period to Khmer full stop if preceded by Khmer
+        cleaned = re.sub(r"([\u1780-\u17d3\u17d7\u17dd])\.\s*$", r"\1។", cleaned)
+
+        # Ensure sentence ends with Khmer punctuation for natural TTS cadence & breath release
+        if not re.search(r"[។!?\.\s]$", cleaned):
+            cleaned = cleaned + "។"
+
+    # Collapse duplicate punctuation
+    cleaned = re.sub(r"([។!?]){2,}", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
+    return cleaned
 
 SUPPORTED_EDGE_VOICES: Dict[str, Dict[str, str]] = {
     "km-KH-PisethNeural": {
@@ -121,7 +166,7 @@ class EdgeTTSProvider(TTSProvider):
             TTSNetworkError: If network connectivity or Edge endpoint fails after retries.
             TTSGenerationError: If file cannot be saved or probed.
         """
-        clean_text = text.strip() if text else ""
+        clean_text = _sanitize_text_for_edge(text.strip() if text else "")
         if not clean_text:
             raise EmptyTextError("Cannot synthesize speech from empty text.")
 
@@ -137,40 +182,65 @@ class EdgeTTSProvider(TTSProvider):
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Native Edge TTS speaking rate control (e.g. rate="+15%" or rate_factor=1.15)
+        # Prosody control: emotion style presets, pitch, rate, and volume
+        emotion_style = kwargs.get("emotion_style") or kwargs.get("style")
         rate_val = kwargs.get("rate")
         rate_factor = kwargs.get("rate_factor")
-        rate_str: Optional[str] = None
-        if rate_val is not None:
-            r = str(rate_val).strip()
-            if not r.endswith("%"):
-                r = f"{r}%"
-            if not r.startswith(("+", "-")):
-                r = f"+{r}"
-            rate_str = r
-        elif rate_factor is not None:
-            pct = int(round((float(rate_factor) - 1.0) * 100))
-            if pct > 0:
-                rate_str = f"+{pct}%"
-            elif pct < 0:
-                rate_str = f"{pct}%"
+        pitch_val = kwargs.get("pitch")
+        volume_val = kwargs.get("volume")
 
-        async def _synthesize():
-            if rate_str:
-                communicate = edge_tts.Communicate(clean_text, target_voice, rate=rate_str)
-            else:
-                communicate = edge_tts.Communicate(clean_text, target_voice)
-            await communicate.save(str(output_path))
+        rate_str, pitch_str, volume_str = resolve_prosody(
+            emotion_style=emotion_style,
+            rate=rate_val,
+            pitch=pitch_val,
+            volume=volume_val,
+            rate_factor=rate_factor,
+        )
+
+        retryable_exceptions = (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            asyncio.TimeoutError,
+            EdgeTTSException,
+            aiohttp.ClientError,
+            TTSGenerationError,
+        )
 
         last_exception = None
         for attempt in range(1, self.max_retries + 1):
+            curr_rate = rate_str
+            curr_pitch = pitch_str
+            curr_volume = volume_str
+            # On final attempt, if previous attempts failed, fall back to default prosody
+            if attempt == self.max_retries and (rate_str or pitch_str or volume_str):
+                curr_rate = None
+                curr_pitch = None
+                curr_volume = None
+
+            async def _synthesize():
+                kwargs_edge = {}
+                if curr_rate:
+                    kwargs_edge["rate"] = curr_rate
+                if curr_pitch:
+                    kwargs_edge["pitch"] = curr_pitch
+                if curr_volume:
+                    kwargs_edge["volume"] = curr_volume
+
+                communicate = edge_tts.Communicate(clean_text, target_voice, **kwargs_edge)
+                await communicate.save(str(output_path))
+
             try:
                 logger.debug(
-                    "Attempt %d/%d to synthesize speech via Edge TTS: '%.40s...' (voice=%s)",
+                    "Attempt %d/%d to synthesize speech via Edge TTS: '%.40s...' (voice=%s, style=%s, rate=%s, pitch=%s, volume=%s)",
                     attempt,
                     self.max_retries,
                     clean_text,
                     target_voice,
+                    emotion_style or "calm",
+                    curr_rate or "+0%",
+                    curr_pitch or "+0Hz",
+                    curr_volume or "+0%",
                 )
                 self._run_async_safely(_synthesize())
 
@@ -180,11 +250,14 @@ class EdgeTTSProvider(TTSProvider):
                 # Measure actual duration via ffprobe
                 duration = self.video_processor.get_audio_duration(output_path)
                 logger.info(
-                    "Synthesized %s (%.2fs) using Edge TTS [voice=%s, rate=%s]",
+                    "Synthesized %s (%.2fs) using Edge TTS [voice=%s, style=%s, rate=%s, pitch=%s, volume=%s]",
                     output_path.name,
                     duration,
                     target_voice,
-                    rate_str or "+0%",
+                    emotion_style or "calm",
+                    curr_rate or "+0%",
+                    curr_pitch or "+0Hz",
+                    curr_volume or "+0%",
                 )
 
                 return TTSAudioResult(
@@ -195,9 +268,21 @@ class EdgeTTSProvider(TTSProvider):
                     language="km",
                 )
 
-            except (ConnectionError, TimeoutError, OSError) as e:
+            except retryable_exceptions as e:
                 last_exception = e
-                logger.warning("Edge TTS attempt %d/%d failed with error: %s", attempt, self.max_retries, e)
+                logger.warning(
+                    "Edge TTS attempt %d/%d failed with error (%s): %s",
+                    attempt,
+                    self.max_retries,
+                    type(e).__name__,
+                    e,
+                )
+                if output_path.exists():
+                    try:
+                        output_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
                 if attempt < self.max_retries:
                     backoff_delay = 1.0 * (2 ** (attempt - 1))
                     logger.info("Retrying Edge TTS in %.1f seconds...", backoff_delay)

@@ -9,6 +9,12 @@ import {
   Sparkles,
   Subtitles,
   Wand2,
+  Sliders,
+  Music,
+  Volume2,
+  Smartphone,
+  Monitor,
+  Square,
 } from 'lucide-react';
 import {
   ProjectDetail,
@@ -16,6 +22,7 @@ import {
   TimingConflict,
   TranslationSegment,
 } from '../../types';
+import { ExportOptions } from '../../services/api';
 
 interface ExportTabProps {
   project: ProjectDetail;
@@ -23,7 +30,7 @@ interface ExportTabProps {
   timingConflicts: TimingConflict[];
   translationSegments: TranslationSegment[];
   isExporting: boolean;
-  onExportVideo: () => Promise<void>;
+  onExportVideo: (options?: ExportOptions) => Promise<void>;
   onOpenAIImprove: (segment: TranslationSegment) => void;
   exportError?: string | null;
   onAutoFitConflicts?: () => Promise<void>;
@@ -43,6 +50,37 @@ export const ExportTab: React.FC<ExportTabProps> = ({
   isAutoFitting = false,
 }) => {
   const [showReviewList, setShowReviewList] = React.useState(false);
+  const [fillMode, setFillMode] = React.useState<'natural' | 'stretch'>('natural');
+  const [overflowPolicy, setOverflowPolicy] = React.useState<'allow_overlap' | 'truncate_fade' | 'fail'>('allow_overlap');
+  const [strictValidation, setStrictValidation] = React.useState<boolean>(false);
+  const [preserveBgm, setPreserveBgm] = React.useState<boolean>(false);
+  const [duckingPreset, setDuckingPreset] = React.useState<'light' | 'balanced' | 'strong' | 'mute'>('balanced');
+  const [bgmVolume, setBgmVolume] = React.useState<number>(0.35);
+  const [attenuateCenterVocals, setAttenuateCenterVocals] = React.useState<boolean>(true);
+  const [aspectRatio, setAspectRatio] = React.useState<'original' | '9:16' | '1:1' | '16:9'>('original');
+  const [reframeMode, setReframeMode] = React.useState<'blur_pillar' | 'center_crop' | 'fit_black'>('blur_pillar');
+  const [burnSubtitles, setBurnSubtitles] = React.useState<boolean>(false);
+  const [subtitleStyle, setSubtitleStyle] = React.useState<'tiktok_yellow' | 'classic_white' | 'boxed_black' | 'headline_bold'>('tiktok_yellow');
+  const [subtitleLanguage, setSubtitleLanguage] = React.useState<'km' | 'en' | 'bilingual'>('km');
+  const [subtitleFont, setSubtitleFont] = React.useState<string>('Khmer OS Battambang');
+
+  const handleTriggerExport = () => {
+    onExportVideo({
+      fillMode,
+      overflowPolicy: strictValidation ? 'fail' : overflowPolicy,
+      strictValidation,
+      preserveBgm,
+      duckingPreset,
+      bgmVolume,
+      attenuateCenterVocals,
+      aspectRatio,
+      reframeMode,
+      burnSubtitles,
+      subtitleStyle,
+      subtitleLanguage,
+      subtitleFont,
+    });
+  };
   const isV2 = ['v2', 'v2.1', 'v2.2', 'v2.3'].includes(project.pipeline_version || '') || ['v2', 'v2.1', 'v2.2', 'v2.3'].includes(exportStatus?.pipeline_version || '');
   const timingSummary = exportStatus?.timing_summary;
 
@@ -128,7 +166,7 @@ export const ExportTab: React.FC<ExportTabProps> = ({
 
         <div className="shrink-0">
           <button
-            onClick={onExportVideo}
+            onClick={handleTriggerExport}
             disabled={!isReadyToExport || isExporting}
             className={`px-5 py-3 rounded-xl font-bold text-xs sm:text-sm shadow-md transition-all flex items-center gap-2 ${
               isReadyToExport
@@ -167,6 +205,698 @@ export const ExportTab: React.FC<ExportTabProps> = ({
         </div>
       )}
 
+      {/* Timeline Fitting & Speech Pacing Controls */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-indigo-600" />
+            <h4 className="text-sm font-bold text-slate-900">
+              Sample-Accurate Timeline & Speech Pacing Controls
+            </h4>
+          </div>
+          <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full">
+            Zero-Drift PCM Engine
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Fill Mode */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+              <span>Speech Pacing (Fill Mode)</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setFillMode('natural')}
+                className={`p-2.5 rounded-xl border text-left transition-all ${
+                  fillMode === 'natural'
+                    ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600/30'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900">Natural Dialogue</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                  Min 0.75x speed; pads pauses with silence naturally.
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFillMode('stretch')}
+                className={`p-2.5 rounded-xl border text-left transition-all ${
+                  fillMode === 'stretch'
+                    ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600/30'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900">Speech Stretch</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                  Min 0.50x speed; stretches speech to fill the slot.
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Timing Guard / Overflow Policy */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+              <span>Timing Protection & Overflow Policy</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setStrictValidation(false);
+                  setOverflowPolicy('allow_overlap');
+                }}
+                className={`p-2.5 rounded-xl border text-left transition-all ${
+                  !strictValidation && overflowPolicy === 'allow_overlap'
+                    ? 'border-emerald-600 bg-emerald-50/60 ring-1 ring-emerald-600/30'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900 flex items-center gap-1">
+                  <span>Smart Overlap & Fade</span>
+                  <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">Recommended</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                  Allows speech to flow into dialogue pauses without failing export.
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setStrictValidation(true);
+                  setOverflowPolicy('fail');
+                }}
+                className={`p-2.5 rounded-xl border text-left transition-all ${
+                  strictValidation
+                    ? 'border-amber-600 bg-amber-50/60 ring-1 ring-amber-600/30'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900">Strict Validation</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                  Blocks export if speech exceeds available slot window.
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Social Media Video Format & Aspect Ratio */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-pink-50 flex items-center justify-center text-pink-600 shrink-0">
+              <Smartphone className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-slate-900">
+                  Social Media Format & Aspect Ratio
+                </h4>
+                <span className="text-[10px] font-bold bg-pink-100 text-pink-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  TikTok / Shorts / Reels
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Automatically convert landscape videos into vertical 9:16 or square formats for mobile social feeds.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Aspect Ratio Presets */}
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+            <span>Target Platform & Aspect Ratio</span>
+            <span className="text-[11px] text-slate-400 font-normal">Choose target format</span>
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {/* Original */}
+            <button
+              type="button"
+              onClick={() => setAspectRatio('original')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                aspectRatio === 'original'
+                  ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600/30'
+                  : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Film className="w-3.5 h-3.5 text-indigo-600" />
+                  Original Ratio
+                </span>
+                <span className="text-[10px] text-slate-400">Native</span>
+              </div>
+              <div className="text-[11px] text-slate-500 leading-snug">
+                Keeps source video dimensions unchanged. Fastest export.
+              </div>
+            </button>
+
+            {/* 9:16 Vertical */}
+            <button
+              type="button"
+              onClick={() => setAspectRatio('9:16')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                aspectRatio === '9:16'
+                  ? 'border-pink-600 bg-pink-50/60 ring-1 ring-pink-600/30 shadow-sm'
+                  : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5 text-pink-600" />
+                  9:16 Vertical
+                </span>
+                <span className="text-[10px] font-bold text-pink-700 bg-pink-100 px-1.5 py-0.5 rounded">
+                  TikTok / Shorts
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 leading-snug">
+                1080 × 1920 vertical format for viral short-form feeds.
+              </div>
+            </button>
+
+            {/* 1:1 Square */}
+            <button
+              type="button"
+              onClick={() => setAspectRatio('1:1')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                aspectRatio === '1:1'
+                  ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600/30'
+                  : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Square className="w-3.5 h-3.5 text-indigo-600" />
+                  1:1 Square
+                </span>
+                <span className="text-[10px] text-slate-400">Instagram / FB</span>
+              </div>
+              <div className="text-[11px] text-slate-500 leading-snug">
+                1080 × 1080 square format for social carousel & feed posts.
+              </div>
+            </button>
+
+            {/* 16:9 Widescreen */}
+            <button
+              type="button"
+              onClick={() => setAspectRatio('16:9')}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                aspectRatio === '16:9'
+                  ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600/30'
+                  : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Monitor className="w-3.5 h-3.5 text-indigo-600" />
+                  16:9 Widescreen
+                </span>
+                <span className="text-[10px] text-slate-400">YouTube Long</span>
+              </div>
+              <div className="text-[11px] text-slate-500 leading-snug">
+                1920 × 1080 horizontal format for standard desktop & TV players.
+              </div>
+            </button>
+          </div>
+        </div>
+
+        {/* Reframing Style (when not original) */}
+        {aspectRatio !== 'original' && (
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+              <span>Reframing Style</span>
+              <span className="text-[11px] text-slate-400 font-normal">How the source fits inside {aspectRatio}</span>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              {/* Blur Pillar */}
+              <button
+                type="button"
+                onClick={() => setReframeMode('blur_pillar')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  reframeMode === 'blur_pillar'
+                    ? 'border-pink-600 bg-pink-50/50 ring-1 ring-pink-600/30 shadow-sm'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900 flex items-center justify-between">
+                  <span>Cinematic Blurred Pillarbox</span>
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
+                    Popular
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                  Source video centered with matching blurred background on top & bottom. Zero cropped details.
+                </div>
+              </button>
+
+              {/* Center Crop */}
+              <button
+                type="button"
+                onClick={() => setReframeMode('center_crop')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  reframeMode === 'center_crop'
+                    ? 'border-pink-600 bg-pink-50/50 ring-1 ring-pink-600/30 shadow-sm'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900">Center Crop (Fill Screen)</div>
+                <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                  Fills the vertical frame edge-to-edge, cropping left/right sides. Best for centered speakers.
+                </div>
+              </button>
+
+              {/* Fit Black */}
+              <button
+                type="button"
+                onClick={() => setReframeMode('fit_black')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  reframeMode === 'fit_black'
+                    ? 'border-pink-600 bg-pink-50/50 ring-1 ring-pink-600/30 shadow-sm'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                }`}
+              >
+                <div className="font-bold text-xs text-slate-900">Black Bars (Fit)</div>
+                <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                  Letterbox format with solid black borders on top and bottom.
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Viral Burn-In Subtitles (Khmer Fonts & Styling) */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600 shrink-0">
+              <Subtitles className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-slate-900">
+                  Viral Burn-In Subtitles
+                </h4>
+                <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                  Khmer Typography
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {burnSubtitles
+                  ? 'Burns stylized captions permanently into the exported video canvas with mobile UI safe-zone spacing.'
+                  : 'Exports video without burned-in captions. (Separate SRT/VTT subtitles can still be downloaded anytime).'}
+              </p>
+            </div>
+          </div>
+
+          <label className="relative inline-flex items-center cursor-pointer shrink-0">
+            <input
+              type="checkbox"
+              checked={burnSubtitles}
+              onChange={(e) => setBurnSubtitles(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+            <span className="ml-2 text-xs font-semibold text-slate-700">
+              {burnSubtitles ? 'Burn-In Active' : 'No Subtitles (Default)'}
+            </span>
+          </label>
+        </div>
+
+        {burnSubtitles && (
+          <div className="space-y-4 pt-1 animate-fadeIn">
+            {/* Subtitle Style Presets */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                <span>Caption Visual Style Preset</span>
+                <span className="text-[11px] text-slate-400 font-normal">ASS subtitle styling & contrast</span>
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                {/* TikTok Yellow */}
+                <button
+                  type="button"
+                  onClick={() => setSubtitleStyle('tiktok_yellow')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    subtitleStyle === 'tiktok_yellow'
+                      ? 'border-amber-500 bg-amber-50/70 ring-1 ring-amber-500/30 shadow-sm'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-yellow-400 border border-slate-700 inline-block shadow-xs"></span>
+                      TikTok Yellow
+                    </span>
+                    <span className="text-[9px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded">Viral</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Vibrant yellow text with thick black outline. Maximum hook retention for Reels and TikTok.
+                  </div>
+                </button>
+
+                {/* Classic White */}
+                <button
+                  type="button"
+                  onClick={() => setSubtitleStyle('classic_white')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    subtitleStyle === 'classic_white'
+                      ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600/30 shadow-sm'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-white border border-slate-400 inline-block"></span>
+                      Classic White
+                    </span>
+                    <span className="text-[10px] text-slate-400">Clean</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Pure white typography with soft drop shadow. Elegant, distraction-free movie style.
+                  </div>
+                </button>
+
+                {/* Boxed Black */}
+                <button
+                  type="button"
+                  onClick={() => setSubtitleStyle('boxed_black')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    subtitleStyle === 'boxed_black'
+                      ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600/30 shadow-sm'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-slate-900 border border-slate-700 inline-block"></span>
+                      Boxed Black
+                    </span>
+                    <span className="text-[10px] text-slate-400">High Contrast</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Solid translucent black backdrop pill. Guaranteed 100% legibility over bright or noisy video.
+                  </div>
+                </button>
+
+                {/* Bold Headline */}
+                <button
+                  type="button"
+                  onClick={() => setSubtitleStyle('headline_bold')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    subtitleStyle === 'headline_bold'
+                      ? 'border-amber-600 bg-amber-50/70 ring-1 ring-amber-600/30 shadow-sm'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
+                      Bold Headline
+                    </span>
+                    <span className="text-[10px] text-amber-700 font-bold bg-amber-100 px-1.5 py-0.2 rounded">Muol</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Traditional bold Khmer Muol font with gold accent. Dramatic, high-impact titles.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Language & Font Selector Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+              {/* Language Selector */}
+              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/40 space-y-2">
+                <label className="text-xs font-semibold text-slate-700 block">
+                  Subtitle Language Mode
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSubtitleLanguage('km')}
+                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold text-center transition-all ${
+                      subtitleLanguage === 'km'
+                        ? 'bg-amber-500 text-white shadow-xs'
+                        : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    Khmer Only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSubtitleLanguage('bilingual')}
+                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold text-center transition-all ${
+                      subtitleLanguage === 'bilingual'
+                        ? 'bg-amber-500 text-white shadow-xs'
+                        : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    Bilingual (KM+EN)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSubtitleLanguage('en')}
+                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold text-center transition-all ${
+                      subtitleLanguage === 'en'
+                        ? 'bg-amber-500 text-white shadow-xs'
+                        : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    English Only
+                  </button>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {subtitleLanguage === 'bilingual'
+                    ? 'Displays dubbed Khmer as primary caption with English translation below in italic.'
+                    : subtitleLanguage === 'km'
+                    ? 'Displays synchronized Khmer dubbed dialogue text.'
+                    : 'Displays original English transcript text.'}
+                </div>
+              </div>
+
+              {/* Font Family Selector */}
+              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/40 space-y-2">
+                <label className="text-xs font-semibold text-slate-700 block">
+                  Khmer Font Family
+                </label>
+                <select
+                  value={subtitleFont}
+                  onChange={(e) => setSubtitleFont(e.target.value)}
+                  className="w-full text-xs font-medium bg-white border border-slate-200 rounded-lg p-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                >
+                  <option value="Khmer OS Battambang">Khmer OS Battambang (Standard Clean - Recommended)</option>
+                  <option value="Khmer OS Muol">Khmer OS Muol (Bold Ornamental / Headline)</option>
+                  <option value="Khmer OS Content">Khmer OS Content (Traditional Book Script)</option>
+                  <option value="Khmer OS">Khmer OS (System Sans)</option>
+                </select>
+                <div className="text-[11px] text-slate-500">
+                  Rendered via Linux HarfBuzz / libass Unicode shaping with zero missing glyphs or square boxes.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Background Music & Audio Ducking Controls */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
+              <Music className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-slate-900">
+                  Background Audio & Music Mixing
+                </h4>
+                <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">
+                  Sidechain DSP
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {preserveBgm
+                  ? 'Mixes and ducks original video audio underneath Khmer speech. Note: original dialogue may be faintly audible if not isolated.'
+                  : 'Replaces original video audio entirely with crystal-clear Khmer dialogue (recommended for cleanest dubbing).'}
+              </p>
+            </div>
+          </div>
+
+          <label className="relative inline-flex items-center cursor-pointer shrink-0">
+            <input
+              type="checkbox"
+              checked={preserveBgm}
+              onChange={(e) => setPreserveBgm(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+            <span className="ml-2 text-xs font-semibold text-slate-700">
+              {preserveBgm ? 'Preserve BGM (Active)' : 'Clean Dubbing (Default)'}
+            </span>
+          </label>
+        </div>
+
+        {preserveBgm ? (
+          <div className="space-y-4 pt-1">
+            {/* Ducking Presets */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                <span>Ducking Intensity Preset</span>
+                <span className="text-[11px] text-slate-400 font-normal">Sidechain compressor attenuation</span>
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                {/* Light */}
+                <button
+                  type="button"
+                  onClick={() => setDuckingPreset('light')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    duckingPreset === 'light'
+                      ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600/30'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900">Gentle</span>
+                    <span className="text-[10px] font-mono font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">-6 dB</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Subtle dip for quiet background tunes, vlogs, and commentary.
+                  </div>
+                </button>
+
+                {/* Balanced */}
+                <button
+                  type="button"
+                  onClick={() => setDuckingPreset('balanced')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    duckingPreset === 'balanced'
+                      ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600/30'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-xs text-slate-900">Balanced</span>
+                      <span className="text-[9px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.2 rounded">Recommended</span>
+                    </div>
+                    <span className="text-[10px] font-mono font-semibold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">-12 dB</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Standard movie mix: dialogue cuts through clearly over SFX.
+                  </div>
+                </button>
+
+                {/* Strong */}
+                <button
+                  type="button"
+                  onClick={() => setDuckingPreset('strong')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    duckingPreset === 'strong'
+                      ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600/30'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900">Strong</span>
+                    <span className="text-[10px] font-mono font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">-18 dB</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Heavy suppression for action movies, loud explosions, or loud EDM.
+                  </div>
+                </button>
+
+                {/* Mute */}
+                <button
+                  type="button"
+                  onClick={() => setDuckingPreset('mute')}
+                  className={`p-3 rounded-xl border text-left transition-all ${
+                    duckingPreset === 'mute'
+                      ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600/30'
+                      : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-900">Full Cut</span>
+                    <span className="text-[10px] font-mono font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">Mute</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1 leading-snug">
+                    Silences background audio completely whenever Khmer speech occurs.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Volume slider & Vocal Attenuation grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+              {/* Background Music Volume Slider */}
+              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/40 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                    <Volume2 className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Background Audio Level</span>
+                  </span>
+                  <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                    {Math.round(bgmVolume * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.05"
+                  max="0.8"
+                  step="0.05"
+                  value={bgmVolume}
+                  onChange={(e) => setBgmVolume(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-600 cursor-pointer"
+                />
+                <div className="flex justify-between text-[10px] text-slate-400">
+                  <span>5% (Faint)</span>
+                  <span>35% (Recommended)</span>
+                  <span>80% (Prominent)</span>
+                </div>
+              </div>
+
+              {/* Vocal Attenuation Option */}
+              <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/40 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  id="attenuate-vocals-checkbox"
+                  checked={attenuateCenterVocals}
+                  onChange={(e) => setAttenuateCenterVocals(e.target.checked)}
+                  className="mt-1 w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                />
+                <label htmlFor="attenuate-vocals-checkbox" className="space-y-0.5 cursor-pointer">
+                  <div className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                    <span>Attenuate Original Dialogue</span>
+                    <span className="text-[10px] bg-slate-200 text-slate-700 font-medium px-1.5 py-0.2 rounded">Center Channel</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    Reduces center-panned speech on stereo tracks using mid-channel filtering, suppressing original voice bleed-through while keeping stereo music & ambient Foley effects alive.
+                  </p>
+                </label>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <span className="font-semibold text-slate-800 block">Clean Khmer Dubbing (Default)</span>
+              <span className="text-[11px] text-slate-500">The exported video replaces the original audio track with 100% synchronized Khmer dialogue.</span>
+            </div>
+            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full shrink-0">
+              Clean Dialogue
+            </span>
+          </div>
+        )}
+      </div>
+
       {/* V2: Khmer Dubbing Ready Compact Summary (Section 15) */}
       {isV2 && timingSummary && timingSummary.unresolved_conflicts === 0 && (
         <div className="p-6 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-slate-800 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn">
@@ -194,7 +924,7 @@ export const ExportTab: React.FC<ExportTabProps> = ({
           <div className="shrink-0 flex items-center gap-2">
             {!isExportComplete && (
               <button
-                onClick={onExportVideo}
+                onClick={handleTriggerExport}
                 disabled={!isReadyToExport || isExporting}
                 className={`px-5 py-2.5 rounded-xl font-bold text-xs shadow-md transition-all flex items-center gap-2 ${
                   isReadyToExport

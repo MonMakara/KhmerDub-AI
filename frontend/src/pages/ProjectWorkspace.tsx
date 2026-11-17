@@ -13,7 +13,7 @@ import { VoiceTab } from '../components/studio/VoiceTab';
 import { ExportTab } from '../components/studio/ExportTab';
 import { AIImproveModal } from '../components/studio/AIImproveModal';
 import { RenameProjectModal } from '../components/common/RenameProjectModal';
-import { api } from '../services/api';
+import { api, ExportOptions } from '../services/api';
 import {
   ProjectDetail,
   TranscriptSegment,
@@ -25,6 +25,7 @@ import {
   TranslationProviderInfo,
   SubtitleSegment,
   SubtitleStylePreferences,
+  ProjectSpeaker,
 } from '../types';
 
 interface ProjectWorkspaceProps {
@@ -58,8 +59,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // Selection state
   const [selectedVoice, setSelectedVoice] = useState<{ provider: string; voice: string }>({
-    provider: 'gtts',
-    voice: 'default',
+    provider: 'edge',
+    voice: 'km-KH-PisethNeural',
   });
   const [selectedTransProvider, setSelectedTransProvider] = useState<string>('nllb');
   const [selectedTransStyle, setSelectedTransStyle] = useState<string>('natural');
@@ -90,6 +91,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   // Voice Preview
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
+
+  // Multi-Speaker State
+  const [speakers, setSpeakers] = useState<ProjectSpeaker[]>([]);
 
   // Subtitles State
   const [subtitles, setSubtitles] = useState<SubtitleSegment[]>([]);
@@ -171,6 +175,28 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
     [projectId, subtitleLanguage]
   );
 
+  const fetchSpeakersData = useCallback(async () => {
+    try {
+      const data = await api.getProjectSpeakers(projectId);
+      setSpeakers(data || []);
+    } catch {
+      // ignore
+    }
+  }, [projectId]);
+
+  const handleUpdateSegmentSpeaker = async (segmentId: string, speakerLabel: string | null) => {
+    try {
+      await api.updateTranscriptSegmentSpeaker(projectId, segmentId, speakerLabel);
+      await Promise.all([
+        fetchTranscriptData(),
+        fetchTranslationData(),
+        fetchSpeakersData(),
+      ]);
+    } catch (err: any) {
+      console.error('Failed to update segment speaker:', err);
+    }
+  };
+
   useEffect(() => {
     fetchSubtitlesData(subtitleLanguage);
   }, [fetchSubtitlesData, subtitleLanguage]);
@@ -178,15 +204,16 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const fetchCatalogs = useCallback(async () => {
     try {
       const [vData, pData] = await Promise.all([
-        api.getVoices().catch(() => ({ voices: [], default_voice: 'default' })),
+        api.getSegmentVoices(projectId),
         api.getTranslationProviders().catch(() => ({ providers: [], default_provider: 'nllb', default_style: 'natural', styles: [] })),
       ]);
       setVoices(vData.voices || []);
       setTranslationProviders(pData.providers || []);
     } catch (e) {
       console.error('Failed to load catalogs', e);
+      setTtsError('Could not refresh voice availability. Please retry.');
     }
-  }, []);
+  }, [projectId]);
 
   const fetchProjectData = useCallback(async (isInitial = false) => {
     try {
@@ -255,6 +282,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
         fetchAudioData(),
         fetchExportData(),
         fetchSubtitlesData(subtitleLanguage),
+        fetchSpeakersData(),
       ]);
     } catch (err: any) {
       console.error('Failed to fetch project data:', err);
@@ -263,7 +291,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
       if (isInitial) setLoading(false);
       setRefreshing(false);
     }
-  }, [projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, fetchExportData]);
+  }, [projectId, fetchTranscriptData, fetchTranslationData, fetchAudioData, fetchExportData, fetchSpeakersData]);
 
   // Initial load
   useEffect(() => {
@@ -317,8 +345,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           if (job?.status === 'completed' || data.status === 'voice_generated') {
             setIsGeneratingVoice(false);
             setTtsError(null);
-            await fetchAudioData();
-            await fetchExportData();
+            await Promise.all([fetchTranslationData(), fetchAudioData(), fetchExportData()]);
             if (onProjectUpdated) onProjectUpdated();
           } else if (job?.status === 'failed' || data.status === 'failed') {
             setIsGeneratingVoice(false);
@@ -466,13 +493,20 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   };
 
   const handleSelectVoice = async (provider: string, voice: string) => {
-    setSelectedVoice({ provider, voice });
     try {
       await api.updateProjectVoice(projectId, provider, voice);
+      setSelectedVoice({ provider, voice });
       await fetchProjectData();
     } catch (err: any) {
-      console.error('Failed to update voice:', err);
+      setTtsError(err.message || 'Could not save project default voice.');
     }
+  };
+
+  const handleSegmentVoices = async (ids: string[], provider: string | null, voice: string | null) => {
+    const data = await api.updateSegmentVoices(projectId, ids, provider, voice);
+    const updated = new Map(data.segments.map((s) => [s.id, s]));
+    setTranslationSegments((prev) => prev.map((s) => updated.get(s.id) || s));
+    await Promise.all([fetchAudioData(), fetchExportData()]);
   };
 
   const handlePreviewVoice = async (provider: string, voice: string) => {
@@ -503,18 +537,20 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const handleRegenerateSegmentAudio = async (segmentId: string) => {
     try {
       await api.regenerateAudioSegment(projectId, segmentId);
+      await fetchTranslationData();
       await fetchAudioData();
       await fetchExportData();
     } catch (err: any) {
-      alert(`Audio regeneration failed: ${err.message}`);
+      await fetchTranslationData();
+      throw err;
     }
   };
 
-  const handleExportVideo = async () => {
+  const handleExportVideo = async (options?: ExportOptions) => {
     setIsExporting(true);
     setExportError(null);
     try {
-      await api.startExport(projectId);
+      await api.startExport(projectId, options);
       await fetchProjectData();
     } catch (err: any) {
       setIsExporting(false);
@@ -661,7 +697,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Khmer Synthesized Speech:</span>
                   <span className="font-mono font-medium text-slate-800">
-                    {generatedAudios.length} / {transcriptSegments.length}
+                    {generatedAudios.length} / {translationSegments.length}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -693,6 +729,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           translationSegments={translationSegments}
           generatedAudios={generatedAudios}
           timingConflicts={timingConflicts}
+          scheduledUnits={exportStatus?.timing_summary?.schedule}
           selectedSegmentId={selectedSegmentId}
           onSelectSegment={(id) => setSelectedSegmentId(id)}
           onSeek={handleSeekVideo}
@@ -728,15 +765,20 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             projectId={projectId}
             segmentationMode={segmentationMode}
             segments={transcriptSegments}
+            speakers={speakers}
             isTranscribing={isTranscribing}
             onStartTranscription={handleStartTranscription}
             onUpdateSegment={handleUpdateTranscriptSegment}
+            onUpdateSegmentSpeaker={handleUpdateSegmentSpeaker}
             onSeekVideo={handleSeekVideo}
             onResegmentSuccess={async () => {
               await Promise.all([
+                fetchProjectData(),
                 fetchTranscriptData(),
                 fetchTranslationData(),
                 fetchAudioData(),
+                fetchSpeakersData(),
+                fetchExportData(),
               ]);
             }}
             activeSegmentId={activeSegmentId}
@@ -763,6 +805,15 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             onRetranslateSegment={handleRetranslateSegment}
             onApplyAIImprovement={handleApplyAIImprovement}
             onSeekVideo={handleSeekVideo}
+            onImportSuccess={async () => {
+              await Promise.all([
+                fetchProjectData(),
+                fetchTranscriptData(),
+                fetchTranslationData(),
+                fetchAudioData(),
+                fetchExportData(),
+              ]);
+            }}
             activeSegmentId={activeSegmentId}
             selectedSegmentId={selectedSegmentId}
             translationError={translationError}
@@ -792,6 +843,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
         {activeTab === 'voice' && (
           <VoiceTab
+            projectId={projectId}
+            projectTitle={project?.title}
             voices={voices}
             selectedVoice={selectedVoice}
             generatedAudios={generatedAudios}
@@ -799,6 +852,8 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             timingConflicts={timingConflicts}
             isGeneratingSpeech={isGeneratingVoice}
             onSelectVoice={handleSelectVoice}
+            onSaveSegmentVoices={handleSegmentVoices}
+            onRefreshVoices={fetchCatalogs}
             onPreviewVoice={handlePreviewVoice}
             onGenerateAllSpeech={handleGenerateAllSpeech}
             onRegenerateSegmentAudio={handleRegenerateSegmentAudio}
@@ -809,6 +864,13 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             ttsError={ttsError}
             previewAudioUrl={previewAudioUrl}
             previewingVoice={previewingVoice}
+            onSpeakerVoiceChanged={async () => {
+              await Promise.all([
+                fetchTranslationData(),
+                fetchAudioData(),
+                fetchSpeakersData(),
+              ]);
+            }}
           />
         )}
 

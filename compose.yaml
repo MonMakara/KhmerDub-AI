@@ -1,5 +1,6 @@
 services:
   backend:
+    image: khmerdub-ai-backend
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -7,9 +8,12 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/app
       - ./data:/app/data
+      - ./fonts:/app/fonts:ro
       - model_cache:/root/.cache
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
@@ -23,6 +27,7 @@ services:
       - OUTPUTS_DIR=/app/data/outputs
       - TEMP_DIR=/app/data/temp
       - MODEL_CACHE_DIR=/root/.cache
+      - FONTS_DIR=/app/fonts
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')\""]
       interval: 10s
@@ -38,6 +43,8 @@ services:
     restart: unless-stopped
     ports:
       - "5173:5173"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./frontend:/app
       - /app/node_modules

@@ -1,7 +1,5 @@
 import json
-import os
 import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,18 +10,13 @@ from sqlalchemy.orm import Session
 from app.models.project import Project
 from app.models.toolkit import ToolkitTask
 from app.services.downloader.engine import (
-    DownloadCancelledException,
     DownloadLimitExceededError,
-    VideoDownloadError,
     execute_download_job,
-    request_download_cancellation,
 )
 from app.services.downloader.metadata import (
-    VideoMetadataError,
     fetch_media_metadata,
 )
 from app.services.downloader.security import (
-    DownloaderSecurityError,
     InvalidURLError,
     SSRFSecurityError,
     UnsupportedSourceError,
@@ -678,7 +671,6 @@ def test_child_thread_guard_propagation():
 def test_redirect_to_private_address_blocked():
     """Verify redirect event hook in direct media download stops private IP redirect destinations."""
     import httpx
-    from app.services.downloader.engine import _download_direct_media
 
     # Mock redirect response from public server targeting private address
     mock_redirect_response = MagicMock(spec=httpx.Response)

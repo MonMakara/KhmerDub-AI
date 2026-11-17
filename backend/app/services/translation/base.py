@@ -40,6 +40,9 @@ class TranslationProvider(ABC):
         source_lang: str = "en",
         target_lang: str = "km",
         style: str = "standard",
+        contexts: Optional[List[str]] = None,
+        durations: Optional[List[float]] = None,
+        **kwargs,
     ) -> List[str]:
         """Translate a list of text segments from source to target language."""
         pass

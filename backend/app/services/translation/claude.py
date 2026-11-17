@@ -1,9 +1,8 @@
 import json
 import logging
-import os
 import re
 import time
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict
 
 import httpx
 
@@ -218,6 +217,7 @@ class ClaudeTranslationProvider(TranslationProvider):
         target_lang: str = "km",
         style: str = "standard",
         contexts: Optional[List[str]] = None,
+        durations: Optional[List[float]] = None,
         **kwargs,
     ) -> List[str]:
         """Translate a batch or single list of English texts into Khmer."""
@@ -235,14 +235,21 @@ class ClaudeTranslationProvider(TranslationProvider):
             raw_text = clean_texts[0]
             if not raw_text:
                 return [""]
-            prompt = build_single_translation_prompt(raw_text, style=style)
+            seg_dur = durations[0] if (durations and len(durations) > 0) else None
+            seg_ctx = contexts[0] if (contexts and len(contexts) > 0) else None
+            prompt = build_single_translation_prompt(raw_text, style=style, context=seg_ctx, duration=seg_dur)
             raw_out = self._call_claude_with_retry(prompt)
             formatted = KhmerGlossary.align_terminology(raw_text, raw_out)
             formatted = KhmerTextFormatter.format(formatted)
+            if seg_dur and seg_dur > 0:
+                from app.services.dubbing.auto_fit import shorten_khmer_text
+                c_lim = max(18, int(seg_dur * 12.0))
+                if len(formatted) > c_lim:
+                    formatted = shorten_khmer_text(formatted, target_char_count=c_lim)
             return [formatted]
 
         # Batch translation
-        prompt = build_batch_translation_prompt(clean_texts, style=style)
+        prompt = build_batch_translation_prompt(clean_texts, style=style, durations=durations, contexts=contexts)
         raw_json = self._call_claude_with_retry(prompt)
 
         try:
@@ -254,6 +261,11 @@ class ClaudeTranslationProvider(TranslationProvider):
                     km = lookup.get(i + 1, "")
                     km = KhmerGlossary.align_terminology(eng, km)
                     km = KhmerTextFormatter.format(km)
+                    if durations and i < len(durations) and durations[i] and durations[i] > 0.0:
+                        from app.services.dubbing.auto_fit import shorten_khmer_text
+                        c_lim = max(18, int(durations[i] * 12.0))
+                        if len(km) > c_lim:
+                            km = shorten_khmer_text(km, target_char_count=c_lim)
                     results.append(km)
                 return results
             elif isinstance(data, dict) and "segments" in data:
@@ -262,6 +274,11 @@ class ClaudeTranslationProvider(TranslationProvider):
                     km = lookup.get(i + 1, "")
                     km = KhmerGlossary.align_terminology(eng, km)
                     km = KhmerTextFormatter.format(km)
+                    if durations and i < len(durations) and durations[i] and durations[i] > 0.0:
+                        from app.services.dubbing.auto_fit import shorten_khmer_text
+                        c_lim = max(18, int(durations[i] * 12.0))
+                        if len(km) > c_lim:
+                            km = shorten_khmer_text(km, target_char_count=c_lim)
                     results.append(km)
                 return results
         except Exception as e:

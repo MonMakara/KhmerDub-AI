@@ -40,10 +40,7 @@ from app.models.project import (
 from app.services.transcription.base import TranscriptionSegment, WordTiming
 from app.services.transcription.segmentation import (
     segment_transcript,
-    SegmentationMode,
     is_sentence_boundary,
-    split_segment_at_word,
-    merge_adjacent_segments,
 )
 from app.services.subtitles.generator import generate_srt, generate_vtt, SubtitleCue
 
@@ -150,9 +147,9 @@ def test_04_short_sentence_merging_dubbing():
     raw = TranscriptionSegment(1, 0.0, 2.0, "Hi. How are you?", words=all_words)
 
     dub_segs = segment_transcript([raw], mode="dubbing", target_min=2.0, target_max=6.0)
-    assert len(dub_segs) == 1
-    assert "Hi." in dub_segs[0].text
-    assert "How are you?" in dub_segs[0].text
+    assert [s.text for s in dub_segs] == ["Hi.", "How are you?"]
+    assert (dub_segs[0].start_time, dub_segs[0].end_time) == (0.0, 0.5)
+    assert dub_segs[1].start_time == 0.8
 
 
 # ============================================================================
@@ -227,12 +224,11 @@ def test_08_missing_word_timestamps_fallback():
     raw = TranscriptionSegment(1, 2.0, 8.0, "Hello world. This is another sentence.", words=None)
     res = segment_transcript([raw], mode="sentence")
 
-    assert len(res) == 2
+    assert len(res) == 1
     assert res[0].is_approximate
-    assert res[1].is_approximate
-    assert res[0].start_time >= 2.0
-    assert res[1].end_time <= 8.0
-    assert res[0].end_time <= res[1].start_time
+    assert res[0].words is None
+    assert res[0].text == raw.text
+    assert (res[0].start_time, res[0].end_time) == (2.0, 8.0)
 
 
 # ============================================================================
@@ -246,8 +242,10 @@ def test_09_unreliable_or_inverted_timestamps():
     res = segment_transcript([raw], mode="sentence")
 
     assert len(res) == 1
-    # Invariant: start_time < end_time guaranteed
-    assert res[0].start_time < res[0].end_time
+    # Preserve uncertain ASR evidence; never fabricate a valid boundary.
+    assert res[0].start_time == res[0].end_time == 2.0
+    assert res[0].is_approximate
+    assert words[0].end == 2.0
 
 
 # ============================================================================
@@ -648,3 +646,17 @@ def test_20_no_data_loss_and_manual_split_merge(client: TestClient, db_session: 
     assert "Alpha Beta Gamma" in merge_data[0]["text"]
     assert merge_data[0]["start_time"] == 0.0
     assert merge_data[0]["end_time"] == 1.5
+
+
+def test_mixed_alignment_preserves_unaligned_text_without_fake_words():
+    raw = [
+        TranscriptionSegment(1, 0, 1, "Hello.", words=[WordTiming("Hello.", 0, 1)]),
+        TranscriptionSegment(2, 2, 4, "Unaligned original words", words=None),
+        TranscriptionSegment(3, 5, 6, "Goodbye.", words=[WordTiming("Goodbye.", 5, 6)]),
+    ]
+    result = segment_transcript(raw, mode="dubbing")
+    assert [s.text for s in result] == [s.text for s in raw]
+    assert result[1].words is None
+    assert result[1].is_approximate
+    assert (result[1].start_time, result[1].end_time) == (2, 4)
+    assert raw[0].words[0].end == 1

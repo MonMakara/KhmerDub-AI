@@ -25,6 +25,24 @@ class KhmerTextFormatter:
     ALL_PUNCT_ATTACH = r"[!?,;:\u17D4\u17D5\u17D6\u17D7\u17D8\u17D9\u17DA]"
     SENTENCE_END_PUNCT = r"[!?,;:\u17D4\u17D5]"
 
+    # Standard Khmer conjunctions and phrase markers that require clause spacing in Cambodian orthography
+    KHMER_PHRASE_MARKERS = [
+        "ដើម្បី",      # in order to / to
+        "ប៉ុន្តែ",      # but
+        "ពីព្រោះ",      # because
+        "ដូច្នេះ",      # therefore
+        "ដូចនេះ",      # thus
+        "ហេតុនេះ",     # hence
+        "ប្រសិនបើ",    # if
+        "ដូចជា",       # such as
+        "ជាពិសេស",     # especially
+        "ទោះបីជា",     # although
+        "ទោះជា",       # even if
+        "ព្រមទាំង",     # as well as
+        "ឬក៏",        # or
+        "និង",        # and
+    ]
+
     @classmethod
     def format(cls, text: Optional[str]) -> str:
         """Format raw Khmer text into natural Cambodian orthography."""
@@ -50,6 +68,10 @@ class KhmerTextFormatter:
         # Perform twice to handle overlapping regex capture groups
         s = re.sub(rf"({cls.KHMER_CHAR})\s+({cls.KHMER_CHAR})", r"\1\2", s)
         s = re.sub(rf"({cls.KHMER_CHAR})\s+({cls.KHMER_CHAR})", r"\1\2", s)
+
+        # Step 4b: Ensure standard Cambodian phrase-boundary spacing before conjunctions and clause markers
+        for marker in cls.KHMER_PHRASE_MARKERS:
+            s = re.sub(rf"({cls.KHMER_CHAR})({marker})", r"\1 \2", s)
 
         # Step 5: Ensure space between Khmer text and Latin/English alphanumeric words
         # e.g., 'មកកាន់KhmerDub' -> 'មកកាន់ KhmerDub'

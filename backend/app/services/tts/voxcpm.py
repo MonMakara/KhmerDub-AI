@@ -110,6 +110,10 @@ class VoxCPM2TTSProvider(TTSProvider):
         if not clean_text:
             raise EmptyTextError("Cannot synthesize speech from empty text.")
 
+        # Ensure proper sentence terminal for natural breathing pause & vocal release
+        if not clean_text.endswith(("។", "!", "?", "...", ":")):
+            clean_text += "។"
+
         if not voice or voice.strip().lower() == "default":
             raise VoiceNotSupportedError(
                 "VoxCPM2 voice cloning requires an authorized custom voice profile ID as voice parameter."
@@ -191,8 +195,9 @@ class VoxCPM2TTSProvider(TTSProvider):
             "text": clean_text,
             "reference_audio_path": str(ref_path),
             "output_audio_path": str(temp_wav_path),
-            "cfg_value": 2.0,
-            "inference_timesteps": 10,
+            "cfg_value": float(kwargs.get("cfg_value", 2.0)),
+            "inference_timesteps": int(kwargs.get("inference_timesteps", 10)),
+            "trim_silence_vad": bool(kwargs.get("trim_silence_vad", True)),
         }
         if seed is not None:
             payload["seed"] = seed
@@ -284,20 +289,31 @@ class VoxCPM2TTSProvider(TTSProvider):
             )
 
         try:
+            # Retain the lossless synthesis master before conversion.
+            shutil.copyfile(actual_wav_path, output_path.with_suffix(".raw.wav"))
+            fade_filter = "afade=t=in:ss=0:d=0.010,areverse,afade=t=in:ss=0:d=0.010,areverse"
             if wants_mp3:
-                # Transcode 48 kHz WAV to clean 192k MP3 using FFmpeg
+                # Transcode 48 kHz WAV to clean 192k MP3 with 10ms boundary smoothing using FFmpeg
                 cmd = [
                     self.video_processor.ffmpeg_bin,
                     "-y",
                     "-i", str(actual_wav_path),
+                    "-af", fade_filter,
                     "-codec:a", "libmp3lame",
                     "-b:a", "192k",
                     str(output_path),
                 ]
-                res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-                if res.returncode != 0:
-                    raise RuntimeError(f"FFmpeg transcode error: {res.stderr}")
             else:
+                cmd = [
+                    self.video_processor.ffmpeg_bin,
+                    "-y",
+                    "-i", str(actual_wav_path),
+                    "-af", fade_filter,
+                    "-c:a", "pcm_s16le",
+                    str(output_path),
+                ]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if res.returncode != 0:
                 if actual_wav_path.resolve() != output_path.resolve():
                     shutil.copyfile(str(actual_wav_path), str(output_path))
 

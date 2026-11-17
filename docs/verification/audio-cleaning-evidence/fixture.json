@@ -1,0 +1,9 @@
+{
+  "speech_source": "/app/data/projects/0dbe625f-6a12-4da8-8971-7ad153e8a4f4/generated_audio/segment_7cb9da18-3f74-4ea9-9b67-598fe7dde582.021d6460a31640bc8fd57d11ef2eca42.mp3",
+  "video_source": "/app/data/uploads/404377b3-fe3b-4f3a-93e0-38ed5f466274/When_Everyone_Says_Your_Dream_is_Impossible_-_Remember_the_Bamboo_Tree.mp4",
+  "source_sha256": "2bfba49a5d7aa920056577c7ede19d6c11e104502cf101aede02df299595fc19",
+  "fixture_seconds": 10.2,
+  "quiet_phrase_gain": 0.35,
+  "conditions": "Real existing synthesized Khmer speech with known added hiss/fan or synthetic instrumental stems; not a natural field recording.",
+  "human_listening": "not performed"
+}

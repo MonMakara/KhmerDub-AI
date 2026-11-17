@@ -1,0 +1,48 @@
+[
+  {
+    "task_id": "5177b151-fbb0-48e8-9cd6-fbab1da79c80",
+    "video_payload_sha256_unchanged": true,
+    "video_hash": "SHA256=d12c9edb4f2da227c80e405ea5dad9fdac5be01dfc05bf280aaca68fca88a37d",
+    "downloads": {
+      "wav": {
+        "status": 200,
+        "bytes": "55812702",
+        "disposition": "attachment; filename=\"cleaned.wav\""
+      },
+      "mp3": {
+        "status": 200,
+        "bytes": "4652396",
+        "disposition": "attachment; filename=\"cleaned.mp3\""
+      },
+      "video": {
+        "status": 200,
+        "bytes": "38979369",
+        "disposition": "attachment; filename=\"cleaned.mp4\""
+      }
+    },
+    "range_preview_verified": true
+  },
+  {
+    "task_id": "c032e828-8987-419c-954b-9e1fff92ed33",
+    "video_payload_sha256_unchanged": true,
+    "video_hash": "SHA256=d12c9edb4f2da227c80e405ea5dad9fdac5be01dfc05bf280aaca68fca88a37d",
+    "downloads": {
+      "wav": {
+        "status": 200,
+        "bytes": "55812702",
+        "disposition": "attachment; filename=\"cleaned.wav\""
+      },
+      "mp3": {
+        "status": 200,
+        "bytes": "4652396",
+        "disposition": "attachment; filename=\"cleaned.mp3\""
+      },
+      "video": {
+        "status": 200,
+        "bytes": "38984206",
+        "disposition": "attachment; filename=\"cleaned.mp4\""
+      }
+    },
+    "range_preview_verified": true
+  }
+]

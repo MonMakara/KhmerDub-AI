@@ -18,6 +18,12 @@ from app.services.translation.openai_compat import (
     DEFAULT_OPENAI_MODEL,
     SUPPORTED_OPENAI_MODELS,
     DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_GROQ_MODEL,
+    SUPPORTED_GROQ_MODELS,
+    DEFAULT_GROQ_BASE_URL,
+    DEFAULT_DEEPSEEK_MODEL,
+    SUPPORTED_DEEPSEEK_MODELS,
+    DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_CUSTOM_MODEL,
     SUPPORTED_CUSTOM_MODELS,
 )
@@ -40,6 +46,32 @@ SUPPORTED_TRANSLATION_PROVIDERS: List[Dict[str, Any]] = [
         "supports_alternatives": False,
         "default_model": "facebook/nllb-200-distilled-600M",
         "available_models": ["facebook/nllb-200-distilled-600M"],
+    },
+    {
+        "id": "groq",
+        "name": "Groq",
+        "type": "cloud_llm",
+        "description": "Ultra-fast LPU inference (openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b). Free tier with near-instant Khmer translation.",
+        "requires_api_key": True,
+        "requires_base_url": False,
+        "supports_styles": True,
+        "supports_alternatives": True,
+        "default_model": DEFAULT_GROQ_MODEL,
+        "available_models": SUPPORTED_GROQ_MODELS,
+        "default_base_url": DEFAULT_GROQ_BASE_URL,
+    },
+    {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "type": "cloud_llm",
+        "description": "DeepSeek-V3 and DeepSeek-R1 (deepseek-chat, deepseek-reasoner). Extremely cost-effective and capable models.",
+        "requires_api_key": True,
+        "requires_base_url": False,
+        "supports_styles": True,
+        "supports_alternatives": True,
+        "default_model": DEFAULT_DEEPSEEK_MODEL,
+        "available_models": SUPPORTED_DEEPSEEK_MODELS,
+        "default_base_url": DEFAULT_DEEPSEEK_BASE_URL,
     },
     {
         "id": "gemini",
@@ -79,7 +111,7 @@ SUPPORTED_TRANSLATION_PROVIDERS: List[Dict[str, Any]] = [
         "id": "custom",
         "name": "Custom AI API (OpenAI-Compatible)",
         "type": "custom_llm",
-        "description": "Connect any custom OpenAI-compatible endpoint (DeepSeek, Groq, OpenRouter, Mistral, Ollama, vLLM, LMStudio). Flexible base URL and model selection.",
+        "description": "Connect any custom OpenAI-compatible endpoint (OpenRouter, Mistral, Ollama, vLLM, LMStudio). Flexible base URL and model selection.",
         "requires_api_key": True,
         "requires_base_url": True,
         "supports_styles": True,
@@ -99,25 +131,24 @@ def list_translation_providers() -> List[Dict[str, Any]]:
     providers = []
     for p in SUPPORTED_TRANSLATION_PROVIDERS:
         item = dict(p)
+        creds = get_provider_credentials(p["id"])
         if p["requires_api_key"]:
-            creds = get_provider_credentials(p["id"])
             item["is_configured"] = is_api_key_configured(p["id"])
             item["masked_key"] = get_masked_api_key(p["id"])
-            if creds.get("base_url"):
-                item["base_url"] = creds["base_url"]
-            elif "default_base_url" in p:
-                item["base_url"] = p["default_base_url"]
-            else:
-                item["base_url"] = None
-
-            if creds.get("model"):
-                item["configured_model"] = creds["model"]
-            else:
-                item["configured_model"] = p.get("default_model")
         else:
             item["is_configured"] = True
-            item["masked_key"] = None
+            item["masked_key"] = get_masked_api_key(p["id"]) if is_api_key_configured(p["id"]) else None
+
+        if creds.get("base_url"):
+            item["base_url"] = creds["base_url"]
+        elif "default_base_url" in p:
+            item["base_url"] = p["default_base_url"]
+        else:
             item["base_url"] = None
+
+        if creds.get("model"):
+            item["configured_model"] = creds["model"]
+        else:
             item["configured_model"] = p.get("default_model")
         providers.append(item)
     return providers
@@ -130,11 +161,11 @@ def validate_translation_provider(provider_name: str) -> bool:
 
 
 def get_active_ai_provider_name() -> str:
-    """Return the first configured AI provider, or 'gemini' as fallback."""
-    for pid in ["gemini", "openai", "claude", "custom"]:
+    """Return the first configured AI provider, or 'groq' / 'gemini' as fallback."""
+    for pid in ["groq", "deepseek", "gemini", "openai", "claude", "custom"]:
         if is_api_key_configured(pid):
             return pid
-    return "gemini"
+    return "groq" if is_api_key_configured("groq") else "gemini"
 
 
 def get_translation_provider(
@@ -151,9 +182,9 @@ def get_translation_provider(
         return NLLBTranslationProvider(**kwargs)
     elif norm == "gemini":
         return GeminiTranslationProvider(api_key=api_key, model=model, **kwargs)
-    elif norm == "openai":
+    elif norm in ("openai", "custom", "groq", "deepseek"):
         return OpenAITranslationProvider(
-            provider_id="openai",
+            provider_id=norm,
             api_key=api_key,
             base_url=base_url,
             model=model,
@@ -162,14 +193,6 @@ def get_translation_provider(
     elif norm == "claude":
         return ClaudeTranslationProvider(
             api_key=api_key,
-            model=model,
-            **kwargs,
-        )
-    elif norm == "custom":
-        return OpenAITranslationProvider(
-            provider_id="custom",
-            api_key=api_key,
-            base_url=base_url,
             model=model,
             **kwargs,
         )
@@ -194,9 +217,9 @@ def test_provider_connection(
     elif norm == "gemini":
         provider = GeminiTranslationProvider(api_key=api_key, model=model)
         return provider.test_connection(api_key=api_key)
-    elif norm == "openai":
+    elif norm in ("openai", "custom", "groq", "deepseek"):
         provider = OpenAITranslationProvider(
-            provider_id="openai",
+            provider_id=norm,
             api_key=api_key,
             base_url=base_url,
             model=model,
@@ -204,14 +227,6 @@ def test_provider_connection(
         return provider.test_connection(api_key=api_key)
     elif norm == "claude":
         provider = ClaudeTranslationProvider(api_key=api_key, model=model)
-        return provider.test_connection(api_key=api_key)
-    elif norm == "custom":
-        provider = OpenAITranslationProvider(
-            provider_id="custom",
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-        )
         return provider.test_connection(api_key=api_key)
     else:
         return False, f"Unknown translation provider '{provider_name}'."

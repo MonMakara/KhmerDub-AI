@@ -1,0 +1,79 @@
+[
+  {
+    "task_id": "5177b151-fbb0-48e8-9cd6-fbab1da79c80",
+    "mode": "noise",
+    "metadata": {
+      "input_duration": 193.793741,
+      "audio_stream_index": 1,
+      "audio_stream_count": 1,
+      "stream_policy": "First audio stream in file order",
+      "sample_rate": 44100,
+      "channels": 2,
+      "has_video": true,
+      "video_stream_index": 0,
+      "video_duration": "193.794000",
+      "audio_start": 0.0,
+      "video_start": 0.0,
+      "video_stream_copied": true,
+      "mode": "noise",
+      "strength": "balanced",
+      "engine": "FFmpeg afftdn (CPU)",
+      "device": "cpu",
+      "phase": "Completed",
+      "phase_progress": 100,
+      "completed_at": "2026-10-31T04:26:58.913104+00:00",
+      "input_audio_duration": 193.79375,
+      "output_audio_duration": 193.79375,
+      "duration_difference": 0.0,
+      "files": [
+        "cleaned.mp4",
+        "cleaned.mp3",
+        "original.wav",
+        "cleaned.wav"
+      ],
+      "quality_notice": "Compare speech before and after. Separation may retain singing/music or affect quiet words. Strong processing can introduce artifacts; speech completeness has not been human-verified."
+    }
+  },
+  {
+    "task_id": "c032e828-8987-419c-954b-9e1fff92ed33",
+    "mode": "music",
+    "metadata": {
+      "input_duration": 193.793741,
+      "audio_stream_index": 1,
+      "audio_stream_count": 1,
+      "stream_policy": "First audio stream in file order",
+      "sample_rate": 44100,
+      "channels": 2,
+      "has_video": true,
+      "video_stream_index": 0,
+      "video_duration": "193.794000",
+      "audio_start": 0.0,
+      "video_start": 0.0,
+      "video_stream_copied": true,
+      "mode": "music",
+      "strength": "balanced",
+      "engine": "Demucs 4.0.1 / htdemucs 955717e8",
+      "device": "cpu",
+      "cpu_fallback": false,
+      "model_sample_rate": 44100,
+      "retained_background_fraction": 0.2,
+      "peak_before_gain": 1.0012253522872925,
+      "output_gain": 0.9788006244160684,
+      "covered_frames": 9302100,
+      "phase": "Completed",
+      "phase_progress": 100,
+      "completed_at": "2026-10-31T04:31:19.457973+00:00",
+      "input_audio_duration": 193.79375,
+      "output_audio_duration": 193.79375,
+      "duration_difference": 0.0,
+      "files": [
+        "cleaned.mp4",
+        "cleaned.mp3",
+        "background.wav",
+        "original.wav",
+        "cleaned.wav"
+      ],
+      "quality_notice": "Compare speech before and after. Separation may retain singing/music or affect quiet words. Strong processing can introduce artifacts; speech completeness has not been human-verified."
+    }
+  }
+]

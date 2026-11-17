@@ -329,7 +329,7 @@ export const Projects: React.FC<ProjectsProps> = ({
 
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-[11px] text-slate-400 capitalize">
-                      {proj.translation_provider || 'nllb'} • {proj.tts_provider || 'gtts'}
+                      {proj.translation_provider || 'nllb'} • {proj.tts_provider || 'edge'}
                     </span>
                     <button
                       onClick={(e) => {

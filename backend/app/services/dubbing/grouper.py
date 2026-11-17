@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -13,6 +13,7 @@ class DubbingGroupDefinition:
     source_segment_ids: List[str] = field(default_factory=list)
     source_segment_orders: List[int] = field(default_factory=list)
     combined_english_text: str = ""
+    voice_override: tuple[str, str] | None = None
 
 
 class DubbingGrouper:
@@ -23,10 +24,10 @@ class DubbingGrouper:
 
     def __init__(
         self,
-        min_duration: float = 2.2,
-        target_duration: float = 6.5,
-        max_duration: float = 12.0,
-        max_merge_pause: float = 1.05,
+        min_duration: float = 1.2,
+        target_duration: float = 3.6,
+        max_duration: float = 4.8,
+        max_merge_pause: float = 0.40,
     ):
         self.min_duration = min_duration
         self.target_duration = target_duration
@@ -73,9 +74,14 @@ class DubbingGrouper:
                 # 2. Next segment is too short to stand alone
                 elif seg_dur < self.min_duration:
                     should_merge = True
-                # 3. Both are short enough to form a comfortable narrative phrase
-                elif new_dur <= self.target_duration and pause <= 0.85:
-                    should_merge = True
+                # 3. Both are short enough to form a comfortable narrative phrase,
+                # but only if at least one segment is short (< 2.5s) to avoid conglomerating long units
+                elif new_dur <= self.target_duration and pause <= (self.max_merge_pause * 0.8):
+                    if curr_dur < 2.5 or seg_dur < 2.5:
+                        should_merge = True
+
+            if seg.get("_voice_key") != prev.get("_voice_key"):
+                should_merge = False
 
             if should_merge:
                 curr_group.append(seg)
@@ -109,6 +115,7 @@ class DubbingGrouper:
                     source_segment_ids=src_ids,
                     source_segment_orders=src_orders,
                     combined_english_text=combined_en,
+                    voice_override=g[0].get("_voice_key"),
                 )
             )
 

@@ -16,6 +16,8 @@ CREDENTIALS_FILE = SECRETS_DIR / "credentials.enc"
 
 ENV_VAR_MAPPING = {
     "gemini": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "openai": "OPENAI_API_KEY",
     "claude": "ANTHROPIC_API_KEY",
     "custom": "CUSTOM_AI_API_KEY",
@@ -81,9 +83,26 @@ def get_api_key(provider: str) -> Optional[str]:
     creds = _load_stored_credentials()
     val = creds.get(p_norm)
     if isinstance(val, dict):
-        return val.get("api_key")
+        key = val.get("api_key")
+        if key and key.strip():
+            return key.strip()
     if isinstance(val, str) and val.strip():
         return val.strip()
+
+    # Fallback migration: if asking for groq and custom has gsk_ key
+    if p_norm == "groq":
+        custom_val = creds.get("custom")
+        c_key = custom_val.get("api_key") if isinstance(custom_val, dict) else (custom_val if isinstance(custom_val, str) else None)
+        if c_key and str(c_key).startswith("gsk_"):
+            return str(c_key).strip()
+
+    # Fallback migration: if asking for deepseek and custom has deepseek URL
+    if p_norm == "deepseek":
+        custom_val = creds.get("custom")
+        if isinstance(custom_val, dict) and "deepseek" in (custom_val.get("base_url") or ""):
+            c_key = custom_val.get("api_key")
+            if c_key and str(c_key).startswith("sk-"):
+                return str(c_key).strip()
 
     return None
 
@@ -121,6 +140,30 @@ def get_provider_credentials(provider: str) -> Dict[str, Any]:
                 logger.info("Migrated stored Gemini model to 'gemini-3.5-flash'")
             except Exception as e:
                 logger.warning("Failed to persist migrated Gemini model: %s", e)
+
+    # Auto-heal unavailable Groq model if user configured llama-3.3-70b-versatile on Groq endpoint
+    if p_norm == "custom" and base_url and "groq.com" in base_url and (model in ("llama-3.3-70b-versatile", "llama-3.1-70b-versatile") or not model):
+        model = "openai/gpt-oss-120b"
+        if isinstance(stored, dict) and stored.get("model") in ("llama-3.3-70b-versatile", "llama-3.1-70b-versatile", None, ""):
+            stored["model"] = "openai/gpt-oss-120b"
+            creds[p_norm] = stored
+            try:
+                _save_stored_credentials(creds)
+                logger.info("Migrated stored Groq model to 'openai/gpt-oss-120b'")
+            except Exception as e:
+                logger.warning("Failed to persist migrated Groq model: %s", e)
+
+    # Defaults for groq and deepseek
+    if p_norm == "groq":
+        if not base_url:
+            base_url = "https://api.groq.com/openai/v1"
+        if not model or model in ("llama-3.3-70b-versatile", "llama-3.1-70b-versatile"):
+            model = "openai/gpt-oss-120b"
+    elif p_norm == "deepseek":
+        if not base_url:
+            base_url = "https://api.deepseek.com/v1"
+        if not model:
+            model = "deepseek-chat"
 
     return {
         "api_key": api_key,

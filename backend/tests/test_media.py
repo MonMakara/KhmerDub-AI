@@ -4,14 +4,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.project import Project, ProjectStatus, JobStatus, ProcessingJob
+from app.models.project import Project
 from app.services.video.ffmpeg import FFmpegVideoProcessor
 from app.services.video.exceptions import (
     CorruptedVideoError,
-    InvalidVideoFormatError,
     NoAudioTrackError,
 )
-from app.workers.audio_extraction import process_audio_extraction
 
 
 @pytest.fixture(scope="session")

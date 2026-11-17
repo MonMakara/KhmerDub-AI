@@ -135,7 +135,26 @@ def main():
         time.sleep(2)
         client.screenshot("v2_3_06_export_tab_ready.png")
 
-        print("\nAll 6 v2.3 screenshots successfully captured!")
+        # 7. Outdated Audio Project (4c3e4cb3-b4bd-422c-a971-9f055d07c1ab) - Voice Tab
+        client.navigate("http://localhost:5173/#project/4c3e4cb3-b4bd-422c-a971-9f055d07c1ab", wait_seconds=3)
+        client.execute_script("""
+            const btns = Array.from(document.querySelectorAll('button'));
+            const tabBtn = btns.find(b => b.textContent && b.textContent.includes('Voice'));
+            if (tabBtn) tabBtn.click();
+        """)
+        time.sleep(2)
+        client.screenshot("v2_3_07_outdated_voice_tab.png")
+
+        # 8. Outdated Audio Project - Export Tab
+        client.execute_script("""
+            const btns = Array.from(document.querySelectorAll('button'));
+            const tabBtn = btns.find(b => b.textContent && b.textContent.includes('Export'));
+            if (tabBtn) tabBtn.click();
+        """)
+        time.sleep(2)
+        client.screenshot("v2_3_08_outdated_export_tab.png")
+
+        print("\nAll 8 v2.3 screenshots successfully captured!")
 
     finally:
         client.stop()

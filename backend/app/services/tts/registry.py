@@ -12,20 +12,9 @@ logger = logging.getLogger(__name__)
 
 AVAILABLE_VOICES: List[Dict[str, Any]] = [
     {
-        "provider": "gtts",
-        "voice": "default",
-        "label": "Google Khmer (Default)",
-        "gender": "neutral",
-        "language": "km",
-        "description": "Standard Google Translate Khmer online voice",
-        "sample_rate": 24000,
-        "is_custom": False,
-        "is_available": True,
-    },
-    {
         "provider": "edge",
         "voice": "km-KH-PisethNeural",
-        "label": "Microsoft Piseth (Male)",
+        "label": "Microsoft Piseth (Male - Default)",
         "gender": "male",
         "language": "km",
         "description": "Microsoft Edge Neural Voice (Male, friendly & natural)",
@@ -68,8 +57,8 @@ AVAILABLE_VOICES: List[Dict[str, Any]] = [
     },
 ]
 
-DEFAULT_PROVIDER = "gtts"
-DEFAULT_VOICE = "default"
+DEFAULT_PROVIDER = "edge"
+DEFAULT_VOICE = "km-KH-PisethNeural"
 
 
 def list_supported_voices(db: Optional[Any] = None, language: Optional[str] = None) -> List[Dict[str, Any]]:

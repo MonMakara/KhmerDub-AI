@@ -8,10 +8,8 @@ from app.models.project import (
     TranscriptSegment,
     TranslationSegment,
     GeneratedAudio,
-    SubtitleSegment,
 )
 from app.services.subtitles.splitter import SubtitleSplitter
-from app.services.subtitles.service import SubtitleService
 
 
 @pytest.fixture

@@ -1,10 +1,9 @@
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.project import (
     Project,
     Video,
@@ -16,18 +15,16 @@ from app.models.project import (
     JobStatus,
 )
 from app.services.tts.base import TTSAudioResult
-from app.services.tts.edge import EdgeTTSProvider, DEFAULT_EDGE_VOICE
+from app.services.tts.edge import EdgeTTSProvider
 from app.services.tts.google import GoogleTTSProvider
 from app.services.tts.registry import (
     list_supported_voices,
     is_valid_voice_combination,
     get_tts_provider,
-    AVAILABLE_VOICES,
 )
 from app.services.tts.exceptions import (
     EmptyTextError,
     VoiceNotSupportedError,
-    TTSNetworkError,
 )
 from app.workers.tts import process_tts, synthesize_segment_audio
 from app.services.dubbing.synchronizer import AudioSynchronizationService
@@ -39,14 +36,14 @@ def test_voice_registry_and_validation():
     voices = list_supported_voices()
     assert len(voices) >= 3
 
-    # Check that Google Khmer and Microsoft Piseth & Sreymom are present
+    # Google Khmer is removed; Microsoft Piseth and Sreymom remain available
     providers_and_voices = [(v["provider"], v["voice"]) for v in voices]
-    assert ("gtts", "default") in providers_and_voices
+    assert ("gtts", "default") not in providers_and_voices
     assert ("edge", "km-KH-PisethNeural") in providers_and_voices
     assert ("edge", "km-KH-SreymomNeural") in providers_and_voices
 
     # Valid combinations
-    assert is_valid_voice_combination("gtts", "default") is True
+    assert is_valid_voice_combination("gtts", "default") is False
     assert is_valid_voice_combination("edge", "km-KH-PisethNeural") is True
     assert is_valid_voice_combination("edge", "km-KH-SreymomNeural") is True
 
@@ -121,6 +118,32 @@ def test_edge_tts_retry_on_network_failure(tmp_path: Path):
                 mock_sleep.assert_called_once_with(1.0)
 
 
+def test_edge_tts_retry_on_no_audio_received(tmp_path: Path):
+    """Verify EdgeTTSProvider catches NoAudioReceived and retries with backoff."""
+    from edge_tts.exceptions import NoAudioReceived
+
+    provider = EdgeTTSProvider(max_retries=3)
+    out = tmp_path / "retry_no_audio.mp3"
+
+    call_count = 0
+
+    def fake_run(coro):
+        nonlocal call_count
+        call_count += 1
+        coro.close()
+        if call_count == 1:
+            raise NoAudioReceived("No audio was received. Please verify that your parameters are correct.")
+        out.write_bytes(b"recovered edge audio")
+
+    with patch.object(provider, "_run_async_safely", side_effect=fake_run):
+        with patch.object(provider.video_processor, "get_audio_duration", return_value=2.1):
+            with patch("time.sleep") as mock_sleep:
+                res = provider.synthesize("សួស្តីកម្ពុជា", out, voice="km-KH-PisethNeural")
+                assert res.duration_seconds == 2.1
+                assert call_count == 2
+                mock_sleep.assert_called_once_with(1.0)
+
+
 def test_api_get_voices(client: TestClient):
     """Verify GET /api/tts/voices returns the supported voices."""
     res = client.get("/api/tts/voices")
@@ -129,11 +152,11 @@ def test_api_get_voices(client: TestClient):
     assert "voices" in data
     assert "default_provider" in data
     assert "default_voice" in data
-    assert data["default_provider"] == "gtts"
-    assert data["default_voice"] == "default"
+    assert data["default_provider"] == "edge"
+    assert data["default_voice"] == "km-KH-PisethNeural"
 
     voice_names = [v["voice"] for v in data["voices"]]
-    assert "default" in voice_names
+    assert "default" not in voice_names
     assert "km-KH-PisethNeural" in voice_names
     assert "km-KH-SreymomNeural" in voice_names
 
@@ -201,8 +224,8 @@ def test_project_voice_selection_and_invalidation(
     get_res = client.get(f"/api/projects/{project_id}")
     assert get_res.status_code == 200
     pdata = get_res.json()
-    assert pdata["tts_provider"] == "gtts"
-    assert pdata["tts_voice"] == "default"
+    assert pdata["tts_provider"] == "edge"
+    assert pdata["tts_voice"] == "km-KH-PisethNeural"
 
     # Add dummy video and generated audio
     video = Video(
@@ -233,15 +256,15 @@ def test_project_voice_selection_and_invalidation(
     )
     assert patch_invalid.status_code == 400
 
-    # 3. Update voice to Piseth
+    # 3. Update voice to Sreymom
     patch_valid = client.patch(
         f"/api/projects/{project_id}/voice",
-        json={"tts_provider": "edge", "tts_voice": "km-KH-PisethNeural"},
+        json={"tts_provider": "edge", "tts_voice": "km-KH-SreymomNeural"},
     )
     assert patch_valid.status_code == 200
     updated_data = patch_valid.json()
     assert updated_data["tts_provider"] == "edge"
-    assert updated_data["tts_voice"] == "km-KH-PisethNeural"
+    assert updated_data["tts_voice"] == "km-KH-SreymomNeural"
 
     # 4. Verify invalidation flags
     db_session.expire_all()
@@ -390,3 +413,81 @@ def test_edge_tts_dubbing_pipeline_compatibility(tmp_path: Path):
     assert sync_result.timeline_path.exists()
     final_dur = proc.get_audio_duration(sync_result.timeline_path)
     assert abs(final_dur - 4.0) < 0.15
+
+
+def test_tts_worker_resumes_without_resynthesizing_current_audio(db_session: Session, tmp_path: Path):
+    """Verify process_tts skips segments that already have current valid audio on disk."""
+    from app.workers.tts import get_audio_segment_path
+
+    project = Project(
+        title="Resume TTS Project",
+        original_language="en",
+        target_language="km",
+        tts_provider="edge",
+        tts_voice="km-KH-PisethNeural",
+        status=ProjectStatus.TRANSLATED,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    seg1 = TranslationSegment(project_id=project.id, segment_order=1, khmer_text="ផ្នែកមួយ", is_outdated=False)
+    seg2 = TranslationSegment(project_id=project.id, segment_order=2, khmer_text="ផ្នែកពីរ", is_outdated=False)
+    db_session.add_all([seg1, seg2])
+    db_session.commit()
+
+    # Seg1 already has a valid file and GeneratedAudio
+    seg1_path = get_audio_segment_path(project.id, seg1.id)
+    seg1_path.parent.mkdir(parents=True, exist_ok=True)
+    seg1_path.write_bytes(b"existing audio bytes for seg1")
+
+    aud1 = GeneratedAudio(
+        project_id=project.id,
+        translation_segment_id=seg1.id,
+        audio_path=str(seg1_path),
+        duration_seconds=2.5,
+        provider="edge",
+        voice="km-KH-PisethNeural",
+        is_outdated=False,
+    )
+    db_session.add(aud1)
+
+    job = ProcessingJob(project_id=project.id, job_type="tts", status=JobStatus.PENDING)
+    db_session.add(job)
+    db_session.commit()
+
+    synthesized_segments = []
+
+    with patch("app.workers.tts.synthesize_segment_audio") as mock_synth:
+        def fake_synth(project_id, segment, **kwargs):
+            synthesized_segments.append(segment.segment_order)
+            out_p = get_audio_segment_path(project_id, segment.id)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_bytes(b"newly synthesized bytes")
+            aud = GeneratedAudio(
+                project_id=project_id,
+                translation_segment_id=segment.id,
+                audio_path=str(out_p),
+                duration_seconds=1.5,
+                provider="edge",
+                voice="km-KH-PisethNeural",
+                is_outdated=False,
+            )
+            db_session.add(aud)
+            db_session.commit()
+            return aud
+
+        mock_synth.side_effect = fake_synth
+
+        process_tts(project.id, job.id, db=db_session)
+
+        # seg1 should be skipped because it is current; seg2 should be synthesized
+        assert synthesized_segments == [2]
+        db_session.refresh(job)
+        assert job.status == JobStatus.COMPLETED
+
+
+def test_removed_google_voice_cannot_be_selected(client: TestClient):
+    response = client.post("/api/projects", json={
+        "title": "Removed voice", "tts_provider": "gtts", "tts_voice": "default",
+    })
+    assert response.status_code == 400

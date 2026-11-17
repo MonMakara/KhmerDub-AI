@@ -1,6 +1,6 @@
 import re
 import hashlib
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 
 
 class SubtitleSplitter:

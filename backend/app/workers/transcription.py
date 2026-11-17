@@ -16,8 +16,11 @@ from app.models.project import (
     JobStatus,
 )
 from app.services.transcription.whisper import FasterWhisperTranscriptionProvider
-from app.services.transcription.segmentation import segment_transcript
+from app.services.transcription.segmentation import segment_transcript, validate_word_coverage
+from app.services.transcription.base import project_segment_id
 from app.services.transcription.exceptions import TranscriptionError
+
+from app.services.tts.selection import preserve_partition
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,8 @@ def process_transcription(project_id: str, job_id: str, db: Optional[Session] = 
         job.progress_percentage = 80
         db.commit()
 
+        preserve_partition(raw_segments, project.translation_segments)
+
         # Persist raw transcription segments and word timings
         raw_dict_list = [s.to_dict() for s in raw_segments]
         raw_json_str = json.dumps(raw_dict_list, ensure_ascii=False)
@@ -79,6 +84,7 @@ def process_transcription(project_id: str, job_id: str, db: Optional[Session] = 
         # Apply segmentation mode (default to "sentence" for natural phrasing)
         segment_mode = project.segmentation_mode or "sentence"
         final_segments = segment_transcript(raw_segments, mode=segment_mode)
+        validate_word_coverage(raw_segments, final_segments)
 
         # Check if downstream entities exist; if so, mark them outdated upon re-transcription
         existing_translations = db.query(TranslationSegment).filter(TranslationSegment.project_id == project_id).count()
@@ -99,6 +105,7 @@ def process_transcription(project_id: str, job_id: str, db: Optional[Session] = 
         for seg in final_segments:
             words_data = json.dumps([w.to_dict() for w in seg.words], ensure_ascii=False) if seg.words else None
             db_segment = TranscriptSegment(
+                id=project_segment_id(project_id, seg.id),
                 project_id=project_id,
                 segment_order=seg.segment_order,
                 start_time=seg.start_time,

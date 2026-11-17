@@ -1,7 +1,6 @@
 """Unit and integration tests for Phase 13E.5 Translation Studio & Connected Workflows."""
 
 import io
-import json
 import uuid
 import zipfile
 from pathlib import Path
@@ -13,8 +12,6 @@ from sqlalchemy.orm import Session
 
 from app.models.toolkit import (
     ToolkitTask,
-    ToolkitTranscriptSegment,
-    ToolkitTTSSegment,
     ToolkitTranslationSegment,
 )
 from app.services.translation.base import TranslationProvider
@@ -163,12 +160,12 @@ def test_update_translation_segment_and_flag_outdated(client: TestClient, db_ses
     # 2. Create a child TTS task linked to this translation
     tts_payload = {
         "text": "សួស្តី",
-        "provider": "gtts",
-        "voice": "default",
+        "provider": "edge",
+        "voice": "km-KH-PisethNeural",
         "language": "km",
         "source_task_id": trans_task_id,
     }
-    with patch("app.services.tts.google.GoogleTTSProvider.synthesize") as mock_synth:
+    with patch("app.services.tts.edge.EdgeTTSProvider.synthesize") as mock_synth:
         def fake_synth(text, output_path, **kwargs):
             import subprocess
             subprocess.run([

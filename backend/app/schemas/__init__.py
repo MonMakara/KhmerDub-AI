@@ -45,12 +45,33 @@ from app.schemas.project import (
     SubtitleMergeRequest,
     SubtitleKeepEditsRequest,
     SubtitleResetResponse,
+    ProjectSpeakerResponse,
+    ProjectSpeakerUpdate,
+    SegmentSpeakerUpdate,
+    BulkSegmentSpeakerUpdate,
+    DiarizationRunRequest,
+    DiarizationRunResponse,
 )
 from app.schemas.voice import (
     VoiceConsentResponse,
     VoiceProfileResponse,
     VoiceProfileUpdate,
     VoiceStudioResponse,
+    CloneCandidateResponse,
+    CloneCandidatesListResponse,
+    CloneFromVideoRequest,
+    CloneSpeakerVoiceRequest,
+    CloneSpeakerVoiceResponse,
+    ClonedSpeakerItem,
+    AutoDiarizeAndCloneRequest,
+    AutoDiarizeAndCloneResponse,
+)
+from app.schemas.storage import (
+    StorageDiskInfo,
+    StorageCategoryInfo,
+    StorageUsageResponse,
+    StorageCleanRequest,
+    StorageCleanResponse,
 )
 
 __all__ = [
@@ -96,4 +117,11 @@ __all__ = [
     "SubtitleListResponse",
     "SubtitleSegmentUpdate",
     "SubtitleResetResponse",
+    "StorageDiskInfo",
+    "StorageCategoryInfo",
+    "StorageUsageResponse",
+    "StorageCleanRequest",
+    "StorageCleanResponse",
+    "AutoDiarizeAndCloneRequest",
+    "AutoDiarizeAndCloneResponse",
 ]

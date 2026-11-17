@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 import time
 from typing import List, Optional, Tuple, Dict, Any
@@ -37,8 +36,26 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 SUPPORTED_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"]
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+SUPPORTED_GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+]
+DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+SUPPORTED_DEEPSEEK_MODELS = [
+    "deepseek-chat",
+    "deepseek-reasoner",
+]
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+
 DEFAULT_CUSTOM_MODEL = "deepseek-chat"
 SUPPORTED_CUSTOM_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
     "deepseek-chat",
     "deepseek-reasoner",
     "llama-3.3-70b-versatile",
@@ -54,6 +71,8 @@ class OpenAITranslationProvider(TranslationProvider):
     - Official OpenAI (gpt-4o-mini, gpt-4o, etc.)
     - Custom OpenAI-compatible endpoints (DeepSeek, Groq, OpenRouter, Together AI, Ollama, vLLM)
     """
+
+    BATCH_CHUNK_SIZE: int = 12
 
     def __init__(
         self,
@@ -77,6 +96,10 @@ class OpenAITranslationProvider(TranslationProvider):
             self.base_url = base_url.strip().rstrip("/")
         elif stored.get("base_url"):
             self.base_url = stored["base_url"].strip().rstrip("/")
+        elif self.provider_id == "groq":
+            self.base_url = DEFAULT_GROQ_BASE_URL
+        elif self.provider_id == "deepseek":
+            self.base_url = DEFAULT_DEEPSEEK_BASE_URL
         else:
             self.base_url = DEFAULT_OPENAI_BASE_URL
 
@@ -85,6 +108,10 @@ class OpenAITranslationProvider(TranslationProvider):
             self.model = model.strip()
         elif stored.get("model"):
             self.model = stored["model"].strip()
+        elif self.provider_id == "groq":
+            self.model = DEFAULT_GROQ_MODEL
+        elif self.provider_id == "deepseek":
+            self.model = DEFAULT_DEEPSEEK_MODEL
         elif self.provider_id == "custom":
             self.model = DEFAULT_CUSTOM_MODEL
         else:
@@ -92,7 +119,13 @@ class OpenAITranslationProvider(TranslationProvider):
 
     @property
     def name(self) -> str:
-        return "OpenAI" if self.provider_id == "openai" else "Custom AI"
+        if self.provider_id == "openai":
+            return "OpenAI"
+        if self.provider_id == "groq":
+            return "Groq"
+        if self.provider_id == "deepseek":
+            return "DeepSeek"
+        return "Custom AI"
 
     def _get_headers(self, key_override: Optional[str] = None) -> Dict[str, str]:
         key = key_override or self.api_key or get_api_key(self.provider_id)
@@ -130,18 +163,20 @@ class OpenAITranslationProvider(TranslationProvider):
             "messages": [
                 {"role": "user", "content": "Respond strictly with the single word 'OK'."}
             ],
-            "max_tokens": 10,
+            "max_tokens": 80,
             "temperature": 0.0,
         }
 
         try:
-            with httpx.Client(timeout=15.0) as client:
+            with httpx.Client(timeout=45.0) as client:
                 resp = client.post(url, headers=headers, json=payload)
 
             if resp.status_code == 200:
                 data = resp.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if content:
+                msg = data.get("choices", [{}])[0].get("message", {})
+                content = (msg.get("content") or "").strip()
+                reasoning = (msg.get("reasoning") or "").strip()
+                if content or reasoning:
                     return (
                         True,
                         f"Successfully connected to {self.name} ({effective_model}) at '{effective_base_url}'.",
@@ -216,8 +251,9 @@ class OpenAITranslationProvider(TranslationProvider):
                         f"{self.name} server error (HTTP {resp.status_code}): {resp.text[:200]}"
                     )
                 else:
-                    # If json_mode was rejected, retry once without response_format
-                    if json_mode and "response_format" in payload and resp.status_code == 400:
+                    # If json_mode was rejected by custom endpoint, retry without response_format
+                    if json_mode and "response_format" in payload and resp.status_code in (400, 422):
+                        logger.info("%s does not support response_format json_object. Retrying without it.", self.name)
                         del payload["response_format"]
                         continue
                     raise TranslationError(
@@ -251,6 +287,57 @@ class OpenAITranslationProvider(TranslationProvider):
 
         raise last_error or TranslationError(f"{self.name} translation failed after {self.max_retries} attempts.")
 
+    def _translate_single_segment(
+        self,
+        raw_text: str,
+        style: str = "natural",
+        context: Optional[str] = None,
+        duration: Optional[float] = None,
+    ) -> str:
+        """Translate a single segment with optional surrounding context and duration constraints."""
+        if not raw_text or not raw_text.strip():
+            return ""
+
+        prompt = build_single_translation_prompt(
+            raw_text.strip(),
+            style=style,
+            context=context,
+            duration=duration,
+        )
+        messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "user", "content": prompt},
+        ]
+        raw_out = self._call_api_with_retry(messages, json_mode=False)
+
+        # Handle LLMs that wrap single responses in JSON or markdown blocks
+        clean_out = raw_out.strip()
+        clean_out = re.sub(r"^```(?:json|[a-z]+)?\s*|\s*```$", "", clean_out).strip()
+        if clean_out.startswith(("{", "[", '"')):
+            try:
+                parsed = json.loads(clean_out)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    if isinstance(parsed[0], dict):
+                        clean_out = parsed[0].get("khmer") or parsed[0].get("text") or clean_out
+                    elif isinstance(parsed[0], str):
+                        clean_out = parsed[0]
+                elif isinstance(parsed, dict):
+                    clean_out = parsed.get("khmer") or parsed.get("text") or clean_out
+                elif isinstance(parsed, str):
+                    clean_out = parsed
+            except Exception:
+                pass
+        clean_out = clean_out.strip('"\'')
+
+        formatted = KhmerGlossary.align_terminology(raw_text, clean_out)
+        formatted = KhmerTextFormatter.format(formatted)
+        if duration and duration > 0.0:
+            from app.services.dubbing.auto_fit import shorten_khmer_text
+            c_lim = max(18, int(duration * 12.0))
+            if len(formatted) > c_lim:
+                formatted = shorten_khmer_text(formatted, target_char_count=c_lim)
+        return formatted
+
     def translate(
         self,
         texts: List[str],
@@ -258,9 +345,10 @@ class OpenAITranslationProvider(TranslationProvider):
         target_lang: str = "km",
         style: str = "standard",
         contexts: Optional[List[str]] = None,
+        durations: Optional[List[float]] = None,
         **kwargs,
     ) -> List[str]:
-        """Translate a batch or single list of English texts into Khmer."""
+        """Translate a batch or single list of English texts into Khmer with transcript context and chunking."""
         if not texts:
             return []
 
@@ -269,67 +357,89 @@ class OpenAITranslationProvider(TranslationProvider):
         if not non_empty:
             return [""] * len(texts)
 
-        results = []
-
         # Single segment fast path
         if len(clean_texts) == 1:
             raw_text = clean_texts[0]
-            if not raw_text:
-                return [""]
-            prompt = build_single_translation_prompt(raw_text, style=style)
+            seg_dur = durations[0] if (durations and len(durations) > 0) else None
+            seg_ctx = contexts[0] if (contexts and len(contexts) > 0) else None
+            return [self._translate_single_segment(raw_text, style=style, context=seg_ctx, duration=seg_dur)]
+
+        results: List[str] = []
+        chunk_size = self.BATCH_CHUNK_SIZE
+
+        # Process in chunks of BATCH_CHUNK_SIZE to maintain reliability across custom endpoints
+        for i in range(0, len(clean_texts), chunk_size):
+            chunk_texts = clean_texts[i : i + chunk_size]
+            chunk_durations = durations[i : i + chunk_size] if durations else None
+            chunk_contexts = contexts[i : i + chunk_size] if contexts else None
+
+            # Skip translation if all items in chunk are empty
+            if not any(chunk_texts):
+                results.extend([""] * len(chunk_texts))
+                continue
+
+            prompt = build_batch_translation_prompt(
+                chunk_texts,
+                style=style,
+                durations=chunk_durations,
+                contexts=chunk_contexts,
+            )
             messages = [
                 {"role": "system", "content": SYSTEM_INSTRUCTION},
                 {"role": "user", "content": prompt},
             ]
-            raw_out = self._call_api_with_retry(messages, json_mode=False)
-            formatted = KhmerGlossary.align_terminology(raw_text, raw_out)
-            formatted = KhmerTextFormatter.format(formatted)
-            return [formatted]
 
-        # Batch translation
-        prompt = build_batch_translation_prompt(clean_texts, style=style)
-        messages = [
-            {"role": "system", "content": SYSTEM_INSTRUCTION},
-            {"role": "user", "content": prompt},
-        ]
-        raw_json = self._call_api_with_retry(messages, json_mode=True)
+            chunk_parsed = False
+            try:
+                raw_json = self._call_api_with_retry(messages, json_mode=True)
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_json.strip())
+                data = json.loads(cleaned)
 
-        try:
-            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_json.strip())
-            data = json.loads(cleaned)
-            if isinstance(data, list):
-                lookup = {item.get("id"): item.get("khmer", "") for item in data}
-                for i, eng in enumerate(clean_texts):
-                    km = lookup.get(i + 1, "")
-                    km = KhmerGlossary.align_terminology(eng, km)
-                    km = KhmerTextFormatter.format(km)
+                items = None
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict) and "segments" in data and isinstance(data["segments"], list):
+                    items = data["segments"]
+
+                if items is not None:
+                    lookup = {item.get("id"): item.get("khmer", "") for item in items if isinstance(item, dict)}
+                    for idx, eng in enumerate(chunk_texts):
+                        if not eng:
+                            results.append("")
+                            continue
+                        km = lookup.get(idx + 1, "")
+                        if not km:
+                            # Fallback for single missing item in JSON
+                            ctx = chunk_contexts[idx] if (chunk_contexts and idx < len(chunk_contexts)) else None
+                            dur = chunk_durations[idx] if (chunk_durations and idx < len(chunk_durations)) else None
+                            km = self._translate_single_segment(eng, style=style, context=ctx, duration=dur)
+                        else:
+                            km = KhmerGlossary.align_terminology(eng, km)
+                            km = KhmerTextFormatter.format(km)
+                            if chunk_durations and idx < len(chunk_durations) and chunk_durations[idx] and chunk_durations[idx] > 0.0:
+                                from app.services.dubbing.auto_fit import shorten_khmer_text
+                                c_lim = max(18, int(chunk_durations[idx] * 12.0))
+                                if len(km) > c_lim:
+                                    km = shorten_khmer_text(km, target_char_count=c_lim)
+                        results.append(km)
+                    chunk_parsed = True
+            except Exception as e:
+                logger.warning(
+                    "%s batch chunk translation failed (%s). Falling back to per-segment for this chunk.",
+                    self.name,
+                    e,
+                )
+
+            # Per-segment fallback if batch parsing failed for this chunk
+            if not chunk_parsed:
+                for idx, eng in enumerate(chunk_texts):
+                    if not eng:
+                        results.append("")
+                        continue
+                    dur = chunk_durations[idx] if (chunk_durations and idx < len(chunk_durations)) else None
+                    ctx = chunk_contexts[idx] if (chunk_contexts and idx < len(chunk_contexts)) else None
+                    km = self._translate_single_segment(eng, style=style, context=ctx, duration=dur)
                     results.append(km)
-                return results
-            elif isinstance(data, dict) and "segments" in data:
-                lookup = {item.get("id"): item.get("khmer", "") for item in data["segments"]}
-                for i, eng in enumerate(clean_texts):
-                    km = lookup.get(i + 1, "")
-                    km = KhmerGlossary.align_terminology(eng, km)
-                    km = KhmerTextFormatter.format(km)
-                    results.append(km)
-                return results
-        except Exception as e:
-            logger.warning("Batch JSON parsing failed (%s). Falling back to per-segment translation.", e)
-
-        # Fallback to per-segment
-        for t in clean_texts:
-            if not t:
-                results.append("")
-                continue
-            p = build_single_translation_prompt(t, style=style)
-            msgs = [
-                {"role": "system", "content": SYSTEM_INSTRUCTION},
-                {"role": "user", "content": p},
-            ]
-            out = self._call_api_with_retry(msgs, json_mode=False)
-            out = KhmerGlossary.align_terminology(t, out)
-            out = KhmerTextFormatter.format(out)
-            results.append(out)
 
         return results
 

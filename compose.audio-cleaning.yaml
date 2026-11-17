@@ -1,0 +1,8 @@
+# Build the ordinary backend first, then this optional approved audio environment.
+# Keeps the application's existing Torch/ASR/TTS installation unchanged.
+services:
+  backend:
+    image: khmerdub-ai-backend-cleaning
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.audio-evaluation

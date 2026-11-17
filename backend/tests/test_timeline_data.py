@@ -1,4 +1,3 @@
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -82,15 +81,14 @@ def test_timeline_segment_positioning_and_durations(client: TestClient, db_sessi
     assert audios[1]["duration_seconds"] == 5.0
     assert audios[2]["duration_seconds"] == 3.5
 
-    # 5. Check export status detects the blocking timing conflict on Seg 2
+    # 5. Neighboring slack fits the full group; alignment review stays visible.
     export_res = client.get(f"/api/projects/{pid}/export/status")
     assert export_res.status_code == 200
-    conflicts = export_res.json()["timing_conflicts"]
-    assert len(conflicts) >= 1
-    c2 = next((c for c in conflicts if c["segment_order"] == 2), None)
-    assert c2 is not None
-    assert c2["overflow_seconds"] > 0
-    assert c2["required_tempo"] > 1.25
+    data = export_res.json()
+    assert data["timing_conflicts"] == []
+    assert data["timing_summary"]["alignment_review_units"] > 0
+    scheduled = data["timing_summary"]["schedule"]
+    assert any(unit["local_overflow_seconds"] > 0 for unit in scheduled)
 
 
 def test_timeline_outdated_audio_invalidation(client: TestClient, db_session: Session):

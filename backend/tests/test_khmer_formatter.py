@@ -1,4 +1,3 @@
-import pytest
 from app.services.translation.formatter import KhmerTextFormatter
 
 
@@ -49,3 +48,11 @@ def test_non_khmer_passthrough():
     # Pure English text should retain normal spaces
     english = "Hello world from KhmerDub AI."
     assert KhmerTextFormatter.format(english) == "Hello world from KhmerDub AI."
+
+
+def test_conjunction_and_clause_spacing():
+    # Conjunctions like ដើម្បី (in order to) and និង (and) must have clause spacing
+    raw = "វិស្វករប្រើគណិតវិទ្យាដើម្បីសាងសង់ហេដ្ឋារចនាសម្ព័ន្ធនិងទូរគមនាគមន៍។"
+    formatted = KhmerTextFormatter.format(raw)
+    assert formatted == "វិស្វករប្រើគណិតវិទ្យា ដើម្បីសាងសង់ហេដ្ឋារចនាសម្ព័ន្ធ និងទូរគមនាគមន៍។"
+

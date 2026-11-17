@@ -1,5 +1,3 @@
-import math
-import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -19,10 +17,8 @@ from app.models.project import (
 from app.services.dubbing.timing_optimizer import (
     TimingOptimizerService,
     SegmentTimingAnalysis,
-    TimelineOptimizationResult,
 )
 from app.services.dubbing.synchronizer import AudioSynchronizationService
-from app.services.video.ffmpeg import FFmpegVideoProcessor
 
 
 @pytest.fixture
@@ -427,13 +423,11 @@ def test_bounded_sentence_optimization(db_session: Session, test_audio_file: Pat
         with patch.object(optimizer.video_processor, "get_audio_duration", side_effect=[3.8, 2.1]):
             result = optimizer.optimize_project(project.id, db_session)
 
-            assert result.sentence_optimized >= 1
-            assert result.unresolved_conflicts == 0
-            assert result.is_export_ready is True
-            # Verify synthesize was called with seed
-            assert mock_provider.synthesize.called
-            call_kwargs = mock_provider.synthesize.call_args[1]
-            assert "seed" in call_kwargs
+            assert result.sentence_optimized == 0
+            mock_provider.synthesize.assert_not_called()
+            db_session.refresh(tr1)
+            assert tr1.khmer_text == "នេះគឺជាការបកប្រែដែលវែងខ្លាំងណាស់ហើយមានពាក្យច្រើនលើសលប់។"
+
 
 
 def test_silence_trimming_yield(test_audio_file: Path):

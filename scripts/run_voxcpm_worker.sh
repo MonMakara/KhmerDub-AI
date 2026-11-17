@@ -6,6 +6,9 @@ set -e
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="/home/mark/miniconda3/envs/voxcpm-bench/bin/python"
+if [ ! -f "${PYTHON_BIN}" ]; then
+    PYTHON_BIN="/home/mark/miniforge3/envs/voxcpm-bench/bin/python"
+fi
 WORKER_SCRIPT="${WORKSPACE_DIR}/backend/app/services/voice/worker.py"
 
 if [ ! -f "${PYTHON_BIN}" ]; then
